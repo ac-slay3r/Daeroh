@@ -346,8 +346,11 @@ void main() {
   });
 
   group('healthDiagnose clasifica la causa real', () {
-    BridgeClient clientWith(MockClient mock) =>
-        BridgeClient(baseUrl: 'http://h:9131', token: 't', httpClient: mock);
+    BridgeClient clientWith(MockClient mock) => BridgeClient(
+      baseUrl: 'http://127.0.0.1:9131',
+      token: 't',
+      httpClient: mock,
+    );
 
     test('200 status ok → reach ok', () async {
       final c = clientWith(
@@ -570,7 +573,7 @@ void main() {
 
     // Token reconocible para verificar que NUNCA aparece en logs/diagnóstico.
     BridgeClient clientWith(MockClient mock) => BridgeClient(
-      baseUrl: 'http://h:9131',
+      baseUrl: 'http://127.0.0.1:9131',
       token: 'SUPERSECRET-TOKEN',
       httpClient: mock,
     );
