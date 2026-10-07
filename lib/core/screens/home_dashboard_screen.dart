@@ -44,6 +44,7 @@ import '../widgets/home_prompt_composer.dart';
 import '../../main.dart';
 import '../companion/models/companion_presence_level.dart';
 import '../companion/render/companion_home_mascot.dart';
+import '../companion/render/companion_empty_state_presence.dart';
 import '../companion/render/companion_roaming_overlay.dart';
 import 'companion/mascotas_screen.dart';
 import '../widgets/hermes_spark_mascot.dart';
@@ -2880,22 +2881,9 @@ class _EmptyHomeState extends StatelessWidget {
                     .findAncestorStateOfType<HermesAppState>()
                     ?.companion;
                 if (controller == null) return const SizedBox.shrink();
-                return AnimatedBuilder(
-                  animation: controller,
-                  builder: (context, _) {
-                    if (!controller.isInitialized ||
-                        !controller.enabled ||
-                        !controller.presenceLevel.isVisible) {
-                      return const SizedBox.shrink();
-                    }
-                    return const Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        HermesSparkMascot(mood: HermesSparkMood.idle, size: 48),
-                        SizedBox(height: 14),
-                      ],
-                    );
-                  },
+                return CompanionEmptyStatePresence(
+                  controller: controller,
+                  onHome: true,
                 );
               },
             ),

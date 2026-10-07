@@ -40,19 +40,19 @@ void main() {
       );
     });
 
-    test('system con idioma no soportado cae a español (como la UI)', () async {
+    test('system con idioma no soportado cae a inglés (como la UI)', () async {
       final prefs = await _prefs({kAppLocalePrefKey: 'system'});
-      expect(effectiveVoiceLang(prefs, deviceLocale: fr), 'es');
+      expect(effectiveVoiceLang(prefs, deviceLocale: fr), 'en');
       expect(
         effectiveVoiceLang(prefs, deviceLocale: const Locale('de', 'DE')),
-        'es',
+        'en',
       );
     });
 
     test('clave ausente o valor desconocido se tratan como system', () async {
       final ausente = await _prefs({});
       expect(effectiveVoiceLang(ausente, deviceLocale: en), 'en');
-      expect(effectiveVoiceLang(ausente, deviceLocale: fr), 'es');
+      expect(effectiveVoiceLang(ausente, deviceLocale: fr), 'en');
 
       final raro = await _prefs({kAppLocalePrefKey: 'xx'});
       expect(effectiveVoiceLang(raro, deviceLocale: en), 'en');

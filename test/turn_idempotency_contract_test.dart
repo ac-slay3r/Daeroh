@@ -703,6 +703,7 @@ class _ConflictMutationGateway extends _RecheckOwnershipGateway
   CompressionRestoreStore? compressionRestoreStore,
   ApprovalPolicyService? policy,
   StoredSessionMessageLoader? storedMessageLoader,
+  String Function()? appLanguageCode,
 }) {
   final api = ApiClient(
     baseUrl: 'https://example.invalid',
@@ -710,7 +711,8 @@ class _ConflictMutationGateway extends _RecheckOwnershipGateway
     httpClient: MockClient((_) async => http.Response('unused', 500)),
   );
   final chat = ActiveChat(
-    compressionRestoreStore: compressionRestoreStore ?? testCompressionRestoreStore(),
+    compressionRestoreStore:
+        compressionRestoreStore ?? testCompressionRestoreStore(),
     connection: SavedConnection(
       id: 'conn-modern',
       label: 'Modern',
@@ -726,6 +728,7 @@ class _ConflictMutationGateway extends _RecheckOwnershipGateway
     onTerminal: () {},
     api: api,
     desktopGateway: gateway,
+    appLanguageCode: appLanguageCode,
     storedMessageLoader:
         storedMessageLoader ??
         (gateway is _RuntimeReleaseGateway
@@ -2226,9 +2229,7 @@ void main() {
     final fixture = _fixture(
       gateway,
       capability: () async => true,
-      compressionRestoreStore: CompressionRestoreStore(
-        storage: fenceStorage,
-      ),
+      compressionRestoreStore: CompressionRestoreStore(storage: fenceStorage),
     );
     addTearDown(fixture.chat.dispose);
     await _primeProductionReleaseOwnership(fixture, gateway);
@@ -3188,6 +3189,44 @@ void main() {
       'No se puede continuar en directo porque esta conversación pertenece '
       'a otro gateway o proceso. El historial se conserva y puedes iniciar '
       'un chat nuevo.',
+    );
+  });
+
+  test('desktop prompt rejection follows the selected app language', () async {
+    final gateway = _OwnershipGateway(
+      resumeRuntimeIds: ['runtime-old'],
+      idempotentSubmissionErrors: const [
+        TuiGatewayRpcError(
+          'prompt.submit',
+          'private coordination detail',
+          code: 4090,
+          data: {'reason': 'MAX_CONCURRENT_SESSIONS'},
+        ),
+      ],
+    );
+    final fixture = _fixture(
+      gateway,
+      capability: () async => true,
+      appLanguageCode: () => 'en',
+    );
+    addTearDown(fixture.chat.dispose);
+    await fixture.chat.loadMessages();
+
+    expect(
+      await fixture.chat.send(
+        fullText: 'test',
+        model: 'hermes-agent',
+        history: const [],
+        delivery: fixture.delivery,
+      ),
+      isFalse,
+    );
+    expect(
+      fixture.chat.messages.singleWhere(
+        (message) => message['role'] == 'assistant_error',
+      )['content'],
+      'Hermes reached the configured active-session limit. Wait for a '
+      'session to finish or adjust the limit.',
     );
   });
 

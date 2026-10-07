@@ -77,6 +77,7 @@ import 'session_reconciler.dart';
 import 'transcript_publication_coordinator.dart';
 import 'subagent_activity_reducer.dart';
 import 'subagent_transcript_projection.dart';
+import 'voice/voice_lang.dart';
 import 'terminal_transcript_authority.dart';
 import 'tui_gateway_client.dart';
 import 'turn_outbox_store.dart';
@@ -97,15 +98,23 @@ const _activeChatRewindBusyRetryInterval = Duration(milliseconds: 150);
 const _activeChatRewindBusyRetryTimeout = Duration(seconds: 6);
 
 @visibleForTesting
-String activeChatDesktopRecoveryUiMessage(Object _) =>
-    'No se pudo recuperar el turno. Inténtalo de nuevo.';
+String activeChatDesktopRecoveryUiMessage(
+  Object? _, {
+  String languageCode = 'es',
+}) => languageCode.toLowerCase().startsWith('en')
+    ? 'The turn could not be recovered. Try again.'
+    : 'No se pudo recuperar el turno. Inténtalo de nuevo.';
 
 @visibleForTesting
-String activeChatDesktopSnapshotFailureUiMessage(String? _) =>
-    'No se pudo recuperar el turno. Inténtalo de nuevo.';
+String activeChatDesktopSnapshotFailureUiMessage(
+  String? rawError, {
+  String languageCode = 'es',
+}) => activeChatDesktopRecoveryUiMessage(rawError, languageCode: languageCode);
 
 const _activeChatDesktopFailureFallback =
     'No se pudo completar la respuesta. Inténtalo de nuevo.';
+const _activeChatDesktopFailureFallbackEn =
+    'The response could not be completed. Try again.';
 
 /// Longitud de causa que llega a la UI.
 const _activeChatDesktopFailureCauseLimit = 180;
@@ -118,7 +127,14 @@ const _activeChatDesktopFailureCauseScanLimit = 4096;
 /// Projects only the Gateway's official `message` cause. Free-form sibling
 /// fields can contain partial output, provider payloads, paths, or credentials.
 @visibleForTesting
-String activeChatDesktopEventFailureUiMessage(Object? rawMessage) {
+String activeChatDesktopEventFailureUiMessage(
+  Object? rawMessage, {
+  String languageCode = 'es',
+}) {
+  final english = languageCode.toLowerCase().startsWith('en');
+  final fallback = english
+      ? _activeChatDesktopFailureFallbackEn
+      : _activeChatDesktopFailureFallback;
   // Se inspecciona una ventana mucho mayor que la proyectada: acotar primero
   // partiría un identificador opaco justo en el límite y el fragmento restante
   // ya no alcanzaría `{24,}`, colándose como si fuera prosa.
@@ -126,19 +142,21 @@ String activeChatDesktopEventFailureUiMessage(Object? rawMessage) {
     rawMessage,
     _activeChatDesktopFailureCauseScanLimit,
   );
-  if (scanned == null) return _activeChatDesktopFailureFallback;
+  if (scanned == null) return fallback;
   final normalized = scanned.replaceAll(RegExp(r'\s+'), ' ').trim();
   final sensitive = RegExp(
     r'''(?:^|\s)(?:~[/\\]|/(?:home|users|root|data|storage|sdcard|private|var|tmp|etc)(?:[/\\]|\b))|[a-z]:[/\\]|https?://|\b(?:authorization|bearer|api[_ -]?key|token|password|passwd|secret|cookie|session[_ -]?id)\b|\b[A-Za-z0-9_+/=-]{24,}\b''',
     caseSensitive: false,
   );
   if (normalized.isEmpty || sensitive.hasMatch(normalized)) {
-    return _activeChatDesktopFailureFallback;
+    return fallback;
   }
   final projected = normalized.length <= _activeChatDesktopFailureCauseLimit
       ? normalized
       : normalized.substring(0, _activeChatDesktopFailureCauseLimit);
-  return 'No se pudo completar la respuesta: $projected';
+  return english
+      ? 'The response could not be completed: $projected'
+      : 'No se pudo completar la respuesta: $projected';
 }
 
 @visibleForTesting
@@ -148,23 +166,38 @@ String activeChatDesktopRecoveryDiagnostic(Object error) {
 }
 
 @visibleForTesting
-String activeChatBridgeErrorUiMessage(Object error) {
+String activeChatBridgeErrorUiMessage(
+  Object error, {
+  String languageCode = 'es',
+}) {
   final low = error.toString().toLowerCase();
+  final english = languageCode.toLowerCase().startsWith('en');
   if (low.contains('connection closed') ||
       low.contains('before full header') ||
       low.contains('connection reset') ||
       low.contains('connection refused') ||
       low.contains('socketexception')) {
+    if (english) {
+      return 'The local agent stopped during the response (often due to low '
+          'memory). Restart it and try again. If this repeats, use a smaller '
+          'model or give the device more RAM.';
+    }
     return 'El agente local se detuvo durante la respuesta (el proceso se '
         'cerró, normalmente por falta de memoria). Vuelve a arrancar el '
         'agente local y reintenta. Si se repite, usa un modelo más pequeño o '
         'da más RAM al dispositivo/emulador.';
   }
   if (low.contains('timeout') || low.contains('timed out')) {
+    if (english) {
+      return 'The local agent took too long to respond. The model may still '
+          'be loading; wait a few seconds and try again.';
+    }
     return 'El agente local tardó demasiado en responder. El modelo puede '
         'estar cargándose; espera unos segundos y reintenta.';
   }
-  return 'No se pudo completar la respuesta local. Reintenta.';
+  return english
+      ? 'The local response could not be completed. Try again.'
+      : 'No se pudo completar la respuesta local. Reintenta.';
 }
 
 const _sessionNotOwnedReason = 'SESSION_NOT_OWNED';
@@ -4048,6 +4081,8 @@ class ActiveChat {
   }
 
   final ApprovalPolicyService? _policy;
+  final String Function()? _appLanguageCode;
+  String get _desktopLanguageCode => _appLanguageCode?.call() ?? 'es';
   final VoidCallback _onTerminal;
   final VoidCallback? _onUnused;
   final Future<void> Function()? _beforeTerminalNotification;
@@ -7471,6 +7506,7 @@ class ActiveChat {
     @visibleForTesting Future<void> Function()? beforePrivacySnapshotLoad,
     @visibleForTesting Future<bool> Function()? historyHydrationAwaiter,
     ApprovalPolicyService? policy,
+    String Function()? appLanguageCode,
     void Function(String runId)? onRunStarted,
     Future<void> Function()? onForegroundKeepAlive,
     ValueChanged<int?>? onObservedFirstTokenLatency,
@@ -7525,6 +7561,7 @@ class ActiveChat {
        _transcriptPageSize = transcriptPageSizeForTesting,
        _notifications = notifications,
        _policy = policy,
+       _appLanguageCode = appLanguageCode,
        _onTerminal = onTerminal,
        _onUnused = onUnused,
        _beforeTerminalNotification = beforeTerminalNotification,
@@ -16764,7 +16801,12 @@ class ActiveChat {
       if (!submissionAttempted && sessionConfig.allowTransportFallback) {
         return fallback();
       } else {
-        _failRun(activeChatPromptFailureUiMessage(error));
+        _failRun(
+          activeChatPromptFailureUiMessage(
+            error,
+            languageCode: _desktopLanguageCode,
+          ),
+        );
         return false;
       }
     }
@@ -17418,7 +17460,12 @@ class ActiveChat {
       }
       if (_canRecoverTurn(turnEpoch)) {
         debugPrint(activeChatDesktopRecoveryDiagnostic(lastError));
-        _failRun(activeChatDesktopRecoveryUiMessage(lastError));
+        _failRun(
+          activeChatDesktopRecoveryUiMessage(
+            lastError,
+            languageCode: _desktopLanguageCode,
+          ),
+        );
       }
     } finally {
       if (gateway.isConnected) {
@@ -17563,7 +17610,12 @@ class ActiveChat {
         '[active-chat] snapshot recovery gave up kind=terminal_error attempts=$attempt',
       );
       debugPrint(activeChatDesktopRecoveryDiagnostic(lastError));
-      _failRun(activeChatDesktopRecoveryUiMessage(lastError));
+      _failRun(
+        activeChatDesktopRecoveryUiMessage(
+          lastError,
+          languageCode: _desktopLanguageCode,
+        ),
+      );
     }
   }
 
@@ -17782,7 +17834,10 @@ class ActiveChat {
           StateError('desktop recovery snapshot reported failure');
       debugPrint(activeChatDesktopRecoveryDiagnostic(failure));
       _failRun(
-        activeChatDesktopSnapshotFailureUiMessage(snapshot.inflight?.error),
+        activeChatDesktopSnapshotFailureUiMessage(
+          snapshot.inflight?.error,
+          languageCode: _desktopLanguageCode,
+        ),
       );
       return;
     }
@@ -17872,7 +17927,10 @@ class ActiveChat {
       _tagLatestUserForLocalError(projectionId);
       _messages.insert(0, {
         'role': 'assistant_error',
-        'content': activeChatDesktopRecoveryUiMessage(originalError),
+        'content': activeChatDesktopRecoveryUiMessage(
+          originalError,
+          languageCode: _desktopLanguageCode,
+        ),
         '_prompt': lastPrompt,
         _awaitingDurableTurnRecoveryKey: true,
         'partial': true,
@@ -17885,7 +17943,10 @@ class ActiveChat {
       _tagLatestUserForLocalError(projectionId);
       _messages.first = {
         'role': 'assistant_error',
-        'content': activeChatDesktopRecoveryUiMessage(originalError),
+        'content': activeChatDesktopRecoveryUiMessage(
+          originalError,
+          languageCode: _desktopLanguageCode,
+        ),
         '_prompt': lastPrompt,
         _awaitingDurableTurnRecoveryKey: true,
         'recoverable': true,
@@ -18051,7 +18112,10 @@ class ActiveChat {
     }
     if (stillCurrent()) {
       _failRun(
-        activeChatDesktopRecoveryUiMessage(originalError),
+        activeChatDesktopRecoveryUiMessage(
+          originalError,
+          languageCode: _desktopLanguageCode,
+        ),
         failureMetadata: const {_awaitingDurableTurnRecoveryKey: true},
       );
     }
@@ -18785,7 +18849,10 @@ class ActiveChat {
         if ((payload['status'] ?? '').toString().trim().toLowerCase() ==
             'error') {
           _failRun(
-            activeChatDesktopEventFailureUiMessage(payload['message']),
+            activeChatDesktopEventFailureUiMessage(
+              payload['message'],
+              languageCode: _desktopLanguageCode,
+            ),
             terminalText: null,
             terminalTextIsPartial: false,
             authoritativeTerminalOverride: true,
@@ -18813,7 +18880,12 @@ class ActiveChat {
         );
       case 'error':
         _clearDesktopCompactingIndicator();
-        _failRun(activeChatDesktopEventFailureUiMessage(payload['message']));
+        _failRun(
+          activeChatDesktopEventFailureUiMessage(
+            payload['message'],
+            languageCode: _desktopLanguageCode,
+          ),
+        );
     }
   }
 
@@ -20710,7 +20782,12 @@ class ActiveChat {
       }
     } catch (error) {
       if (_turnEpoch == turnEpoch) {
-        _failRun(activeChatBridgeErrorUiMessage(error));
+        _failRun(
+          activeChatBridgeErrorUiMessage(
+            error,
+            languageCode: _desktopLanguageCode,
+          ),
+        );
       }
     }
   }
@@ -26783,6 +26860,7 @@ class ActiveChatService {
       notifications: notifications,
       policy: policy,
       onTerminal: () => _onChatTerminal(key),
+      appLanguageCode: _prefs == null ? null : () => effectiveVoiceLang(_prefs),
       onUnused: () => _onChatUnused(key),
       beforeTerminalNotification: _maybeStopForeground,
       onRunStarted: (runId) => _onRunStarted(key, runId),

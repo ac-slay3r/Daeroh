@@ -6,8 +6,8 @@
 //
 // Replica exactamente la resolución de la UI: 'es'/'en' explícitos se
 // respetan; 'system' (el default) mira el idioma del dispositivo y cae a
-// español para cualquier idioma no soportado (mismo fallback que MaterialApp
-// con ARB base español). Contrato completo en
+// inglés para cualquier idioma no soportado (mismo fallback que MaterialApp).
+// Contrato completo en
 // docs/UPSTREAM_CONTRACT.md.
 import 'dart:ui' show Locale, PlatformDispatcher;
 
@@ -23,7 +23,7 @@ const String kAppLocalePrefKey = 'app_locale';
 ///
 /// - `app_locale == 'es' | 'en'` → tal cual, el dispositivo es irrelevante.
 /// - `'system'`, clave ausente o valor desconocido → según el idioma del
-///   dispositivo: inglés → `'en'`; cualquier otro (es, fr, de…) → `'es'`.
+///   dispositivo: español → `'es'`; cualquier otro (en, fr, de…) → `'en'`.
 ///
 /// [deviceLocale] existe solo para tests; en producción se usa el locale real
 /// del dispositivo.
@@ -31,5 +31,5 @@ String effectiveVoiceLang(SharedPreferences prefs, {Locale? deviceLocale}) {
   final pref = prefs.getString(kAppLocalePrefKey);
   if (pref == 'es' || pref == 'en') return pref!;
   final device = deviceLocale ?? PlatformDispatcher.instance.locale;
-  return device.languageCode.toLowerCase() == 'en' ? 'en' : 'es';
+  return device.languageCode.toLowerCase() == 'es' ? 'es' : 'en';
 }

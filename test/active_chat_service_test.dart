@@ -1852,6 +1852,56 @@ void main() {
     );
   });
 
+  test('Desktop recovery and event errors respect the app language', () {
+    const privateError = 'Bearer private-token';
+    expect(
+      activeChatDesktopRecoveryUiMessage(
+        StateError(privateError),
+        languageCode: 'en',
+      ),
+      'The turn could not be recovered. Try again.',
+    );
+    expect(
+      activeChatDesktopSnapshotFailureUiMessage(
+        privateError,
+        languageCode: 'en',
+      ),
+      'The turn could not be recovered. Try again.',
+    );
+    expect(
+      activeChatDesktopEventFailureUiMessage(privateError, languageCode: 'en'),
+      'The response could not be completed. Try again.',
+    );
+    expect(
+      activeChatDesktopEventFailureUiMessage(
+        'Model unavailable',
+        languageCode: 'en',
+      ),
+      'The response could not be completed: Model unavailable',
+    );
+  });
+
+  test('local-agent failure text follows the app language', () {
+    expect(
+      activeChatBridgeErrorUiMessage(
+        const SocketException('connection reset'),
+        languageCode: 'en',
+      ),
+      contains('The local agent stopped'),
+    );
+    expect(
+      activeChatBridgeErrorUiMessage(
+        TimeoutException('timed out'),
+        languageCode: 'en',
+      ),
+      contains('took too long'),
+    );
+    expect(
+      activeChatBridgeErrorUiMessage(StateError('private'), languageCode: 'en'),
+      'The local response could not be completed. Try again.',
+    );
+  });
+
   test('prompt admission uses localized structured reasons without unsafe advice', () {
     const expectedEs = <String, String>{
       'SESSION_NOT_OWNED':
