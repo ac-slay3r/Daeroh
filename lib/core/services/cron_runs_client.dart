@@ -14,6 +14,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../utils/transport_privacy.dart';
+import '../utils/private_http_client.dart';
 
 /// Result of a cron run-history fetch. Either a list of runs or a
 /// human-readable reason why history is unavailable.
@@ -46,7 +47,7 @@ class CronRunsClient {
   }) : baseUrl = TransportPrivacy.requireAllowed(
          '${useHttps ? 'https' : 'http'}://$host:$port',
        ),
-       _http = httpClientOverride ?? http.Client();
+       _http = PrivateHttpClient(httpClientOverride ?? http.Client());
 
   Future<String?> _getToken() async {
     if (_token != null) return _token;

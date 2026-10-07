@@ -236,7 +236,7 @@ void main() {
     final connection = SavedConnection(
       id: 'demo-node',
       label: 'Server',
-      host: 'hermes-demo.local',
+      host: '127.0.0.2',
       port: 8642,
       apiKey: '',
     );
@@ -385,9 +385,9 @@ void main() {
     tester,
   ) async {
     SharedPreferences.setMockInitialValues({
-      'native_voice_consent::http://hermes-demo.local:9119::profile=perfil-voz':
+      'native_voice_consent::http://127.0.0.2:9119::profile=perfil-voz':
           'accepted',
-      'native_voice_mode_v1::http://hermes-demo.local:9119::profile=perfil-voz':
+      'native_voice_mode_v1::http://127.0.0.2:9119::profile=perfil-voz':
           'server',
       'voice_sherpa_model': 'parakeet-v3',
     });
@@ -397,7 +397,7 @@ void main() {
     addTearDown(voice.dispose);
     final requests = <http.Request>[];
     final dashboard = DashboardClient(
-      host: 'hermes-demo.local',
+      host: '127.0.0.2',
       manualToken: 'test-token',
       httpClientOverride: MockClient((request) async {
         requests.add(request);
@@ -458,10 +458,10 @@ void main() {
     final connection = SavedConnection(
       id: 'demo-node',
       label: 'Server',
-      host: 'hermes-demo.local',
+      host: '127.0.0.2',
       port: 8642,
       apiKey: '',
-      dashboardUrl: 'http://hermes-demo.local:9119',
+      dashboardUrl: 'http://127.0.0.2:9119',
     );
 
     await tester.pumpWidget(
@@ -620,15 +620,15 @@ void main() {
     tester,
   ) async {
     SharedPreferences.setMockInitialValues({
-      'native_voice_consent::http://hermes-demo.local:9119': 'accepted',
-      'native_voice_mode_v1::http://hermes-demo.local:9119': 'server',
+      'native_voice_consent::http://127.0.0.2:9119': 'accepted',
+      'native_voice_mode_v1::http://127.0.0.2:9119': 'server',
     });
     FlutterSecureStorage.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
     final voice = VoiceService(prefs, SecureStorage());
     addTearDown(voice.dispose);
     final dashboard = DashboardClient(
-      host: 'hermes-demo.local',
+      host: '127.0.0.2',
       manualToken: 'test-token',
       httpClientOverride: MockClient((request) async {
         if (request.url.path == '/api/config/schema') {
@@ -665,10 +665,10 @@ void main() {
     final connection = SavedConnection(
       id: 'demo-node',
       label: 'Server',
-      host: 'hermes-demo.local',
+      host: '127.0.0.2',
       port: 8642,
       apiKey: '',
-      dashboardUrl: 'http://hermes-demo.local:9119',
+      dashboardUrl: 'http://127.0.0.2:9119',
       readOnly: true,
     );
 
@@ -703,25 +703,25 @@ void main() {
     tester,
   ) async {
     SharedPreferences.setMockInitialValues({
-      'native_voice_consent::http://auth.local:9119': 'accepted',
-      'native_voice_mode_v1::http://auth.local:9119': 'server',
+      'native_voice_consent::http://127.0.0.6:9119': 'accepted',
+      'native_voice_mode_v1::http://127.0.0.6:9119': 'server',
     });
     FlutterSecureStorage.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
     final voice = VoiceService(prefs, SecureStorage());
     addTearDown(voice.dispose);
     final dashboard = DashboardClient(
-      host: 'auth.local',
+      host: '127.0.0.6',
       httpClientOverride: MockClient((_) async => http.Response('{}', 401)),
     );
     addTearDown(dashboard.close);
     final connection = SavedConnection(
       id: 'auth',
       label: 'Server',
-      host: 'auth.local',
+      host: '127.0.0.6',
       port: 8642,
       apiKey: '',
-      dashboardUrl: 'http://auth.local:9119',
+      dashboardUrl: 'http://127.0.0.6:9119',
     );
 
     await tester.pumpWidget(
@@ -754,15 +754,15 @@ void main() {
     tester,
   ) async {
     SharedPreferences.setMockInitialValues({
-      'native_voice_consent::http://legacy.local:9119': 'accepted',
-      'native_voice_mode_v1::http://legacy.local:9119': 'server',
+      'native_voice_consent::http://127.0.0.7:9119': 'accepted',
+      'native_voice_mode_v1::http://127.0.0.7:9119': 'server',
     });
     FlutterSecureStorage.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
     final voice = VoiceService(prefs, SecureStorage());
     addTearDown(voice.dispose);
     final dashboard = DashboardClient(
-      host: 'legacy.local',
+      host: '127.0.0.7',
       manualToken: 'test-token',
       httpClientOverride: MockClient((_) async => http.Response('{}', 404)),
     );
@@ -770,10 +770,10 @@ void main() {
     final connection = SavedConnection(
       id: 'legacy',
       label: 'Hermes antiguo',
-      host: 'legacy.local',
+      host: '127.0.0.7',
       port: 8642,
       apiKey: '',
-      dashboardUrl: 'http://legacy.local:9119',
+      dashboardUrl: 'http://127.0.0.7:9119',
     );
 
     await tester.pumpWidget(
@@ -811,7 +811,7 @@ void main() {
       MockClient((_) async => http.Response('{}', 404)),
     );
     final dashboard = DashboardClient(
-      host: 'hermes-demo.local',
+      host: '127.0.0.2',
       manualToken: 'test-token',
       httpClientOverride: httpClient,
     );
@@ -819,10 +819,10 @@ void main() {
     final connection = SavedConnection(
       id: 'demo-node',
       label: 'Server',
-      host: 'hermes-demo.local',
+      host: '127.0.0.2',
       port: 8642,
       apiKey: '',
-      dashboardUrl: 'http://hermes-demo.local:9119',
+      dashboardUrl: 'http://127.0.0.2:9119',
     );
 
     await tester.pumpWidget(
@@ -846,8 +846,8 @@ void main() {
       HermesSpeechStreamEvidence.debugClear();
       addTearDown(HermesSpeechStreamEvidence.debugClear);
       SharedPreferences.setMockInitialValues({
-        'native_voice_consent::http://hermes-demo.local:9119': 'accepted',
-        'native_voice_mode_v1::http://hermes-demo.local:9119': 'server',
+        'native_voice_consent::http://127.0.0.2:9119': 'accepted',
+        'native_voice_mode_v1::http://127.0.0.2:9119': 'server',
       });
       FlutterSecureStorage.setMockInitialValues({});
       final prefs = await SharedPreferences.getInstance();
@@ -872,11 +872,11 @@ void main() {
         sanitizeHermesServerVoiceConfig(config, schema),
       );
       HermesSpeechStreamEvidence.notePcmObserved(
-        'http://hermes-demo.local:9119',
+        'http://127.0.0.2:9119',
         ttsConfigurationSignature: signatureA,
       );
       final dashboard = DashboardClient(
-        host: 'hermes-demo.local',
+        host: '127.0.0.2',
         manualToken: 'test-token',
         httpClientOverride: MockClient((request) async {
           if (request.url.path == '/api/config/schema') {
@@ -896,10 +896,10 @@ void main() {
       final connection = SavedConnection(
         id: 'demo-node',
         label: 'Server',
-        host: 'hermes-demo.local',
+        host: '127.0.0.2',
         port: 8642,
         apiKey: '',
-        dashboardUrl: 'http://hermes-demo.local:9119',
+        dashboardUrl: 'http://127.0.0.2:9119',
       );
 
       await tester.pumpWidget(
@@ -966,7 +966,7 @@ void main() {
     final voice = VoiceService(prefs, SecureStorage());
     addTearDown(voice.dispose);
     final dashboard = DashboardClient(
-      host: 'hermes-demo.local',
+      host: '127.0.0.2',
       manualToken: 'test-token',
       httpClientOverride: MockClient((request) async {
         if (request.method == 'GET' && request.url.path == '/api/config') {
@@ -1000,10 +1000,10 @@ void main() {
     final connection = SavedConnection(
       id: 'demo-node',
       label: 'Server',
-      host: 'hermes-demo.local',
+      host: '127.0.0.2',
       port: 8642,
       apiKey: '',
-      dashboardUrl: 'http://hermes-demo.local:9119',
+      dashboardUrl: 'http://127.0.0.2:9119',
     );
 
     await tester.pumpWidget(
@@ -1028,11 +1028,11 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('voice_mode_server_option')));
     await tester.pumpAndSettle();
     expect(
-      prefs.getString('native_voice_consent::http://hermes-demo.local:9119'),
+      prefs.getString('native_voice_consent::http://127.0.0.2:9119'),
       'accepted',
     );
     expect(
-      prefs.getString('native_voice_mode_v1::http://hermes-demo.local:9119'),
+      prefs.getString('native_voice_mode_v1::http://127.0.0.2:9119'),
       'server',
     );
     expect(
@@ -1070,7 +1070,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(voice.settings.sttEngine, SttEngineKind.hermesServer);
     expect(
-      prefs.getString('native_voice_mode_v1::http://hermes-demo.local:9119'),
+      prefs.getString('native_voice_mode_v1::http://127.0.0.2:9119'),
       'server',
       reason: 'cambiar Dictado no modifica Modo Voz',
     );
@@ -1085,11 +1085,11 @@ void main() {
     await tester.tap(phoneMode);
     await tester.pumpAndSettle();
     expect(
-      prefs.getString('native_voice_mode_v1::http://hermes-demo.local:9119'),
+      prefs.getString('native_voice_mode_v1::http://127.0.0.2:9119'),
       'phone',
     );
     expect(
-      prefs.getString('native_voice_consent::http://hermes-demo.local:9119'),
+      prefs.getString('native_voice_consent::http://127.0.0.2:9119'),
       'accepted',
       reason: 'cambiar de motor no reescribe el consentimiento histórico',
     );
@@ -1113,7 +1113,7 @@ void main() {
     expect(voice.settings.sttEngine, SttEngineKind.sherpaLive);
     expect(voice.settings.sherpaModel, SherpaModelKind.parakeetV3);
     expect(
-      prefs.getString('native_voice_mode_v1::http://hermes-demo.local:9119'),
+      prefs.getString('native_voice_mode_v1::http://127.0.0.2:9119'),
       'phone',
     );
     expect(

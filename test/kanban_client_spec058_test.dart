@@ -10,7 +10,7 @@ void main() {
   SavedConnection connection() => SavedConnection(
     id: 'kanban-spec058',
     label: 'QA',
-    host: 'hermes.local',
+    host: '127.0.0.1',
     port: 8642,
     apiKey: 'gateway-key',
     useHttps: true,
@@ -18,7 +18,7 @@ void main() {
 
   test('legacy sin /boards conserva fallback de board activo', () async {
     final dashboard = DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       manualToken: 'session-token',
       httpClientOverride: MockClient((request) async {
         expect(request.url.path, '/api/plugins/kanban/boards');
@@ -36,7 +36,7 @@ void main() {
     () async {
       final requests = <http.Request>[];
       final dashboard = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         manualToken: 'session-token',
         httpClientOverride: MockClient((request) async {
           requests.add(request);

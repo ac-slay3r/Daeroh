@@ -12,7 +12,7 @@ import 'package:http/testing.dart';
 SavedConnection _connection() => SavedConnection(
   id: 't102-cron-legacy',
   label: 'T102 Cron legacy',
-  host: 'hermes.local',
+  host: '127.0.0.1',
   port: 8642,
   apiKey: 'gateway-key',
   useHttps: true,
@@ -39,7 +39,7 @@ void main() {
       'enabled': true,
     };
     final client = DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       port: 9119,
       manualToken: 'dashboard-token',
       httpClientOverride: MockClient((request) async {

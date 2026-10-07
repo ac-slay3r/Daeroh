@@ -9,6 +9,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import '../utils/private_http_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
@@ -1348,7 +1349,7 @@ class ApiClient {
              ? baseUrl.substring(0, baseUrl.length - 1)
              : baseUrl,
        ),
-       _http = httpClient ?? http.Client();
+       _http = PrivateHttpClient(httpClient ?? http.Client());
 
   Map<String, String> get _headers => {
     'Authorization': 'Bearer $_apiKey',
@@ -2506,7 +2507,7 @@ class DashboardClient {
        _manualToken = manualToken,
        _basicUser = basicUser,
        _basicPass = basicPass,
-       _http = httpClientOverride ?? http.Client(),
+       _http = PrivateHttpClient(httpClientOverride ?? http.Client()),
        _now = nowOverride ?? DateTime.now;
 
   /// Cliente que respeta el modo de auth de la instancia, leyendo los

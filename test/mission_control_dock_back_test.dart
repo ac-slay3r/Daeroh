@@ -20,7 +20,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 final _connection = SavedConnection(
   id: 'mission-back-qa',
   label: 'Mission back QA',
-  host: 'hermes.local',
+  host: '127.0.0.1',
   port: 8642,
   apiKey: 'test-only',
 );

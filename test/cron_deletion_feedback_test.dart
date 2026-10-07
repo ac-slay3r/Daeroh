@@ -19,7 +19,7 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
 
     final client = DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       port: 9119,
       manualToken: 'dashboard-token',
       httpClientOverride: MockClient((request) async {
@@ -54,7 +54,7 @@ void main() {
           connection: SavedConnection(
             id: 'demo',
             label: 'Demo',
-            host: 'hermes.local',
+            host: '127.0.0.1',
             port: 8642,
             apiKey: 'gateway-key',
             useHttps: true,

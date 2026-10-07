@@ -51,6 +51,9 @@ class _WsTestServer {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  // The WebSocket handshake now uses a dedicated HttpClient with redirects
+  // disabled. Flutter's HTTP-400 test override would block this loopback server.
+  HttpOverrides.global = null;
 
   test('error público STT nunca incorpora el body remoto', () {
     final message = serverSttPublicErrorMessage({

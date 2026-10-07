@@ -18,7 +18,7 @@ void main() {
       var activeTts = 'edge';
       final requests = <http.Request>[];
       final dashboard = DashboardClient(
-        host: 'demo.local',
+        host: '127.0.0.4',
         manualToken: 'test-token',
         httpClientOverride: MockClient((request) async {
           requests.add(request);
@@ -216,7 +216,7 @@ void main() {
     (tester) async {
       final requests = <http.Request>[];
       final dashboard = DashboardClient(
-        host: 'hermes-node.local',
+        host: '127.0.0.5',
         manualToken: 'test-token',
         httpClientOverride: MockClient((request) async {
           requests.add(request);
@@ -314,7 +314,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final dashboard = DashboardClient(
-      host: 'demo.local',
+      host: '127.0.0.4',
       manualToken: 'test-token',
       httpClientOverride: MockClient((request) async {
         if (request.url.path == '/api/config') {
@@ -869,7 +869,7 @@ DashboardClient _schemaDashboard({
   required Map<String, dynamic> config,
   required Map<String, dynamic> fields,
 }) => DashboardClient(
-  host: 'demo.local',
+  host: '127.0.0.4',
   manualToken: 'test-token',
   httpClientOverride: MockClient((request) async {
     requests.add(request);

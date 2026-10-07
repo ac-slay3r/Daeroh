@@ -26,6 +26,7 @@ import '../secure_storage.dart';
 import '../shared_gateway_pool.dart';
 import '../tui_gateway_client.dart';
 import '../../utils/transport_privacy.dart';
+import '../../utils/private_http_client.dart';
 import 'bot_mode_background.dart';
 import 'notification_delivery_store.dart';
 import 'notification_mute_store.dart';
@@ -1475,7 +1476,7 @@ class _HermesTaskHandler extends TaskHandler {
   /// Cliente HTTP REUTILIZADO entre ticks: sin él, cada sondeo abría una
   /// conexión TCP nueva por run vigilada cada 30 s (handshake con la radio
   /// despierta). Se cierra en [onDestroy].
-  final http.Client _http = http.Client();
+  final http.Client _http = PrivateHttpClient(http.Client());
   final BackgroundDashboardClientCache _dashboardClients =
       BackgroundDashboardClientCache();
   final BackgroundDiscoveryBackoff _discoveryBackoff =

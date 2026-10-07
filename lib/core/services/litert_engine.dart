@@ -17,6 +17,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../utils/transport_privacy.dart';
+import '../utils/private_http_client.dart';
 
 /// URL de descarga/instalación de OlliteRT (releases de GitHub).
 ///
@@ -94,7 +95,7 @@ class OlliteRtClient {
     : baseUrl = TransportPrivacy.requireAllowed(
         (baseUrl ?? kOlliteRtDefaultBaseUrl).replaceAll(RegExp(r'/+$'), ''),
       ),
-      _http = httpClient ?? http.Client();
+      _http = PrivateHttpClient(httpClient ?? http.Client());
 
   /// Base SIN `/v1` ni barra final, p. ej. `http://127.0.0.1:8000`.
   final String baseUrl;

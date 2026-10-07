@@ -16,6 +16,7 @@ import 'package:uuid/uuid.dart';
 
 import '../bridge_client.dart';
 import '../connection_manager.dart';
+import '../../utils/private_http_client.dart';
 import '../platform/android_apps.dart';
 import 'agent_runtime.dart';
 
@@ -24,7 +25,7 @@ class LocalTermuxAgentProvider implements AgentRuntimeProvider {
   final http.Client _http;
 
   LocalTermuxAgentProvider({required this.apps, http.Client? client})
-    : _http = client ?? http.Client();
+    : _http = PrivateHttpClient(client ?? http.Client());
 
   @override
   String get id => 'local-termux';

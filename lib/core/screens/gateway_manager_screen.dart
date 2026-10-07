@@ -13,6 +13,7 @@ import '../../l10n/app_localizations.dart';
 import '../config/flavor.dart';
 import '../services/connection_manager.dart';
 import '../utils/transport_privacy.dart';
+import '../utils/private_http_client.dart';
 import '../theme/app_theme.dart';
 import '../widgets/accent_card.dart';
 import '../widgets/general_dock_shell.dart';
@@ -116,7 +117,7 @@ class _GatewayManagerScreenState extends State<GatewayManagerScreen> {
   static Future<InstanceStatus> _fetchStatus(SavedConnection conn) async {
     try {
       final base = TransportPrivacy.requireAllowed(conn.baseUrl);
-      final client = http.Client();
+      final client = PrivateHttpClient(http.Client());
       try {
         final res = await client
             .get(

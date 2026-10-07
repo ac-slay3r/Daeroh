@@ -23,7 +23,7 @@ import 'support/spec070_fixtures.dart';
 final _connection = SavedConnection(
   id: 'mission-bots-discovery',
   label: 'Mission QA',
-  host: 'hermes.local',
+  host: '127.0.0.1',
   port: 8642,
   apiKey: 'test-only',
   readOnly: true,

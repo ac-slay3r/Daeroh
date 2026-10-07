@@ -47,15 +47,16 @@ const _kObservedTtftKey = 'active_chat_observed_ttft_v1';
 SavedConnection _conn({String id = 'conn-1'}) => SavedConnection(
   id: id,
   label: 'Test',
-  host: 'hermes.local',
+  host: '127.0.0.1',
   port: 8642,
+  kind: InstanceKind.homelab,
   apiKey: 'test-key',
 );
 
 class _CapturingRunApi extends ApiClient {
   _CapturingRunApi()
     : super(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'test-key',
         httpClient: MockClient((_) async => http.Response('', 500)),
       );
@@ -2501,7 +2502,7 @@ void main() {
       );
       var runCalls = 0;
       final api = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'test-key',
         httpClient: MockClient((request) async {
           if (request.url.path == '/v1/runs') runCalls++;
@@ -2819,7 +2820,7 @@ void main() {
       notifications: null,
       onTerminal: () {},
       api: ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'test-key',
         httpClient: _gateway(events: '', finalMessages: const []),
       ),
@@ -2845,7 +2846,7 @@ void main() {
     addTearDown(service.dispose);
     final connection = _conn(id: 'conn-repin');
     ApiClient api() => ApiClient(
-      baseUrl: 'http://hermes.local:8642',
+      baseUrl: 'http://127.0.0.1:8642',
       apiKey: 'test-key',
       httpClient: _gateway(events: '', finalMessages: const []),
     );
@@ -2927,7 +2928,7 @@ void main() {
         sessionProfile: 'default',
         initialStoredSessionId: 'stored-desktop-route',
         api: ApiClient(
-          baseUrl: 'http://hermes.local:8642',
+          baseUrl: 'http://127.0.0.1:8642',
           apiKey: 'test-key',
           httpClient: _gateway(events: '', finalMessages: const []),
         ),
@@ -3253,7 +3254,7 @@ void main() {
       sessionId: 'sess-activity',
       sessionTitle: 'Actividad',
       api: ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'test-key',
         httpClient: _gateway(events: '', finalMessages: const []),
       ),
@@ -3300,7 +3301,7 @@ void main() {
         sessionSnapshot: _widgetSession(),
         selectedProvider: 'openai-codex',
         api: ApiClient(
-          baseUrl: 'http://hermes.local:8642',
+          baseUrl: 'http://127.0.0.1:8642',
           apiKey: 'test-key',
           httpClient: _gateway(events: '', finalMessages: const []),
         ),
@@ -3348,7 +3349,7 @@ void main() {
           sessionId: 'mob-empty-draft',
           sessionTitle: 'Nueva conversación',
           api: ApiClient(
-            baseUrl: 'http://hermes.local:8642',
+            baseUrl: 'http://127.0.0.1:8642',
             apiKey: 'test-key',
             httpClient: _gateway(events: '', finalMessages: const []),
           ),
@@ -3387,7 +3388,7 @@ void main() {
         sessionTitle: 'Estados',
         sessionSnapshot: _widgetSession(),
         api: ApiClient(
-          baseUrl: 'http://hermes.local:8642',
+          baseUrl: 'http://127.0.0.1:8642',
           apiKey: 'test-key',
           httpClient: _gateway(
             events: _sse([
@@ -3468,7 +3469,7 @@ void main() {
           sessionTitle: 'Vieja',
           sessionSnapshot: _widgetSession(),
           api: ApiClient(
-            baseUrl: 'http://hermes.local:8642',
+            baseUrl: 'http://127.0.0.1:8642',
             apiKey: 'test-key',
             httpClient: _gateway(events: '', finalMessages: const []),
           ),
@@ -3503,7 +3504,7 @@ void main() {
         sessionTitle: 'Error',
         sessionSnapshot: _widgetSession(),
         api: ApiClient(
-          baseUrl: 'http://hermes.local:8642',
+          baseUrl: 'http://127.0.0.1:8642',
           apiKey: 'test-key',
           httpClient: _gateway(
             events: _sse([
@@ -3988,7 +3989,7 @@ void main() {
       var nowMicros = 1000000;
       final observed = <int?>[];
       final api = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'test-key',
         httpClient: _gateway(
           beforeEvents: () => nowMicros = 1840000,
@@ -4034,7 +4035,7 @@ void main() {
           '- lista estable\n'
           '- café e\u0301 👩‍💻';
       final api = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'test-key',
         httpClient: _gateway(
           events: _sse([
@@ -4088,7 +4089,7 @@ void main() {
       () async {
         const response = 'Respuesta sin animacion';
         final api = ApiClient(
-          baseUrl: 'http://hermes.local:8642',
+          baseUrl: 'http://127.0.0.1:8642',
           apiKey: 'test-key',
           httpClient: _gateway(
             events: _sse([
@@ -4137,7 +4138,7 @@ void main() {
       () async {
         final hits = <String>[];
         final api = ApiClient(
-          baseUrl: 'http://hermes.local:8642',
+          baseUrl: 'http://127.0.0.1:8642',
           apiKey: 'test-key',
           httpClient: _gateway(
             hitLog: hits,
@@ -4256,7 +4257,7 @@ void main() {
           sessionId: 'sess-1',
           sessionTitle: 'Carrera terminal',
           api: ApiClient(
-            baseUrl: 'http://hermes.local:8642',
+            baseUrl: 'http://127.0.0.1:8642',
             apiKey: 'test-key',
             httpClient: httpClient,
           ),
@@ -4298,7 +4299,7 @@ void main() {
       List<String>? hits,
     }) {
       final api = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'k',
         httpClient: _gateway(
           hitLog: hits,
@@ -4365,7 +4366,7 @@ void main() {
         final policy = await policyWith(ApprovalMode.yolo);
         final race = _ApprovalRaceClient();
         final api = ApiClient(
-          baseUrl: 'http://hermes.local:8642',
+          baseUrl: 'http://127.0.0.1:8642',
           apiKey: 'k',
           httpClient: race,
         );
@@ -4411,7 +4412,7 @@ void main() {
       final policy = await policyWith(ApprovalMode.readOnly);
       Map<String, dynamic>? approvalBody;
       final api = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'k',
         httpClient: MockClient((request) async {
           if (request.method == 'POST' && request.url.path == '/v1/runs') {
@@ -4506,7 +4507,7 @@ void main() {
         final inAppNotices = <InAppNotice>[];
         final noticeSub = notifications.inAppNotices.listen(inAppNotices.add);
         final api = ApiClient(
-          baseUrl: 'http://hermes.local:8642',
+          baseUrl: 'http://127.0.0.1:8642',
           apiKey: 'k',
           httpClient: _gateway(
             events: _sse([
@@ -4590,7 +4591,7 @@ void main() {
   group('ActiveChat.reconcileAfterResume', () {
     ActiveChat chatWith(List<Map<String, dynamic>> serverMessages) {
       final api = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'k',
         httpClient: _gateway(events: '', finalMessages: serverMessages),
       );
@@ -4607,7 +4608,7 @@ void main() {
 
     ActiveChat chatWithLoader(StoredSessionMessageLoader loader) {
       final api = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'k',
         httpClient: MockClient((_) async => http.Response('not found', 404)),
       );
@@ -4718,7 +4719,7 @@ void main() {
           sessionTitle: 'Resume cache',
           sessionProfile: 'default',
           api: ApiClient(
-            baseUrl: 'http://hermes.local:8642',
+            baseUrl: 'http://127.0.0.1:8642',
             apiKey: 'k',
             httpClient: MockClient(
               (_) async => http.Response('not found', 404),
@@ -4969,7 +4970,7 @@ void main() {
       final oldGet = Completer<http.Response>();
       final streamGate = Completer<http.Response>();
       final api = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'k',
         httpClient: MockClient((request) async {
           if (request.method == 'GET' &&
@@ -5086,7 +5087,7 @@ void main() {
             sessionTitle: key,
             sessionProfile: profile,
             api: ApiClient(
-              baseUrl: 'http://hermes.local:8642',
+              baseUrl: 'http://127.0.0.1:8642',
               apiKey: 'k',
               httpClient: MockClient(
                 (_) async => http.Response('not found', 404),
@@ -5228,7 +5229,7 @@ void main() {
           sessionTitle: 'Old binding',
           sessionProfile: 'default',
           api: ApiClient(
-            baseUrl: 'http://hermes.local:8642',
+            baseUrl: 'http://127.0.0.1:8642',
             apiKey: 'k',
             httpClient: MockClient(
               (_) async => http.Response('not found', 404),
@@ -5269,7 +5270,7 @@ void main() {
           sessionTitle: 'Replacement binding',
           sessionProfile: 'default',
           api: ApiClient(
-            baseUrl: 'http://hermes.local:8642',
+            baseUrl: 'http://127.0.0.1:8642',
             apiKey: 'k',
             httpClient: MockClient(
               (_) async => http.Response('not found', 404),
@@ -5326,7 +5327,7 @@ void main() {
         sessionTitle: 'Compacting',
         sessionProfile: 'default',
         api: ApiClient(
-          baseUrl: 'http://hermes.local:8642',
+          baseUrl: 'http://127.0.0.1:8642',
           apiKey: 'k',
           httpClient: MockClient((_) async => http.Response('not found', 404)),
         ),

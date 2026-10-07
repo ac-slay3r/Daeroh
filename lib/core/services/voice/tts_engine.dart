@@ -13,6 +13,7 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:http/http.dart' as http;
 
 import '../../utils/transport_privacy.dart';
+import '../../utils/private_http_client.dart';
 
 import 'package:path_provider/path_provider.dart';
 
@@ -1208,7 +1209,7 @@ class ElevenLabsTtsEngine implements TtsEngine {
     http.Client? client,
     TtsAudioPlayback? playback,
     TtsAudioPlaybackFactory? playbackFactory,
-  }) : _http = client ?? http.Client(),
+  }) : _http = PrivateHttpClient(client ?? http.Client()),
        _player =
            playback ?? _resolveTtsPlaybackFactory(null, playbackFactory)(),
        _playbackFactory = _resolveTtsPlaybackFactory(playback, playbackFactory);
@@ -1384,7 +1385,7 @@ class KokoroTtsSetup {
   }) async {
     final baseUrl = normalizeBaseUrl(address: address, port: port);
     final ownClient = client == null;
-    final httpClient = client ?? http.Client();
+    final httpClient = PrivateHttpClient(client ?? http.Client());
     try {
       final response = await httpClient
           .get(
@@ -1463,7 +1464,7 @@ class OpenAiStreamingTtsEngine implements TtsEngine {
     TtsAudioPlayback? playback,
     TtsAudioPlaybackFactory? playbackFactory,
   }) : baseUrl = TransportPrivacy.requireAllowed(baseUrl.trim()),
-       _http = client ?? http.Client(),
+       _http = PrivateHttpClient(client ?? http.Client()),
        _playbackFactory = _resolveTtsPlaybackFactory(playback, playbackFactory),
        _player =
            playback ?? _resolveTtsPlaybackFactory(null, playbackFactory)();
@@ -1764,7 +1765,7 @@ class CustomHttpTtsEngine implements TtsEngine {
     TtsAudioPlayback? playback,
     TtsAudioPlaybackFactory? playbackFactory,
   }) : url = _validateUrl(url),
-       _http = client ?? http.Client(),
+       _http = PrivateHttpClient(client ?? http.Client()),
        _player =
            playback ?? _resolveTtsPlaybackFactory(null, playbackFactory)(),
        _playbackFactory = _resolveTtsPlaybackFactory(playback, playbackFactory);

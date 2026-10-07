@@ -17,6 +17,7 @@ import 'dart:math' show Random, min;
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/io.dart';
+import '../utils/private_websocket_client.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models/command_descriptor.dart';
@@ -1604,6 +1605,7 @@ class TuiGatewayClient
         IOWebSocketChannel.connect(
           uri,
           headers: auth.headers,
+          customClient: privateWebSocketHttpClient,
           pingInterval: const Duration(seconds: 20),
           connectTimeout: const Duration(seconds: 10),
         );

@@ -30,6 +30,16 @@ void main() {
       );
     });
 
+    test('proveedor OpenAI-compatible no confía en sufijos DNS privados', () {
+      for (final host in ['provider.local', 'provider.ts.net', 'provider']) {
+        expect(
+          () => normalizeExternalProviderUrl('http://$host:11434'),
+          throwsArgumentError,
+          reason: host,
+        );
+      }
+    });
+
     test('OlliteRT bloquea HTTP público antes de crear el cliente', () {
       expect(
         () => OlliteRtClient(
@@ -44,6 +54,16 @@ void main() {
       expect(
         () => ServerSttEngine(
           baseUrl: 'ws://stt.example.com:9123',
+          token: 'must-stay-local',
+        ),
+        throwsArgumentError,
+      );
+    });
+
+    test('STT remoto no envía tokens a un nombre MagicDNS sin TLS', () {
+      expect(
+        () => ServerSttEngine(
+          baseUrl: 'ws://stt.ts.net:9123',
           token: 'must-stay-local',
         ),
         throwsArgumentError,
