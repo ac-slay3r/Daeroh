@@ -1501,7 +1501,7 @@ HostedGroupRoom _mixedMemberRoom({int latestSeq = 0}) =>
 final _connection = SavedConnection(
   id: 'screen-connection',
   label: 'Screen',
-  host: 'localhost',
+  host: '127.0.0.1',
   port: 8642,
   apiKey: 'unused',
 );

@@ -28,36 +28,36 @@ void main() {
 
     test('quita varias barras finales', () {
       expect(
-        normalizeExternalProviderUrl('http://host:1234///'),
-        'http://host:1234',
+        normalizeExternalProviderUrl('http://127.0.0.1:1234///'),
+        'http://127.0.0.1:1234',
       );
     });
 
     test('conserva el sufijo /v1 de la URL canónica', () {
       expect(
-        normalizeExternalProviderUrl('http://host:11434/v1'),
-        'http://host:11434/v1',
+        normalizeExternalProviderUrl('http://127.0.0.1:11434/v1'),
+        'http://127.0.0.1:11434/v1',
       );
     });
 
     test('conserva /v1 y quita solo la barra final', () {
       expect(
-        normalizeExternalProviderUrl('http://host:11434/v1/'),
-        'http://host:11434/v1',
+        normalizeExternalProviderUrl('http://127.0.0.1:11434/v1/'),
+        'http://127.0.0.1:11434/v1',
       );
     });
 
     test('respeta rutas que no terminan en /v1', () {
       expect(
-        normalizeExternalProviderUrl('http://host:1234/openai'),
-        'http://host:1234/openai',
+        normalizeExternalProviderUrl('http://127.0.0.1:1234/openai'),
+        'http://127.0.0.1:1234/openai',
       );
     });
 
     test('trim de espacios', () {
       expect(
-        normalizeExternalProviderUrl('  http://host:1234  '),
-        'http://host:1234',
+        normalizeExternalProviderUrl('  http://127.0.0.1:1234  '),
+        'http://127.0.0.1:1234',
       );
     });
 
@@ -68,15 +68,15 @@ void main() {
 
   group('externalProviderBaseUrlCandidates', () {
     test('prueba la raíz y luego su endpoint OpenAI compatible', () {
-      expect(externalProviderBaseUrlCandidates('http://host:11434'), [
-        'http://host:11434',
-        'http://host:11434/v1',
+      expect(externalProviderBaseUrlCandidates('http://127.0.0.1:11434'), [
+        'http://127.0.0.1:11434',
+        'http://127.0.0.1:11434/v1',
       ]);
     });
 
     test('no duplica /v1 cuando ya forma parte de la URL', () {
-      expect(externalProviderBaseUrlCandidates('http://host:8000/v1'), [
-        'http://host:8000/v1',
+      expect(externalProviderBaseUrlCandidates('http://127.0.0.1:8000/v1'), [
+        'http://127.0.0.1:8000/v1',
       ]);
     });
   });

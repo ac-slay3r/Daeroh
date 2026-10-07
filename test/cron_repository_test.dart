@@ -10,7 +10,7 @@ import 'package:http/testing.dart';
 void main() {
   test('bot routine create and rename retain owning profile and canonical delivery', () async {
     final requests = <http.Request>[];
-    final client = DashboardClient(host: 'hermes.local', manualToken: 'token', httpClientOverride: MockClient((request) async {
+    final client = DashboardClient(host: '127.0.0.1', manualToken: 'token', httpClientOverride: MockClient((request) async {
       requests.add(request);
       return http.Response(jsonEncode({'id': 'routine', 'name': 'ok'}), 200);
     }));
@@ -53,7 +53,7 @@ void main() {
     test('legacy disabled job resumes instead of pausing again', () async {
       final requests = <Uri>[];
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         manualToken: 'token',
         httpClientOverride: MockClient((request) async {
           requests.add(request.url);
@@ -118,7 +118,7 @@ void main() {
     'repository consumes dynamic targets, blueprints and run sessions',
     () async {
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         manualToken: 'token',
         httpClientOverride: MockClient((request) async {
           switch (request.url.path) {
@@ -208,7 +208,7 @@ void main() {
     () async {
       final requests = <Uri>[];
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         manualToken: 'token',
         httpClientOverride: MockClient((request) async {
           requests.add(request.url);
@@ -259,7 +259,7 @@ void main() {
     () async {
       final requestedProfiles = <String?>[];
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         manualToken: 'token',
         httpClientOverride: MockClient((request) async {
           if (request.method != 'GET' || request.url.path != '/api/cron/jobs') {

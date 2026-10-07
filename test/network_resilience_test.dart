@@ -28,7 +28,7 @@ import 'support/in_memory_compression_restore_storage.dart';
 SavedConnection _conn() => SavedConnection(
   id: 'conn-1',
   label: 'Test',
-  host: 'hermes.local',
+  host: '127.0.0.1',
   port: 8642,
   apiKey: 'test-key',
 );
@@ -52,7 +52,7 @@ void main() {
           return http.Response('not found', 404);
         });
         final api = ApiClient(
-          baseUrl: 'http://hermes.local:8642',
+          baseUrl: 'http://127.0.0.1:8642',
           apiKey: 'k',
           httpClient: client,
         );
@@ -117,7 +117,7 @@ void main() {
           return http.Response('not found', 404);
         });
         final api = ApiClient(
-          baseUrl: 'http://hermes.local:8642',
+          baseUrl: 'http://127.0.0.1:8642',
           apiKey: 'k',
           httpClient: client,
         );
@@ -187,7 +187,7 @@ void main() {
         return http.Response('not found', 404);
       });
       final api = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'k',
         httpClient: client,
       );
@@ -222,7 +222,7 @@ void main() {
       '1b. respuesta 503 al lanzar el run incluye el código en el mensaje',
       () async {
         final api = ApiClient(
-          baseUrl: 'http://hermes.local:8642',
+          baseUrl: 'http://127.0.0.1:8642',
           apiKey: 'k',
           httpClient: MockClient(
             (request) async => http.Response('service overloaded', 503),
@@ -296,7 +296,7 @@ void main() {
 
   group('Bridge — resiliencia de red', () {
     BridgeClient bridge(MockClient client) => BridgeClient(
-      baseUrl: 'http://hermes.local:9131',
+      baseUrl: 'http://127.0.0.1:9131',
       token: 'bridge-token',
       httpClient: client,
     );

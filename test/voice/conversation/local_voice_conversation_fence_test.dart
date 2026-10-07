@@ -221,14 +221,14 @@ Future<_Harness> _harness() async {
     connection: SavedConnection(
       id: 'voice-fence',
       label: 'Test',
-      host: 'hermes.test',
+      host: '127.0.0.3',
       port: 8642,
       apiKey: 'test-key',
     ),
     sessionId: 'visible-session',
     sessionTitle: 'Voz',
     api: ApiClient(
-      baseUrl: 'http://hermes.test:8642',
+      baseUrl: 'http://127.0.0.3:8642',
       apiKey: 'test-key',
       httpClient: gateway,
     ),

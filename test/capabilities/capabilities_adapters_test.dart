@@ -9,7 +9,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 DashboardClient _client(List<http.Request> seen) => DashboardClient(
-  host: 'hermes.local',
+  host: '127.0.0.1',
   port: 9119,
   manualToken: 'dashboard-token',
   httpClientOverride: MockClient((request) async {

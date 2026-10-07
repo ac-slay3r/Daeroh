@@ -490,7 +490,7 @@ class _FakeGateway extends http.BaseClient {
 SavedConnection _connection() => SavedConnection(
   id: 'voice-local-controller',
   label: 'Test',
-  host: 'hermes.test',
+  host: '127.0.0.3',
   port: 8642,
   apiKey: String.fromCharCodes(const [116, 101, 115, 116]),
 );
@@ -692,7 +692,7 @@ Future<_Harness> _harness({
     sessionId: 'visible-session',
     sessionTitle: 'Voz',
     api: ApiClient(
-      baseUrl: 'http://hermes.test:8642',
+      baseUrl: 'http://127.0.0.3:8642',
       apiKey: 'test-key',
       httpClient: gateway,
     ),
@@ -741,7 +741,7 @@ void main() {
         sessionId: 'remote-voice-no-live-mutation',
         sessionTitle: 'Remote voice queue',
         api: ApiClient(
-          baseUrl: 'http://hermes.test:8642',
+          baseUrl: 'http://127.0.0.3:8642',
           apiKey: String.fromCharCodes(const [107]),
           httpClient: rest,
         ),
@@ -818,7 +818,7 @@ void main() {
         sessionId: 'remote-voice-no-rest',
         sessionTitle: 'Remote voice',
         api: ApiClient(
-          baseUrl: 'http://hermes.test:8642',
+          baseUrl: 'http://127.0.0.3:8642',
           apiKey: String.fromCharCodes(const [107]),
           httpClient: httpGateway,
         ),
@@ -1700,7 +1700,7 @@ void main() {
         sessionId: 'second-visible-session',
         sessionTitle: 'Segundo chat',
         api: ApiClient(
-          baseUrl: 'http://hermes.test:8642',
+          baseUrl: 'http://127.0.0.3:8642',
           apiKey: 'test-key',
           httpClient: h.gateway,
         ),

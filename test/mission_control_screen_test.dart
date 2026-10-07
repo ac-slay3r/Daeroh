@@ -33,7 +33,7 @@ import 'support/fake_bot_chat_title_lookup.dart';
 final _connection = SavedConnection(
   id: 'mission-widget',
   label: 'Mission QA',
-  host: 'hermes.local',
+  host: '127.0.0.1',
   port: 8642,
   apiKey: 'test-only',
 );
@@ -2053,7 +2053,7 @@ void main() {
     final readOnlyConnection = SavedConnection(
       id: 'mission-read-only',
       label: 'Mission read only',
-      host: 'hermes.local',
+      host: '127.0.0.1',
       port: 8642,
       apiKey: 'test-only',
       readOnly: true,

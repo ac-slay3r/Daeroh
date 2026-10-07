@@ -11,7 +11,7 @@ void main() {
   SavedConnection connection({bool readOnly = false}) => SavedConnection(
     id: 'kanban-020',
     label: 'QA',
-    host: 'hermes.local',
+    host: '127.0.0.1',
     port: 8642,
     apiKey: 'gateway-key',
     useHttps: true,
@@ -21,7 +21,7 @@ void main() {
   test('detalle, comentario y log usan rutas oficiales 0.20', () async {
     final requests = <http.Request>[];
     final dashboard = DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       manualToken: 'session-token',
       httpClientOverride: MockClient((request) async {
         requests.add(request);
@@ -91,7 +91,7 @@ void main() {
   test('recovery y runs no reintentan ni disfrazan mutaciones', () async {
     final requests = <http.Request>[];
     final dashboard = DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       manualToken: 'session-token',
       httpClientOverride: MockClient((request) async {
         requests.add(request);
@@ -153,7 +153,7 @@ void main() {
   test('comentario vacío falla antes de tocar la red', () async {
     var calls = 0;
     final dashboard = DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       manualToken: 'session-token',
       httpClientOverride: MockClient((request) async {
         calls++;
@@ -177,7 +177,7 @@ void main() {
     await file.writeAsString('trace-body');
     final requests = <http.Request>[];
     final dashboard = DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       manualToken: 'session-token',
       httpClientOverride: MockClient((request) async {
         requests.add(request);
@@ -257,7 +257,7 @@ void main() {
     await handle.close();
     var calls = 0;
     final dashboard = DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       manualToken: 'session-token',
       httpClientOverride: MockClient((request) async {
         calls++;
@@ -279,7 +279,7 @@ void main() {
     () async {
       final requests = <http.Request>[];
       final dashboard = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         manualToken: 'session-token',
         httpClientOverride: MockClient((request) async {
           requests.add(request);
@@ -351,7 +351,7 @@ void main() {
     () async {
       var calls = 0;
       final dashboard = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         manualToken: 'session-token',
         httpClientOverride: MockClient((request) async {
           calls++;

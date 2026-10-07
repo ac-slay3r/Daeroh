@@ -27,7 +27,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 final _connection = SavedConnection(
   id: 'dock-toggle-qa',
   label: 'Dock toggle QA',
-  host: 'hermes.local',
+  host: '127.0.0.1',
   port: 8642,
   apiKey: 'test-only',
   useHttps: true,
@@ -190,7 +190,7 @@ void main() {
 
   group('Cron stays fully usable without the dock', () {
     DashboardClient emptyCronClient() => DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       manualToken: 'token',
       httpClientOverride: MockClient((request) async {
         if (request.url.path == '/api/cron/jobs') {

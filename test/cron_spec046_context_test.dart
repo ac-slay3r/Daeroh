@@ -12,7 +12,7 @@ import 'package:http/testing.dart';
 SavedConnection _connection() => SavedConnection(
   id: 'cron-spec-046',
   label: 'QA',
-  host: 'hermes.local',
+  host: '127.0.0.1',
   port: 8642,
   apiKey: 'gateway-key',
   useHttps: true,
@@ -53,7 +53,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final client = DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       port: 9119,
       manualToken: 'dashboard-token',
       httpClientOverride: MockClient((request) async {
@@ -89,7 +89,7 @@ void main() {
     (tester) async {
       var reads = 0;
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 9119,
         manualToken: 'dashboard-token',
         httpClientOverride: MockClient((request) async {

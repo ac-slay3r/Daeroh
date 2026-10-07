@@ -2836,7 +2836,7 @@ void main() {
     'Dashboard ticket transport timeout retries exact durable viewer resume',
     () async {
       final dashboard = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         manualToken: 'unused',
         httpClientOverride: MockClient(
           (_) async => throw TimeoutException('synthetic ticket timeout'),
@@ -2888,7 +2888,7 @@ void main() {
     'online signal wakes delayed viewer ticket recovery without takeover',
     () async {
       final dashboard = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         manualToken: 'unused',
         httpClientOverride: MockClient(
           (_) async => throw TimeoutException('synthetic ticket timeout'),
@@ -2946,7 +2946,7 @@ void main() {
     'malformed status-less Dashboard ticket stops viewer attachment',
     () async {
       final dashboard = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         manualToken: 'unused',
         httpClientOverride: MockClient((_) async => http.Response('{}', 200)),
       );

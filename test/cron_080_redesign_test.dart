@@ -32,7 +32,7 @@ class _Server {
   Map<String, dynamic> job = _job();
 
   DashboardClient client() => DashboardClient(
-    host: 'hermes.local',
+    host: '127.0.0.1',
     manualToken: 'token',
     httpClientOverride: MockClient((request) async {
       requests.add(request);
@@ -97,7 +97,7 @@ Future<_Server> _pump(
         connection: SavedConnection(
           id: 'cron-080',
           label: 'QA',
-          host: 'hermes.local',
+          host: '127.0.0.1',
           port: 8642,
           apiKey: 'k',
           useHttps: true,

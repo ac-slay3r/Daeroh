@@ -77,7 +77,7 @@ final _profiles = {
 };
 
 DashboardClient _client() => DashboardClient(
-  host: 'hermes.local',
+  host: '127.0.0.1',
   manualToken: 'token',
   httpClientOverride: MockClient((request) async {
     final path = request.url.path;
@@ -114,7 +114,7 @@ Future<void> _pump(WidgetTester tester, Locale locale) async {
         connection: SavedConnection(
           id: 'human',
           label: 'QA',
-          host: 'hermes.local',
+          host: '127.0.0.1',
           port: 8642,
           apiKey: 'k',
           useHttps: true,

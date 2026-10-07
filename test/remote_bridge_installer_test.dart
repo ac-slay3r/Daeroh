@@ -12,7 +12,7 @@ import 'package:hermes_android/core/services/server_setup_generator.dart';
 SavedConnection _conn() => SavedConnection(
   id: 'c1',
   label: 'Remoto',
-  host: 'hermes.local',
+  host: '127.0.0.1',
   port: 8642,
   apiKey: 'GW_KEY_123',
 );
@@ -60,7 +60,7 @@ void main() {
       'script legible que reconstruye el bridge y arma el servicio',
       () async {
         final api = ApiClient(
-          baseUrl: 'http://hermes.local:8642',
+          baseUrl: 'http://127.0.0.1:8642',
           apiKey: 'GW_KEY_123',
         );
         final script = await RemoteBridgeInstaller(
@@ -127,7 +127,7 @@ void main() {
     test('puede instalar exactamente el source remoto ya verificado', () async {
       const remote = 'VERSION = "9.8.7"\nprint("verified")\n';
       final api = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'GW_KEY_123',
       );
 
@@ -158,7 +158,7 @@ void main() {
           remote: true,
         );
         final api = ApiClient(
-          baseUrl: 'http://hermes.local:8642',
+          baseUrl: 'http://127.0.0.1:8642',
           apiKey: 'GW_KEY_123',
         );
 
@@ -199,7 +199,7 @@ void main() {
       ).writeAsStringSync('API_SERVER_KEY=test-key\n');
 
       final api = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'GW_KEY_123',
       );
       try {

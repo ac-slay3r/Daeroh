@@ -15,7 +15,7 @@ Future<DashboardAuthException> passwordLoginFailure(
 ) async {
   DashboardClient.resetSharedPasswordSessionsForTesting();
   final client = DashboardClient(
-    host: 'hermes.local',
+    host: '127.0.0.1',
     port: 9119,
     basicUser: 'admin',
     basicPass: 'secret',
@@ -59,7 +59,7 @@ void main() {
       for (final status in const [404, 405]) {
         var ticketRequests = 0;
         final client = DashboardClient(
-          host: 'hermes.local',
+          host: '127.0.0.1',
           manualToken: 'legacy-test-token',
           httpClientOverride: MockClient((request) async {
             expect(request.url.path, '/api/auth/ws-ticket');
@@ -80,7 +80,7 @@ void main() {
     test('401 and 403 become unavailable and never token-fallback', () async {
       for (final status in const [401, 403]) {
         final client = DashboardClient(
-          host: 'hermes.local',
+          host: '127.0.0.1',
           manualToken: 'legacy-test-token',
           httpClientOverride: MockClient(
             (_) async => http.Response('credentials rejected', status),
@@ -105,14 +105,14 @@ void main() {
 
     test('429 and 5xx become the same safe unavailable failure', () async {
       final limited = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         manualToken: 'legacy-test-token',
         httpClientOverride: MockClient(
           (_) async => http.Response('rate-limited detail', 429),
         ),
       );
       final unavailable = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         manualToken: 'legacy-test-token',
         httpClientOverride: MockClient(
           (_) async => http.Response('internal detail', 503),
@@ -150,7 +150,7 @@ void main() {
       () async {
         const secret = 'ws-client-secret';
         final client = DashboardClient(
-          host: 'hermes.local',
+          host: '127.0.0.1',
           manualToken: 'legacy-test-token',
           httpClientOverride: MockClient((request) async {
             throw http.ClientException(
@@ -183,7 +183,7 @@ void main() {
                 .having(
                   (error) => error.toString(),
                   'no base URL',
-                  isNot(contains('hermes.local')),
+                  isNot(contains('127.0.0.1')),
                 ),
           ),
         );
@@ -193,7 +193,7 @@ void main() {
     test('token discovery failures become unavailable without leaks', () async {
       const secret = 'legacy-token-discovery-secret';
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         basicUser: 'admin',
         basicPass: 'password',
         httpClientOverride: MockClient((request) async {
@@ -240,7 +240,7 @@ void main() {
               .having(
                 (error) => error.toString(),
                 'no base URL',
-                isNot(contains('hermes.local')),
+                isNot(contains('127.0.0.1')),
               ),
         ),
       );
@@ -250,7 +250,7 @@ void main() {
       'programmer StateError is not reclassified as transport failure',
       () async {
         final client = DashboardClient(
-          host: 'hermes.local',
+          host: '127.0.0.1',
           manualToken: 'legacy-test-token',
           httpClientOverride: MockClient((_) async {
             throw StateError('programmer invariant');
@@ -266,14 +266,14 @@ void main() {
       'timeouts and malformed responses become unavailable without fallback',
       () async {
         final timedOut = DashboardClient(
-          host: 'hermes.local',
+          host: '127.0.0.1',
           manualToken: 'legacy-test-token',
           httpClientOverride: MockClient(
             (_) async => throw TimeoutException('synthetic timeout detail'),
           ),
         );
         final malformed = DashboardClient(
-          host: 'hermes.local',
+          host: '127.0.0.1',
           manualToken: 'legacy-test-token',
           httpClientOverride: MockClient((_) async => http.Response('{}', 200)),
         );
@@ -311,7 +311,7 @@ void main() {
       ];
       for (final failure in failures) {
         final client = DashboardClient(
-          host: 'hermes.local',
+          host: '127.0.0.1',
           manualToken: 'legacy-test-token',
           httpClientOverride: MockClient((_) async => throw failure),
         );
@@ -336,7 +336,7 @@ void main() {
       'missing ticket uses malformed while legacy construction is unknown',
       () async {
         final client = DashboardClient(
-          host: 'hermes.local',
+          host: '127.0.0.1',
           manualToken: 'legacy-test-token',
           httpClientOverride: MockClient((_) async => http.Response('{}', 200)),
         );
@@ -366,7 +366,7 @@ void main() {
 
   test('loginRequired se produce por señal real del Dashboard', () async {
     final client = DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       port: 9119,
       httpClientOverride: MockClient((request) async {
         expect(request.url.path, '/');

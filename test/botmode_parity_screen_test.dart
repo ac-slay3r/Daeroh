@@ -72,7 +72,7 @@ Widget _host(
       connection: SavedConnection(
         id: connectionId,
         label: 'Test',
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 8642,
         apiKey: '',
         readOnly: true,

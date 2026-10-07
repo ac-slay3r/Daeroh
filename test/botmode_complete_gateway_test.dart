@@ -9,7 +9,7 @@ import 'package:hermes_android/core/models/bot_visual_identity.dart';
 import 'support/rpc_frame_helpers.dart';
 
 class _Auth extends DashboardClient {
-  _Auth() : super(host: 'hermes.local', manualToken: 'test');
+  _Auth() : super(host: '127.0.0.1', manualToken: 'test');
   @override
   Future<DashboardWebSocketAuth> webSocketAuth() async =>
       const DashboardWebSocketAuth(queryName: 'ticket', credential: 'test');
@@ -79,7 +79,7 @@ void main() {
         SavedConnection(
           id: 'test',
           label: 'Test',
-          host: 'hermes.local',
+          host: '127.0.0.1',
           port: 8642,
           apiKey: '',
         ),
@@ -116,7 +116,7 @@ void main() {
           SavedConnection(
             id: 'test',
             label: 'Test',
-            host: 'hermes.local',
+            host: '127.0.0.1',
             port: 8642,
             apiKey: '',
           ),
@@ -185,7 +185,7 @@ void main() {
         SavedConnection(
           id: 'readonly',
           label: 'Test',
-          host: 'hermes.local',
+          host: '127.0.0.1',
           port: 8642,
           apiKey: '',
           readOnly: true,

@@ -8,7 +8,7 @@ import 'package:http/http.dart' as http;
 
 void main() {
   DashboardClient dashboard(http.Client client) => DashboardClient(
-    host: 'hermes.local',
+    host: '127.0.0.1',
     manualToken: 'session-token',
     httpClientOverride: client,
   );
@@ -108,7 +108,7 @@ void main() {
     final target = File('${temp.path}/report.bin');
     final transport = _RedirectingClient();
     final client = DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       basicUser: 'admin',
       basicPass: 'secret',
       httpClientOverride: transport,

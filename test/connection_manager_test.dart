@@ -370,7 +370,7 @@ void main() {
   group('ApiClient', () {
     test('getMessages rechaza un transcript one-shot truncado', () async {
       final client = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'gateway-key',
         httpClient: MockClient(
           (_) async => http.Response(
@@ -403,7 +403,7 @@ void main() {
       () async {
         final requests = <http.Request>[];
         final client = ApiClient(
-          baseUrl: 'http://hermes.local:8642',
+          baseUrl: 'http://127.0.0.1:8642',
           apiKey: 'gateway-key',
           httpClient: MockClient((request) async {
             requests.add(request);
@@ -449,7 +449,7 @@ void main() {
 
     test('getModelInfoList returns fallback on non-200', () async {
       final client = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'test-key',
         httpClient: MockClient((request) async {
           if (request.url.path == '/v1/models') {
@@ -470,7 +470,7 @@ void main() {
 
     test('getModelInfoList parses model list from backend', () async {
       final client = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'valid-key',
         httpClient: MockClient((request) async {
           if (request.url.path == '/v1/models') {
@@ -498,7 +498,7 @@ void main() {
 
     test('getModelInfoList returns fallback for empty model list', () async {
       final client = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'valid-key',
         httpClient: MockClient((request) async {
           return http.Response('{"object":"list","data":[]}', 200);
@@ -514,7 +514,7 @@ void main() {
     test('startRun envía el historial en conversation_history', () async {
       Map<String, dynamic>? body;
       final client = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'k',
         httpClient: MockClient((request) async {
           body = jsonDecode(request.body) as Map<String, dynamic>;
@@ -547,7 +547,7 @@ void main() {
       () async {
         final bodies = <Map<String, dynamic>>[];
         final client = ApiClient(
-          baseUrl: 'http://hermes.local:8642',
+          baseUrl: 'http://127.0.0.1:8642',
           apiKey: 'k',
           httpClient: MockClient((request) async {
             final b = jsonDecode(request.body) as Map<String, dynamic>;
@@ -584,7 +584,7 @@ void main() {
 
     test('getModelInfoList returns fallback for malformed JSON', () async {
       final client = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'valid-key',
         httpClient: MockClient((request) async {
           return http.Response('not json', 200);
@@ -599,7 +599,7 @@ void main() {
 
     test('getModelInfoList returns fallback on timeout', () async {
       final client = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'valid-key',
         httpClient: MockClient((request) {
           throw TimeoutException('simulated timeout');
@@ -614,7 +614,7 @@ void main() {
 
     test('getModels wraps getModelInfoList returning id list', () async {
       final client = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'valid-key',
         httpClient: MockClient((request) async {
           if (request.url.path == '/v1/models') {
@@ -640,7 +640,7 @@ void main() {
 
     test('healthCheck verifies an authenticated endpoint', () async {
       final client = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'valid-key',
         httpClient: MockClient((request) async {
           expect(request.headers['authorization'], 'Bearer valid-key');
@@ -660,7 +660,7 @@ void main() {
 
     test('healthCheck rejects invalid API keys', () async {
       final client = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'bad-key',
         httpClient: MockClient((request) async {
           if (request.url.path == '/health') {
@@ -812,7 +812,7 @@ void main() {
       'getSessionMessages rechaza un transcript one-shot truncado',
       () async {
         final client = DashboardClient(
-          host: 'hermes.local',
+          host: '127.0.0.1',
           manualToken: 'test-token',
           httpClientOverride: MockClient(
             (_) async => http.Response(
@@ -838,7 +838,7 @@ void main() {
     test('el refresco manual fuerza una comprobación sin caché', () async {
       final calls = <http.Request>[];
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         manualToken: 'test-token',
         httpClientOverride: MockClient((request) async {
           calls.add(request);
@@ -874,7 +874,7 @@ void main() {
     test('replica el contrato Desktop para proveedor externo', () async {
       final calls = <http.Request>[];
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         manualToken: 'test-token',
         httpClientOverride: MockClient((request) async {
           calls.add(request);
@@ -932,7 +932,7 @@ void main() {
     test('usa los endpoints oficiales del TTS de Hermes', () async {
       final calls = <http.Request>[];
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         manualToken: 'test-token',
         httpClientOverride: MockClient((request) async {
           calls.add(request);
@@ -979,7 +979,7 @@ void main() {
     test('propaga el perfil efectivo a todas las rutas de audio', () async {
       final calls = <http.Request>[];
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         manualToken: 'test-token',
         httpClientOverride: MockClient((request) async {
           calls.add(request);
@@ -1950,7 +1950,7 @@ void main() {
   group('DashboardClient.getModelOptions', () {
     test('parses providers returned as a map keyed by slug', () async {
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 9119,
         httpClientOverride: MockClient((request) async {
           if (request.url.path == '/') {
@@ -1992,7 +1992,7 @@ void main() {
     test('named-profile deletion never also deletes default', () async {
       final calls = <Uri>[];
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 9119,
         manualToken: 'test-token',
         httpClientOverride: MockClient((request) async {
@@ -2013,7 +2013,7 @@ void main() {
     test('unprofiled deletion targets only default route', () async {
       final calls = <Uri>[];
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 9119,
         manualToken: 'test-token',
         httpClientOverride: MockClient((request) async {
@@ -2033,7 +2033,7 @@ void main() {
     test('deleted=false se expone como rechazo tipado', () async {
       var calls = 0;
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 9119,
         manualToken: 'test-token',
         httpClientOverride: MockClient((request) async {
@@ -2055,7 +2055,7 @@ void main() {
     test('rechaza todos los IDs hostiles antes de hacer red', () async {
       var calls = 0;
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 9119,
         manualToken: 'test-token',
         httpClientOverride: MockClient((_) async {
@@ -2159,7 +2159,7 @@ void main() {
           return 'unexpected-token';
         },
         dashboardClientFactory: (connection) => DashboardClient(
-          host: 'hermes.local',
+          host: '127.0.0.1',
           port: 9119,
           manualToken: 'dashboard-token',
           httpClientOverride: MockClient((request) async {
@@ -2191,7 +2191,7 @@ void main() {
             return 'unexpected-token';
           },
           dashboardClientFactory: (connection) => DashboardClient(
-            host: 'hermes.local',
+            host: '127.0.0.1',
             port: 9119,
             manualToken: 'dashboard-token',
             httpClientOverride: MockClient(
@@ -2242,7 +2242,7 @@ void main() {
             return 'fresh-token';
           },
           dashboardClientFactory: (connection) => DashboardClient(
-            host: 'hermes.local',
+            host: '127.0.0.1',
             port: 9119,
             manualToken: 'dashboard-token',
             httpClientOverride: MockClient((_) async {
@@ -2291,7 +2291,7 @@ void main() {
             return null;
           },
           dashboardClientFactory: (connection) => DashboardClient(
-            host: 'hermes.local',
+            host: '127.0.0.1',
             port: 9119,
             manualToken: 'dashboard-token',
             httpClientOverride: MockClient((request) async {
@@ -2366,7 +2366,7 @@ void main() {
   group('DashboardClient.applyUpdate', () {
     test('confirma una respuesta HTTP exitosa', () async {
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 9119,
         manualToken: 'test-token',
         httpClientOverride: MockClient((request) async {
@@ -2386,7 +2386,7 @@ void main() {
       'un timeout tras el POST queda pendiente de confirmar por status',
       () async {
         final client = DashboardClient(
-          host: 'hermes.local',
+          host: '127.0.0.1',
           port: 9119,
           manualToken: 'test-token',
           httpClientOverride: MockClient((_) async {
@@ -2406,7 +2406,7 @@ void main() {
 
     test('devuelve el action_id para seguir la actualización', () async {
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 9119,
         manualToken: 'test-token',
         httpClientOverride: MockClient((_) async {
@@ -2427,7 +2427,7 @@ void main() {
 
     test('marca una actualización que ya estaba en curso', () async {
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 9119,
         manualToken: 'test-token',
         httpClientOverride: MockClient((_) async {
@@ -2447,7 +2447,7 @@ void main() {
 
     test('un rechazo 200 con ok:false no se trata como lanzado', () async {
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 9119,
         manualToken: 'test-token',
         httpClientOverride: MockClient((_) async {
@@ -2474,7 +2474,7 @@ void main() {
 
     test('lee el estado de la acción hermes-update', () async {
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 9119,
         manualToken: 'test-token',
         httpClientOverride: MockClient((request) async {
@@ -2493,7 +2493,7 @@ void main() {
       'un cierre de socket tras el POST tampoco se trata como rechazo',
       () async {
         final client = DashboardClient(
-          host: 'hermes.local',
+          host: '127.0.0.1',
           port: 9119,
           manualToken: 'test-token',
           httpClientOverride: MockClient((_) async {
@@ -2517,7 +2517,7 @@ void main() {
       () async {
         var loginCalls = 0;
         final client = DashboardClient(
-          host: 'hermes.local',
+          host: '127.0.0.1',
           port: 9119,
           basicUser: 'admin',
           basicPass: 's3cret',
@@ -2585,7 +2585,7 @@ void main() {
       final loginStarted = Completer<void>();
       final releaseLogin = Completer<void>();
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 9119,
         basicUser: 'admin',
         basicPass: 's3cret',
@@ -2644,13 +2644,13 @@ void main() {
         });
 
         final first = DashboardClient(
-          host: 'shared-login.local',
+          host: '127.0.0.22',
           basicUser: 'admin',
           basicPass: 'secret',
           httpClientOverride: backend(),
         );
         final second = DashboardClient(
-          host: 'shared-login.local',
+          host: '127.0.0.22',
           basicUser: 'admin',
           basicPass: 'secret',
           httpClientOverride: backend(),
@@ -2712,7 +2712,7 @@ void main() {
         final clients = List<DashboardClient>.generate(
           3,
           (_) => DashboardClient(
-            host: 'adversarial-cookie-rotation.local',
+            host: '127.0.0.23',
             basicUser: 'admin',
             basicPass: 'secret',
             httpClientOverride: backend(),
@@ -2764,7 +2764,7 @@ void main() {
         final firstRotated = Completer<void>();
 
         final client = DashboardClient(
-          host: 'media-cookie-rotation.local',
+          host: '127.0.0.24',
           basicUser: 'admin',
           basicPass: 'secret',
           httpClientOverride: MockClient((request) async {
@@ -2891,7 +2891,7 @@ void main() {
         });
 
         DashboardClient mediaClient() => DashboardClient(
-          host: 'media-login-storm.local',
+          host: '127.0.0.25',
           basicUser: 'admin',
           basicPass: 'secret',
           httpClientOverride: backend(),
@@ -2980,7 +2980,7 @@ void main() {
         });
 
         DashboardClient client() => DashboardClient(
-          host: 'media-rate-limit.local',
+          host: '127.0.0.26',
           basicUser: 'admin',
           basicPass: 'secret',
           httpClientOverride: backend(),
@@ -3030,7 +3030,7 @@ void main() {
         return http.Response('{"detail":"unavailable"}', 503);
       });
       DashboardClient client() => DashboardClient(
-        host: 'media-login-failure.local',
+        host: '127.0.0.27',
         basicUser: 'admin',
         basicPass: 'secret',
         httpClientOverride: backend(),
@@ -3082,7 +3082,7 @@ void main() {
       var loginCalls = 0;
       var apiCalls = 0;
       final client = DashboardClient(
-        host: 'media-refresh.local',
+        host: '127.0.0.28',
         basicUser: 'admin',
         basicPass: 'secret',
         httpClientOverride: MockClient((request) async {
@@ -3129,7 +3129,7 @@ void main() {
     test('reauthenticates on 401 and ingests rotated cookies', () async {
       var loginCalls = 0;
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 9119,
         basicUser: 'admin',
         basicPass: 's3cret',
@@ -3176,7 +3176,7 @@ void main() {
       'falls back to legacy token scrape when login endpoint is 404',
       () async {
         final client = DashboardClient(
-          host: 'hermes.local',
+          host: '127.0.0.1',
           port: 9119,
           basicUser: 'admin',
           basicPass: 's3cret',
@@ -3208,7 +3208,7 @@ void main() {
   group('DashboardClient.getMemoryInfo', () {
     test('parses memory info from dashboard endpoint', () async {
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 9119,
         httpClientOverride: MockClient((request) async {
           if (request.url.path == '/') {
@@ -3248,7 +3248,7 @@ void main() {
     test('retries once on 401 by refreshing the session token', () async {
       var rootFetchCount = 0;
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 9119,
         httpClientOverride: MockClient((request) async {
           if (request.url.path == '/') {
@@ -3284,7 +3284,7 @@ void main() {
 
     test('times out when the memory endpoint does not answer', () async {
       final client = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 9119,
         httpClientOverride: MockClient((request) async {
           if (request.url.path == '/') {

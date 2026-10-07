@@ -16,7 +16,7 @@ void main() {
   final connection = SavedConnection(
     id: 'kanban-widget-spec058',
     label: 'QA',
-    host: 'hermes.local',
+    host: '127.0.0.1',
     port: 8642,
     apiKey: 'gateway-key',
     useHttps: true,
@@ -31,7 +31,7 @@ void main() {
     tester.view.physicalSize = const Size(900, 1600);
     tester.view.devicePixelRatio = 1;
     final dashboard = DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       manualToken: 'session-token',
       httpClientOverride: httpClient,
     );
