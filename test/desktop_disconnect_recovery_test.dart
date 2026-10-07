@@ -1737,6 +1737,9 @@ void main() {
   );
   tearDownAll(() => GatewayReconnectBackoff.debugBaseOverride = null);
   TestWidgetsFlutterBinding.ensureInitialized();
+  // These scenarios open real loopback WebSocket servers; flutter_test's
+  // default HTTP override otherwise answers the upgrade with a mock 400.
+  HttpOverrides.global = null;
 
   test(
     'idle attached socket drop automatically resumes exact durable id',

@@ -18,6 +18,7 @@ SavedConnection _conn(String id) => SavedConnection(
   label: 'Test',
   host: '127.0.0.1',
   port: 8642,
+  kind: InstanceKind.homelab,
   apiKey: 'test-key',
 );
 
