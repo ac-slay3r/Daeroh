@@ -28,13 +28,13 @@ internal fun parseNewSessionLaunchTarget(raw: String?): NewSessionLaunchTarget? 
  * fields.
  */
 object NewSessionLaunchContract {
-    const val ACTION_NEW_SESSION = "dev.xpetalab.hermesconsole.action.NEW_SESSION"
-    const val ACTION_NEW_SESSION_CAMERA = "dev.xpetalab.hermesconsole.action.NEW_SESSION_CAMERA"
-    const val ACTION_NEW_SESSION_GALLERY = "dev.xpetalab.hermesconsole.action.NEW_SESSION_GALLERY"
-    const val ACTION_NEW_SESSION_VOICE = "dev.xpetalab.hermesconsole.action.NEW_SESSION_VOICE"
-    const val ACTION_OPEN_APP = "dev.xpetalab.hermesconsole.action.OPEN_APP"
-    const val ACTION_OPEN_SESSION = "dev.xpetalab.hermesconsole.action.OPEN_SESSION"
-    const val ACTION_OPEN_SETUP = "dev.xpetalab.hermesconsole.action.OPEN_SETUP"
+    const val ACTION_NEW_SESSION = "cool.n0thing.daeroh.action.NEW_SESSION"
+    const val ACTION_NEW_SESSION_CAMERA = "cool.n0thing.daeroh.action.NEW_SESSION_CAMERA"
+    const val ACTION_NEW_SESSION_GALLERY = "cool.n0thing.daeroh.action.NEW_SESSION_GALLERY"
+    const val ACTION_NEW_SESSION_VOICE = "cool.n0thing.daeroh.action.NEW_SESSION_VOICE"
+    const val ACTION_OPEN_APP = "cool.n0thing.daeroh.action.OPEN_APP"
+    const val ACTION_OPEN_SESSION = "cool.n0thing.daeroh.action.OPEN_SESSION"
+    const val ACTION_OPEN_SETUP = "cool.n0thing.daeroh.action.OPEN_SETUP"
     const val CHANNEL_NAME = "hermes/new_session_launch"
     const val CONTRACT_VERSION = 1
 

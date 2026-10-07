@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="new_session_target_package" translatable="false">dev.xpetalab.hermesconsole.qa</string>
+    <string name="new_session_target_package" translatable="false">cool.n0thing.daeroh.qa</string>
 </resources>

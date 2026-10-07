@@ -135,11 +135,11 @@ class HermesExternalDataSyncService : Service() {
 
     companion object {
         private const val ACTION_START =
-            "dev.xpetalab.hermesconsole.action.START_EXTERNAL_DATA_SYNC"
+            "cool.n0thing.daeroh.action.START_EXTERNAL_DATA_SYNC"
         private const val ACTION_STOP_REQUESTED =
-            "dev.xpetalab.hermesconsole.action.STOP_EXTERNAL_DATA_SYNC"
+            "cool.n0thing.daeroh.action.STOP_EXTERNAL_DATA_SYNC"
         const val ACTION_OWNER_STOP_REQUIRED =
-            "dev.xpetalab.hermesconsole.action.EXTERNAL_DATA_SYNC_OWNER_STOP_REQUIRED"
+            "cool.n0thing.daeroh.action.EXTERNAL_DATA_SYNC_OWNER_STOP_REQUIRED"
         private const val CHANNEL_ID = "hermes_external_data_sync"
         private const val NOTIFICATION_ID = 257
         private const val CONTROL_PREFS = "hermes_external_data_sync_control"

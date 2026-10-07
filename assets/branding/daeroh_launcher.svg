@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" role="img" aria-label="Daeroh launcher mark">
+  <rect width="108" height="108" rx="26" fill="#111827"/>
+  <path d="M31 26h19c17 0 30 12 30 28S67 82 50 82H31V26zm12 12v32h7c11 0 18-6 18-16s-7-16-18-16h-7z" fill="#5EEAD4" fill-rule="evenodd"/>
+  <circle cx="79" cy="28" r="5" fill="#FBBF24"/>
+</svg>

@@ -2505,11 +2505,11 @@ class BackgroundListener {
   static const String readAloudEndButtonId = 'read_aloud_end';
 
   static const String _serviceIconMeta =
-      'dev.xpetalab.hermesconsole.service.NOTIFICATION_ICON';
+      'cool.n0thing.daeroh.service.NOTIFICATION_ICON';
   static const String _voiceActiveIconMeta =
-      'dev.xpetalab.hermesconsole.voice.NOTIFICATION_ICON_ACTIVE';
+      'cool.n0thing.daeroh.voice.NOTIFICATION_ICON_ACTIVE';
   static const String _voicePausedIconMeta =
-      'dev.xpetalab.hermesconsole.voice.NOTIFICATION_ICON_PAUSED';
+      'cool.n0thing.daeroh.voice.NOTIFICATION_ICON_PAUSED';
 
   static const NotificationIcon _serviceNotificationIcon = NotificationIcon(
     metaDataName: _serviceIconMeta,

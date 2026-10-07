@@ -28,7 +28,7 @@ android {
        // Identidad pública en Play (inmutable tras la primera publicación).
        // Propia de XPeta Lab para no colisionar con el package de Nous/Hermes.
        // El namespace interno no cambia: las clases Kotlin siguen donde están.
-       applicationId = "dev.xpetalab.hermesconsole"
+       applicationId = "cool.n0thing.daeroh"
        minSdk = 24
        targetSdk = 36
        versionCode = flutter.versionCode
