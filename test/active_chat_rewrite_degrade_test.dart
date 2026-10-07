@@ -195,6 +195,7 @@ SavedConnection _connection() => SavedConnection(
   label: 'Remoto',
   host: '127.0.0.1',
   port: 8642,
+  kind: InstanceKind.homelab,
   apiKey: 'test-key',
 );
 
