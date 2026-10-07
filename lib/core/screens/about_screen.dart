@@ -78,19 +78,31 @@ SOFTWARE.
   Future<void> _openPrivacyNote() async {
     final note = await rootBundle.loadString('docs/PRIVACY.md');
     if (!mounted) return;
-    await showDialog<void>(
+    await showHermesSurface<void>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(Strings.of(dialogContext).aboutPrivacyPolicyTitle),
-        content: SizedBox(width: 560, height: 440, child: Markdown(data: note)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: Text(
-              MaterialLocalizations.of(dialogContext).closeButtonLabel,
+      surfaceKey: const ValueKey('daeroh-privacy-note'),
+      maxHeightFactor: 0.85,
+      builder: (dialogContext) => Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            HermesSurfaceHeader(
+              title: Strings.of(dialogContext).aboutPrivacyPolicyTitle,
             ),
-          ),
-        ],
+            Flexible(child: Markdown(data: note, shrinkWrap: true)),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: Text(
+                  MaterialLocalizations.of(dialogContext).closeButtonLabel,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
