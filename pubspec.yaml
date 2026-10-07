@@ -106,7 +106,9 @@ flutter:
   assets:
     # Copia canónica de GPLv3 accesible desde Acerca de → Licencias.
     - LICENSE
+    - docs/PRIVACY.md
     - assets/
+    - assets/branding/daeroh_logo.png
     - assets/fonts/OFL.txt
     - assets/bridge/hermes_bridge.py
     # Branding "Spark" (chispa de marca). El widget de mascota es CustomPaint

@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../../l10n/app_localizations.dart';
 import '../design/hermes_design.dart';
@@ -35,7 +34,6 @@ class _InstallSourceSectionState extends State<InstallSourceSection> {
   @override
   Widget build(BuildContext context) {
     final s = Strings.of(context);
-    final colors = Theme.of(context).hermes;
     final source = _source;
     final label = switch (source) {
       InstallSource.googlePlay => s.aboutUpdatesPlay,
@@ -43,7 +41,6 @@ class _InstallSourceSectionState extends State<InstallSourceSection> {
       InstallSource.manual => s.aboutUpdatesManual,
       null => '…',
     };
-    final isPlay = source == InstallSource.googlePlay;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -56,27 +53,15 @@ class _InstallSourceSectionState extends State<InstallSourceSection> {
               value: label,
               showChevron: false,
             ),
-            if (source != null)
-              HermesListRow(
-                key: const ValueKey('install-source-open'),
-                icon: Icons.open_in_new_rounded,
-                iconColor: colors.accentText,
-                title: isPlay
-                    ? s.aboutUpdatesOpenPlay
-                    : s.aboutUpdatesOpenReleases,
-                showChevron: false,
-                onTap: () => launchUrl(
-                  Uri.parse(InstallSourceInfo.updateUrl(source)),
-                  mode: LaunchMode.externalApplication,
-                ),
-              ),
           ],
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(6, 8, 6, 0),
           child: Text(
             s.aboutUpdatesSwitchNote,
-            style: HermesType.support.copyWith(color: colors.textSecondary),
+            style: HermesType.support.copyWith(
+              color: Theme.of(context).hermes.textSecondary,
+            ),
           ),
         ),
       ],
