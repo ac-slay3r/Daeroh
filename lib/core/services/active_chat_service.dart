@@ -2531,6 +2531,13 @@ class ActiveTurnDelivery {
     return true;
   }
 
+  void freezeReplyLanguage(String language) {
+    if (_discarded || _transportStarted || _current.replyLanguage != null) {
+      return;
+    }
+    _current = _current.copyWith(replyLanguage: language);
+  }
+
   Future<bool> persistPrepared() => _serializeMutation(() async {
     if (_discarded || _transportStarted || _acknowledged) return false;
     try {
@@ -3125,12 +3132,14 @@ class _QueuedTextTurn {
     this.queueOrder, {
     required this.id,
     required this.allowTransportFallback,
+    this.replyLanguage,
   });
 
   final String id;
   final String text;
   final int queueOrder;
   final bool allowTransportFallback;
+  final String? replyLanguage;
 }
 
 /// Estados del pipeline del chat — solo estados respaldados por señales reales.
@@ -4698,6 +4707,7 @@ class ActiveChat {
 
   int get adaptiveRefreshEventRevision => _adaptiveRefreshEventRevision;
   int get adaptiveFullRefreshRevision => _adaptiveFullRefreshRevision;
+
   /// Bumped on every `sessions.changed` broadcast, regardless of runtime
   /// ownership or busy state — the screen reads this to reconcile the OPEN
   /// transcript against the durable store, the same trigger Desktop uses.
@@ -12477,6 +12487,12 @@ class ActiveChat {
     bool? allowTransportFallbackOverride,
     Future<void> Function(String storedSessionId)? beforeDesktopPromptSubmit,
   }) {
+    // Freeze locale before admission awaits; retries inherit this turn's zone.
+    final configuredLanguage =
+        delivery?.current.replyLanguage ?? _appLanguageCode?.call();
+    final replyLanguage =
+        TuiGatewayClient.currentReplyLanguage ??
+        (configuredLanguage == 'es' ? 'es' : 'en');
     if (delivery != null) {
       final turn = delivery.current;
       // Unannotated legacy callers retain their separate prompt contract.
@@ -12519,21 +12535,24 @@ class ActiveChat {
       // también dejan al coordinador sin nada que gobernar. Sólo un Stop aún
       // vivo justifica esperar su ACK, y esa espera es acotada.
       if (stop != null && !stop.isFinal) {
-        return _sendAfterStopSettles(
-          fullText: fullText,
-          model: model,
-          history: history,
-          profile: profile,
-          serverSessionId: serverSessionId,
-          nativeAttachments: nativeAttachments,
-          desktopText: desktopText,
-          voicePlaybackInterrupted: voicePlaybackInterrupted,
-          queued: queued,
-          truncateBeforeUserOrdinal: truncateBeforeUserOrdinal,
-          delivery: delivery,
-          sessionConfig: sessionConfig,
-          allowTransportFallbackOverride: allowTransportFallbackOverride,
-          beforeDesktopPromptSubmit: beforeDesktopPromptSubmit,
+        return TuiGatewayClient.withReplyLanguage(
+          replyLanguage,
+          () => _sendAfterStopSettles(
+            fullText: fullText,
+            model: model,
+            history: history,
+            profile: profile,
+            serverSessionId: serverSessionId,
+            nativeAttachments: nativeAttachments,
+            desktopText: desktopText,
+            voicePlaybackInterrupted: voicePlaybackInterrupted,
+            queued: queued,
+            truncateBeforeUserOrdinal: truncateBeforeUserOrdinal,
+            delivery: delivery,
+            sessionConfig: sessionConfig,
+            allowTransportFallbackOverride: allowTransportFallbackOverride,
+            beforeDesktopPromptSubmit: beforeDesktopPromptSubmit,
+          ),
         );
       }
       _unparkQueueLease();
@@ -12573,23 +12592,26 @@ class ActiveChat {
           _OwnershipMutationAdmission.manualProbeInFlight;
       _emit(ActiveChatEvent.sessionInfo);
     }
-    final attempt = _send(
-      fullText: fullText,
-      model: model,
-      history: history,
-      profile: profile,
-      serverSessionId: serverSessionId,
-      nativeAttachments: nativeAttachments,
-      desktopText: desktopText,
-      voicePlaybackInterrupted: voicePlaybackInterrupted,
-      queued: queued,
-      truncateBeforeUserOrdinal: truncateBeforeUserOrdinal,
-      delivery: delivery,
-      sessionConfig: sessionConfig,
-      allowTransportFallbackOverride: allowTransportFallbackOverride,
-      beforeDesktopPromptSubmit: beforeDesktopPromptSubmit,
-      capturedLifecycle: transcriptLifecycle,
-      transcriptOperation: transcriptOperation,
+    final attempt = TuiGatewayClient.withReplyLanguage(
+      replyLanguage,
+      () => _send(
+        fullText: fullText,
+        model: model,
+        history: history,
+        profile: profile,
+        serverSessionId: serverSessionId,
+        nativeAttachments: nativeAttachments,
+        desktopText: desktopText,
+        voicePlaybackInterrupted: voicePlaybackInterrupted,
+        queued: queued,
+        truncateBeforeUserOrdinal: truncateBeforeUserOrdinal,
+        delivery: delivery,
+        sessionConfig: sessionConfig,
+        allowTransportFallbackOverride: allowTransportFallbackOverride,
+        beforeDesktopPromptSubmit: beforeDesktopPromptSubmit,
+        capturedLifecycle: transcriptLifecycle,
+        transcriptOperation: transcriptOperation,
+      ),
     );
     return manualOwnershipProbe
         ? _settleManualOwnershipProbe(attempt)
@@ -20813,6 +20835,7 @@ class ActiveChat {
         ),
         queueOrder,
         id: 'text:$queueOrder',
+        replyLanguage: _appLanguageCode?.call() == 'es' ? 'es' : 'en',
         // Solo un turno vivo o en admisión puede transferir su policy. Una cola
         // creada en reposo no tiene autoridad para abrir un fallback REST nuevo.
         allowTransportFallback: capturedAllowTransportFallback,
@@ -20854,6 +20877,9 @@ class ActiveChat {
       return true;
     }
     if (_pendingPreparedTurnIds.contains(id)) return false;
+    delivery.freezeReplyLanguage(
+      _appLanguageCode?.call() == 'es' ? 'es' : 'en',
+    );
     final queueOrder = delivery.current.queueOrder ?? _nextQueueOrder;
     if (!delivery.assignQueueOrder(queueOrder)) return false;
     if (queueOrder >= _nextQueueOrder) _nextQueueOrder = queueOrder + 1;
@@ -21179,6 +21205,7 @@ class ActiveChat {
             promotedOrder,
             id: target.id,
             allowTransportFallback: target.allowTransportFallback,
+            replyLanguage: target.replyLanguage,
           ),
         )
         ..addAll(items.where((item) => !identical(item, target)));
@@ -21229,6 +21256,7 @@ class ActiveChat {
         target.queueOrder,
         id: target.id,
         allowTransportFallback: target.allowTransportFallback,
+        replyLanguage: target.replyLanguage,
       );
       final updated = [...textItems]..[textIndex] = replacement;
       _messageQueue
@@ -21709,14 +21737,17 @@ class ActiveChat {
     _preparedTurnDrainInFlight = true;
     final bool accepted;
     try {
-      accepted = await send(
-        mentionsFrozen: true,
-        fullText: next.text,
-        model: _lastModel,
-        history: _buildHistoryFromMessages(),
-        profile: _turnProfile,
-        queued: true,
-        allowTransportFallbackOverride: next.allowTransportFallback,
+      accepted = await TuiGatewayClient.withReplyLanguage(
+        next.replyLanguage ?? (_appLanguageCode?.call() == 'es' ? 'es' : 'en'),
+        () => send(
+          mentionsFrozen: true,
+          fullText: next.text,
+          model: _lastModel,
+          history: _buildHistoryFromMessages(),
+          profile: _turnProfile,
+          queued: true,
+          allowTransportFallbackOverride: next.allowTransportFallback,
+        ),
       );
     } finally {
       _preparedTurnDrainInFlight = false;

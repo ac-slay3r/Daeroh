@@ -875,4 +875,93 @@ void main() {
       ]);
     },
   );
+
+  for (final feature in [true, false]) {
+    test(
+      'reply language metadata is scoped to supported prompt submits ($feature)',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        addTearDown(() => server.close(force: true));
+        final submissions = <Map<String, dynamic>>[];
+        server.listen((request) async {
+          final socket = await WebSocketTransformer.upgrade(request);
+          socket.add(
+            jsonEncode({
+              'jsonrpc': '2.0',
+              'method': 'event',
+              'params': {
+                'type': 'gateway.ready',
+                'payload': <String, dynamic>{},
+              },
+            }),
+          );
+          await for (final raw in socket) {
+            final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+            if (frame['method'] == 'prompt.submit') {
+              submissions.add(frame['params'] as Map<String, dynamic>);
+            }
+            socket.add(
+              jsonEncode({
+                'jsonrpc': '2.0',
+                'id': frame['id'],
+                'result': frame['method'] == 'gateway.capabilities'
+                    ? {
+                        'per_session_exclusive_submit': true,
+                        'prompt_reply_language': feature,
+                      }
+                    : frame['params'] is Map &&
+                          (frame['params'] as Map).containsKey('client_turn_id')
+                    ? {
+                        'accepted': true,
+                        'client_turn_id':
+                            (frame['params'] as Map)['client_turn_id'],
+                        'server_turn_id': 'server-1',
+                        'state': 'accepted',
+                        'duplicate': false,
+                      }
+                    : <String, dynamic>{'status': 'ok'},
+              }),
+            );
+          }
+        });
+        final client = TuiGatewayClient(
+          _connectionFor(server.port),
+          dashboard: _CapabilityDashboardClient(),
+        );
+        addTearDown(client.close);
+        const text = '  ¿Qué tal?\n[image:abc]  ';
+        await TuiGatewayClient.withReplyLanguage('es', () async {
+          await client.submitPrompt('runtime-1', text);
+          await client.submitQueuedPrompt('runtime-1', text);
+          await client.submitInterruptedPrompt('runtime-1', text);
+          await client.submitPromptIdempotent('runtime-1', text, 'turn-1');
+          await client.submitQueuedPromptIdempotent(
+            'runtime-1',
+            text,
+            'turn-2',
+          );
+          await client.submitRewindPrompt('runtime-1', text, 1);
+        });
+        await client.submitPrompt('runtime-1', text);
+        await TuiGatewayClient.withReplyLanguage(
+          'fr',
+          () => client.submitPrompt('runtime-1', text),
+        );
+        expect(submissions, hasLength(8));
+        for (final params in submissions) {
+          expect(params['text'], text);
+          expect(params['session_id'], 'runtime-1');
+        }
+        for (final params in submissions.take(6)) {
+          expect(params['reply_language'], feature ? 'es' : isNull);
+        }
+        expect(submissions[1]['queued'], true);
+        expect(submissions[2]['interrupted'], true);
+        expect(submissions[4]['queued'], true);
+        expect(submissions[5]['truncate_before_user_ordinal'], 1);
+        expect(submissions[6].containsKey('reply_language'), isFalse);
+        expect(submissions[7].containsKey('reply_language'), isFalse);
+      },
+    );
+  }
 }
