@@ -2380,7 +2380,7 @@ class HermesAppState extends State<HermesApp> with WidgetsBindingObserver {
           builder: (context, font, _) => ValueListenableBuilder<String>(
             valueListenable: localeId,
             builder: (context, locId, _) => MaterialApp(
-              title: 'Hermes Console',
+              title: 'Daeroh',
               debugShowCheckedModeBanner: false,
               // Scroll con inercia (coasting) en toda la app: un flick sigue
               // rodando y frena solo, en vez del frenazo seco de Material.

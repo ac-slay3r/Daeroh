@@ -30,11 +30,11 @@ void main() {
     );
     expect(
       InstallSourceInfo.updateUrl(InstallSource.googlePlay),
-      contains('id=dev.xpetalab.hermesconsole'),
+      'https://github.com/ac-slay3r/Daeroh/releases',
     );
     expect(
       InstallSourceInfo.updateUrl(InstallSource.manual),
-      'https://github.com/xP3ta/hermes-console/releases',
+      'https://github.com/ac-slay3r/Daeroh/releases',
     );
   });
 

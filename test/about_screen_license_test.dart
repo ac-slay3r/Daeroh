@@ -13,8 +13,8 @@ void main() {
     LicenseRegistry.reset();
     addTearDown(LicenseRegistry.reset);
     PackageInfo.setMockInitialValues(
-      appName: 'Hermes Console',
-      packageName: 'dev.xpetalab.hermes',
+      appName: 'Daeroh',
+      packageName: 'cool.n0thing.daeroh',
       version: '1.2.7-qa',
       buildNumber: '914',
       buildSignature: '',
@@ -32,7 +32,7 @@ void main() {
 
     final entries = await LicenseRegistry.licenses.toList();
     final project = entries.singleWhere(
-      (entry) => entry.packages.contains('Hermes Console'),
+      (entry) => entry.packages.contains('Daeroh'),
     );
     final projectNotice = project.paragraphs
         .map((paragraph) => paragraph.text)

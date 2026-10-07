@@ -20,10 +20,11 @@ class AboutScreen extends StatefulWidget {
 }
 
 class _AboutScreenState extends State<AboutScreen> {
-  /// Sitio oficial de la app (XPeta Lab). La política de privacidad enlaza a
-  /// la misma página que declara la ficha de Google Play.
-  static const _websiteUrl = 'https://hermes.xpetalab.dev';
-  static const _privacyPolicyUrl = 'https://hermes.xpetalab.dev/privacy';
+  /// Daeroh is a separate private downstream; never present the upstream
+  /// developer's privacy policy or website as our own.
+  static const _websiteUrl = 'https://github.com/ac-slay3r/Daeroh';
+  static const _privacyPolicyUrl =
+      'https://github.com/ac-slay3r/Daeroh/blob/main/docs/PRIVACY.md';
   static bool _appLicensesRegistered = false;
 
   static const _upstreamMitNotice = '''
@@ -81,7 +82,8 @@ SOFTWARE.
       LicenseRegistry.addLicense(() async* {
         final projectLicense = await rootBundle.loadString('LICENSE');
         yield LicenseEntryWithLineBreaks(const [
-          'Hermes Console',
+          'Daeroh',
+          'Hermes Console (upstream)',
         ], projectLicense);
         yield const LicenseEntryWithLineBreaks([
           'hermes-android (upstream)',

@@ -1,7 +1,7 @@
 name: hermes_android
-description: "Hermes Agent — chat with your Hermes Gateway API Server over LAN. SSE streaming, Bearer auth, session management."
+description: "Daeroh — a private Android client for self-hosted Hermes Agent, based on Hermes Console."
 publish_to: 'none'
-version: 1.2.14+9420
+version: 0.1.0+1
 
 environment:
   sdk: ^3.12.0

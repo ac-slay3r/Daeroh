@@ -4,7 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test('shortcut and widget use collision-free secret-free native actions', () {
-    const action = 'dev.xpetalab.hermesconsole.action.NEW_SESSION';
+    const action = 'cool.n0thing.daeroh.action.NEW_SESSION';
     final shortcut = File(
       'android/app/src/main/res/xml/shortcuts.xml',
     ).readAsStringSync();
