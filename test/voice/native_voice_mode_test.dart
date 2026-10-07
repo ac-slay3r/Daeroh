@@ -243,7 +243,7 @@ void main() {
       () async {
         final prefs = await SharedPreferences.getInstance();
         final store = NativeVoiceCapabilityStore(prefs);
-        const identity = 'http://hermes-demo.local:9119';
+        const identity = 'http://127.0.0.2:9119';
 
         final inconclusive = await probeNativeVoiceCapability(
           statusOf: (endpoint) async => 401,
@@ -280,7 +280,7 @@ void main() {
   group('consentimiento por identidad', () {
     test('cada perfil nombrado conserva un scope independiente', () async {
       final prefs = await SharedPreferences.getInstance();
-      const dashboard = 'http://hermes-demo.local:9119';
+      const dashboard = 'http://127.0.0.2:9119';
       final defaultScope = nativeVoicePreferenceIdentity(dashboard);
       final explicitDefault = nativeVoicePreferenceIdentity(
         dashboard,
@@ -322,8 +322,8 @@ void main() {
     test('pendiente por defecto, persistente y por servidor', () async {
       final prefs = await SharedPreferences.getInstance();
       final store = NativeVoiceConsentStore(prefs);
-      const a = 'http://hermes-demo.local:9119';
-      const b = 'http://otro:9119';
+      const a = 'http://127.0.0.2:9119';
+      const b = 'http://127.0.0.8:9119';
 
       expect(store.read(a), NativeVoiceConsent.pending);
       await store.write(a, NativeVoiceConsent.accepted);
@@ -339,8 +339,8 @@ void main() {
       'un consentimiento legacy no selecciona servidor y el modo es por identidad',
       () async {
         final prefs = await SharedPreferences.getInstance();
-        const a = 'http://hermes-demo.local:9119';
-        const b = 'http://otro:9119';
+        const a = 'http://127.0.0.2:9119';
+        const b = 'http://127.0.0.8:9119';
         await NativeVoiceConsentStore(
           prefs,
         ).write(a, NativeVoiceConsent.accepted);
@@ -370,7 +370,7 @@ void main() {
         final connection = SavedConnection(
           id: 'native-legacy',
           label: 'Hermes',
-          host: 'hermes.test',
+          host: '127.0.0.3',
           port: 8642,
           apiKey: 'test-key',
         );
@@ -382,7 +382,7 @@ void main() {
             preferences: prefs,
             profile: '',
             dashboardFactory: (_) => DashboardClient(
-              host: 'hermes.test',
+              host: '127.0.0.3',
               port: 9119,
               httpClientOverride: MockClient((_) async {
                 requests++;
@@ -402,7 +402,7 @@ void main() {
       'revocar consentimiento durante config impide instalar callbacks',
       () async {
         final prefs = await SharedPreferences.getInstance();
-        const identity = 'http://hermes.test:9119';
+        const identity = 'http://127.0.0.3:9119';
         await NativeVoiceConsentStore(
           prefs,
         ).write(identity, NativeVoiceConsent.accepted);
@@ -441,7 +441,7 @@ void main() {
         final connection = SavedConnection(
           id: 'native-revoked-during-config',
           label: 'Hermes',
-          host: 'hermes.test',
+          host: '127.0.0.3',
           port: 8642,
           apiKey: String.fromCharCodes(const <int>[107]),
         );
@@ -456,7 +456,7 @@ void main() {
           preferences: prefs,
           profile: '',
           dashboardClient: DashboardClient(
-            host: 'hermes.test',
+            host: '127.0.0.3',
             port: 9119,
             httpClientOverride: client,
           ),
@@ -475,8 +475,8 @@ void main() {
 
     test('config A tardía no sustituye ni cierra la ruta B vigente', () async {
       final prefs = await SharedPreferences.getInstance();
-      const identityA = 'http://voice-a.test:9119';
-      const identityB = 'http://voice-b.test:9119';
+      const identityA = 'http://127.0.0.9:9119';
+      const identityB = 'http://127.0.0.10:9119';
       for (final identity in <String>[identityA, identityB]) {
         await NativeVoiceConsentStore(
           prefs,
@@ -528,19 +528,19 @@ void main() {
 
       final configuringA = configureAcceptedNativeVoiceSession(
         voice: voice,
-        connection: connection('native-a', 'voice-a.test'),
+        connection: connection('native-a', '127.0.0.9'),
         preferences: prefs,
         profile: '',
-        dashboardClient: dashboard('voice-a.test', clientA),
+        dashboardClient: dashboard('127.0.0.9', clientA),
       );
       await aSchemaRequested.future;
       expect(
         await configureAcceptedNativeVoiceSession(
           voice: voice,
-          connection: connection('native-b', 'voice-b.test'),
+          connection: connection('native-b', '127.0.0.10'),
           preferences: prefs,
           profile: '',
-          dashboardClient: dashboard('voice-b.test', clientB),
+          dashboardClient: dashboard('127.0.0.10', clientB),
         ),
         isTrue,
       );
@@ -583,7 +583,7 @@ void main() {
       'dispose durante config invalida callbacks y cierra su cliente',
       () async {
         final prefs = await SharedPreferences.getInstance();
-        const identity = 'http://voice-dispose.test:9119';
+        const identity = 'http://127.0.0.11:9119';
         await _grantNativeVoice(prefs, identity);
         final schemaRequested = Completer<void>();
         final releaseSchema = Completer<void>();
@@ -597,11 +597,11 @@ void main() {
         final voice = VoiceService(prefs, SecureStorage());
         final configuring = configureAcceptedNativeVoiceSession(
           voice: voice,
-          connection: _nativeConnection('native-dispose', 'voice-dispose.test'),
+          connection: _nativeConnection('native-dispose', '127.0.0.11'),
           preferences: prefs,
           profile: '',
           dashboardClient: DashboardClient(
-            host: 'voice-dispose.test',
+            host: '127.0.0.11',
             port: 9119,
             manualToken: String.fromCharCodes(const <int>[116]),
             httpClientOverride: client,
@@ -624,7 +624,7 @@ void main() {
 
     test('cambio de perfil invalida configuración todavía pendiente', () async {
       final prefs = await SharedPreferences.getInstance();
-      const identity = 'http://voice-profile.test:9119::profile=work';
+      const identity = 'http://127.0.0.12:9119::profile=work';
       await _grantNativeVoice(prefs, identity);
       final schemaRequested = Completer<void>();
       final releaseSchema = Completer<void>();
@@ -644,12 +644,12 @@ void main() {
 
       final configuring = configureAcceptedNativeVoiceSession(
         voice: voice,
-        connection: _nativeConnection('native-profile', 'voice-profile.test'),
+        connection: _nativeConnection('native-profile', '127.0.0.12'),
         preferences: prefs,
         profile: 'work',
         isStillCurrent: () => profileIsCurrent,
         dashboardClient: DashboardClient(
-          host: 'voice-profile.test',
+          host: '127.0.0.12',
           port: 9119,
           manualToken: String.fromCharCodes(const <int>[116]),
           httpClientOverride: client,
@@ -666,7 +666,7 @@ void main() {
 
     test('una sesión reutiliza su DashboardClient y evita relogins', () async {
       final prefs = await SharedPreferences.getInstance();
-      const identity = 'http://hermes.test:9119';
+      const identity = 'http://127.0.0.3:9119';
       await NativeVoiceConsentStore(
         prefs,
       ).write(identity, NativeVoiceConsent.accepted);
@@ -687,7 +687,7 @@ void main() {
       final connection = SavedConnection(
         id: 'native-background',
         label: 'Hermes',
-        host: 'hermes.test',
+        host: '127.0.0.3',
         port: 8642,
         apiKey: 'test-key',
       );
@@ -695,7 +695,7 @@ void main() {
       DashboardClient dashboardFactory(SavedConnection _) {
         clients++;
         return DashboardClient(
-          host: 'hermes.test',
+          host: '127.0.0.3',
           port: 9119,
           httpClientOverride: MockClient((request) async {
             if (request.method == 'GET' && request.url.path == '/') {
@@ -1319,7 +1319,7 @@ void main() {
         addTearDown(voice.dispose);
         var requests = 0;
         final dashboard = DashboardClient(
-          host: 'otro.test',
+          host: '127.0.0.8',
           port: 9119,
           httpClientOverride: MockClient((request) async {
             requests++;
@@ -1338,7 +1338,7 @@ void main() {
           connection: SavedConnection(
             id: 'dictation-no-consent',
             label: 'Hermes',
-            host: 'otro.test',
+            host: '127.0.0.8',
             port: 8642,
             apiKey: 'test-key',
           ),
@@ -1373,13 +1373,13 @@ void main() {
         (request) async => http.Response('{}', 400),
       );
       final dashboardA = DashboardClient(
-        host: 'perfil-a.test',
+        host: '127.0.0.13',
         port: 9119,
         manualToken: 'test-token',
         httpClientOverride: clientA,
       );
       final dashboardB = DashboardClient(
-        host: 'perfil-b.test',
+        host: '127.0.0.14',
         port: 9119,
         manualToken: 'test-token',
         httpClientOverride: clientB,
@@ -1404,7 +1404,7 @@ void main() {
         connection: SavedConnection(
           id: 'a',
           label: 'A',
-          host: 'perfil-a.test',
+          host: '127.0.0.13',
           port: 8642,
           apiKey: 'test-key',
         ),
@@ -1424,7 +1424,7 @@ void main() {
         connection: SavedConnection(
           id: 'b',
           label: 'B',
-          host: 'perfil-b.test',
+          host: '127.0.0.14',
           port: 8642,
           apiKey: 'test-key',
         ),
@@ -1473,13 +1473,13 @@ void main() {
           return probeB.future;
         });
         final dashboardA = DashboardClient(
-          host: 'same-owner-a.test',
+          host: '127.0.0.15',
           port: 9119,
           manualToken: 'test-token',
           httpClientOverride: clientA,
         );
         final dashboardB = DashboardClient(
-          host: 'same-owner-b.test',
+          host: '127.0.0.16',
           port: 9119,
           manualToken: 'test-token',
           httpClientOverride: clientB,
@@ -1509,7 +1509,7 @@ void main() {
           connection: SavedConnection(
             id: 'same-a',
             label: 'Same A',
-            host: 'same-owner-a.test',
+            host: '127.0.0.15',
             port: 8642,
             apiKey: 'test-key',
           ),
@@ -1529,7 +1529,7 @@ void main() {
           connection: SavedConnection(
             id: 'same-b',
             label: 'Same B',
-            host: 'same-owner-b.test',
+            host: '127.0.0.16',
             port: 8642,
             apiKey: 'test-key',
           ),
@@ -1574,13 +1574,13 @@ void main() {
           (request) async => http.Response('{}', 404),
         );
         final oldDashboard = DashboardClient(
-          host: 'old-profile.test',
+          host: '127.0.0.17',
           port: 9119,
           manualToken: 'test-token',
           httpClientOverride: oldClient,
         );
         final failedDashboard = DashboardClient(
-          host: 'new-profile.test',
+          host: '127.0.0.18',
           port: 9119,
           manualToken: 'test-token',
           httpClientOverride: failedClient,
@@ -1608,7 +1608,7 @@ void main() {
             connection: SavedConnection(
               id: 'old-profile',
               label: 'Old profile',
-              host: 'old-profile.test',
+              host: '127.0.0.17',
               port: 8642,
               apiKey: 'test-key',
             ),
@@ -1634,7 +1634,7 @@ void main() {
             connection: SavedConnection(
               id: 'new-profile',
               label: 'New profile',
-              host: 'new-profile.test',
+              host: '127.0.0.18',
               port: 8642,
               apiKey: 'test-key',
             ),
@@ -1663,7 +1663,7 @@ void main() {
         return probe.future;
       });
       final dashboard = DashboardClient(
-        host: 'disposed.test',
+        host: '127.0.0.19',
         port: 9119,
         manualToken: 'test-token',
         httpClientOverride: client,
@@ -1682,7 +1682,7 @@ void main() {
         connection: SavedConnection(
           id: 'disposed',
           label: 'Disposed',
-          host: 'disposed.test',
+          host: '127.0.0.19',
           port: 8642,
           apiKey: 'test-key',
         ),

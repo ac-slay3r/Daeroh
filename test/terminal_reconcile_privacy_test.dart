@@ -88,14 +88,14 @@ void main() {
       connection: SavedConnection(
         id: 'probe-conn',
         label: 'Probe',
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 8642,
         apiKey: 'probe-key',
       ),
       sessionId: 'sess-1',
       sessionTitle: 'Probe',
       api: ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'probe-key',
         httpClient: client,
       ),
@@ -163,14 +163,14 @@ void main() {
         connection: SavedConnection(
           id: 'privacy-probe',
           label: 'Privacy probe',
-          host: 'hermes.local',
+          host: '127.0.0.1',
           port: 8642,
           apiKey: 'probe-key',
         ),
         sessionId: 'sess-private',
         sessionTitle: 'Privacy probe',
         api: ApiClient(
-          baseUrl: 'http://hermes.local:8642',
+          baseUrl: 'http://127.0.0.1:8642',
           apiKey: 'probe-key',
           httpClient: client,
         ),

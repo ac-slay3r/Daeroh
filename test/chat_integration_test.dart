@@ -51,7 +51,7 @@ const _kWatchKey = 'bg_watch_runs'; // BackgroundWatch._key (privado)
 SavedConnection _remoteConn() => SavedConnection(
   id: 'conn-remote',
   label: 'Remoto',
-  host: 'hermes.local',
+  host: '127.0.0.1',
   port: 8642,
   apiKey: 'test-key',
 );
