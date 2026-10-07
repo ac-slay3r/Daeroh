@@ -24,17 +24,20 @@ void main() {
       );
     });
 
-    test('URL vacía no clasifica como aviso (secure por defecto)', () {
-      expect(TransportPrivacy.classify(''), TransportPrivacyClass.secure);
-      expect(TransportPrivacy.classify('   '), TransportPrivacyClass.secure);
+    test('URL vacía no obtiene permiso de red', () {
+      expect(
+        TransportPrivacy.classify(''),
+        TransportPrivacyClass.publicCleartext,
+      );
+      expect(() => TransportPrivacy.requireAllowed('   '), throwsArgumentError);
     });
   });
 
   group('TransportPrivacy.classify · privateCleartext', () {
-    test('http:// a localhost', () {
+    test('localhost DNS no concede permiso cleartext', () {
       expect(
         TransportPrivacy.classify('http://localhost:8642'),
-        TransportPrivacyClass.privateCleartext,
+        TransportPrivacyClass.publicCleartext,
       );
     });
 
@@ -113,10 +116,10 @@ void main() {
       );
     });
 
-    test('http:// a host MagicDNS de Tailscale (*.ts.net)', () {
+    test('MagicDNS de Tailscale requiere TLS', () {
       expect(
         TransportPrivacy.classify('http://mi-servidor.ts.net:8642'),
-        TransportPrivacyClass.privateCleartext,
+        TransportPrivacyClass.publicCleartext,
       );
     });
 
@@ -159,6 +162,86 @@ void main() {
   });
 
   group('TransportPrivacy.requireAllowed', () {
+    test('rechaza nombres DNS que parecen privados en HTTP y WS', () {
+      for (final host in [
+        'localhost',
+        'printer',
+        'printer.local',
+        'node.test',
+        'node.example',
+        'node.ts.net',
+        'private.example.com',
+      ]) {
+        for (final scheme in ['http', 'ws']) {
+          expect(
+            () => TransportPrivacy.requireAllowed('$scheme://$host:8642'),
+            throwsArgumentError,
+            reason: '$scheme://$host',
+          );
+        }
+      }
+    });
+
+    test('permite solo literales IPv4 privados y loopback en HTTP y WS', () {
+      for (final host in [
+        '127.0.0.2',
+        '10.1.2.3',
+        '172.31.255.255',
+        '192.168.0.1',
+        '100.127.255.254',
+      ]) {
+        for (final scheme in ['http', 'ws']) {
+          final url = '$scheme://$host:8642';
+          expect(TransportPrivacy.requireAllowed(url), url);
+        }
+      }
+    });
+
+    test('IPv6 ULA literal is private, link-local without scope is denied', () {
+      expect(
+        TransportPrivacy.requireAllowed('ws://[fd00::1]:8642'),
+        'ws://[fd00::1]:8642',
+      );
+      expect(
+        TransportPrivacy.requireAllowed('http://[fc00::2]'),
+        'http://[fc00::2]',
+      );
+      for (final host in [
+        'fe80::1',
+        'febf::1',
+        '2001:db8::1',
+        '::ffff:10.1.2.3',
+      ]) {
+        expect(
+          () => TransportPrivacy.requireAllowed('http://[$host]:8642'),
+          throwsArgumentError,
+          reason: host,
+        );
+      }
+    });
+
+    test(
+      'unknown schemes and malformed URLs never gain network permission',
+      () {
+        for (final url in [
+          'ftp://10.0.0.1',
+          'file://127.0.0.1',
+          'http://',
+          'https://',
+          '://10.0.0.1',
+          'http://[::1',
+          'http://10.0.0.1:bad',
+          'http://10.0.0.1:99999',
+        ]) {
+          expect(
+            () => TransportPrivacy.requireAllowed(url),
+            throwsArgumentError,
+            reason: url,
+          );
+        }
+      },
+    );
+
     test('bloquea HTTP público', () {
       expect(
         () => TransportPrivacy.requireAllowed('http://8.8.8.8:8642'),

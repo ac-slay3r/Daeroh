@@ -1,24 +1,17 @@
-/// Clasificación de privacidad de transporte para la URL de un servidor
-/// Hermes (gateway o dashboard), usada para avisar al usuario cuando una
-/// conexión viajaría en claro (sin TLS) fuera de una red que controla.
-///
-/// La app permite cleartext (http/ws) porque el destino siempre lo elige el
-/// propio usuario (self-hosted) y `network_security_config.xml` no puede
-/// acotar el permiso por rango de IP. Esta clasificación es la mitigación de
-/// UX: distingue "cleartext en red privada" (razonable: LAN, Tailscale,
-/// localhost) de "cleartext hacia un host público" (el token y los mensajes
-/// viajarían en claro por Internet).
+import 'dart:io';
+
+// Android permite cleartext globalmente porque network_security_config.xml no
+// puede acotar el permiso por CIDR. Los nombres DNS pueden resolver a destinos
+// públicos y por eso siempre requieren TLS.
 enum TransportPrivacyClass {
   /// https:// o wss://: el transporte está cifrado, sin más que avisar.
   secure,
 
-  /// http:// o ws:// hacia un host de red privada (loopback, LAN, CGNAT de
-  /// Tailscale o `*.ts.net`). Cleartext pero dentro de una red que el
-  /// usuario controla.
+  /// http:// o ws:// hacia una IP literal loopback, LAN o Tailscale.
   privateCleartext,
 
-  /// http:// o ws:// hacia cualquier otro host (dominio o IP pública). El
-  /// token y las conversaciones viajarían en claro por una red no confiable.
+  /// Cleartext hacia otro destino, o URL inválida/esquema desconocido; no se
+  /// permite construir un cliente con esta clasificación.
   publicCleartext,
 }
 
@@ -32,11 +25,10 @@ class TransportPrivacy {
   ///
   /// Acepta URLs sin esquema (p.ej. `192.168.1.5:8642`): se asume `http://`
   /// como la app hace al normalizar (ver `SavedConnection.normalizeHostAndPort`).
-  /// URLs vacías o irreconocibles devuelven [TransportPrivacyClass.secure]
-  /// (no hay host que avisar todavía).
+  /// URLs vacías o irreconocibles no obtienen permiso de red.
   static TransportPrivacyClass classify(String url) {
     var raw = url.trim();
-    if (raw.isEmpty) return TransportPrivacyClass.secure;
+    if (raw.isEmpty) return TransportPrivacyClass.publicCleartext;
 
     if (!raw.contains('://')) {
       // Host IPv6 sin corchetes (p.ej. "::1" o "::1:8642" no es ambiguo,
@@ -48,16 +40,28 @@ class TransportPrivacy {
       raw = 'http://$raw';
     }
 
-    final uri = Uri.tryParse(raw);
-    if (uri == null || uri.host.isEmpty) return TransportPrivacyClass.secure;
-
-    final scheme = uri.scheme.toLowerCase();
-    if (scheme == 'https' || scheme == 'wss') {
-      return TransportPrivacyClass.secure;
+    try {
+      final uri = Uri.parse(raw);
+      if (!uri.hasAuthority ||
+          uri.host.isEmpty ||
+          uri.userInfo.isNotEmpty ||
+          uri.port < 0 ||
+          uri.port > 65535) {
+        return TransportPrivacyClass.publicCleartext;
+      }
+      final scheme = uri.scheme.toLowerCase();
+      if (scheme == 'https' || scheme == 'wss') {
+        return TransportPrivacyClass.secure;
+      }
+      if (scheme != 'http' && scheme != 'ws') {
+        return TransportPrivacyClass.publicCleartext;
+      }
+      return _isPrivateHost(uri.host)
+          ? TransportPrivacyClass.privateCleartext
+          : TransportPrivacyClass.publicCleartext;
+    } on FormatException {
+      return TransportPrivacyClass.publicCleartext;
     }
-    return _isPrivateHost(uri.host)
-        ? TransportPrivacyClass.privateCleartext
-        : TransportPrivacyClass.publicCleartext;
   }
 
   /// Límite efectivo de release: HTTP/WS solo se acepta para loopback, LAN o
@@ -72,18 +76,22 @@ class TransportPrivacy {
     return url;
   }
 
-  /// True si [host] pertenece a una red que el usuario controla directamente:
-  /// loopback, LAN privada (RFC 1918), CGNAT de Tailscale (100.64.0.0/10),
-  /// MagicDNS de Tailscale (`*.ts.net`) o `localhost`/`*.local`.
+  /// Solo IPs literales: loopback, RFC 1918, Tailscale 100.64.0.0/10 y
+  /// IPv6 ULA. IPv6 link-local queda excluida: requiere ámbito de interfaz y
+  /// un literal sin zona no identifica un destino inequívoco.
   static bool _isPrivateHost(String host) {
     final h = host.toLowerCase();
     if (h.isEmpty) return false;
-    if (h == 'localhost' || h.endsWith('.local')) return true;
-    if (h.endsWith('.ts.net')) return true;
-    if (!h.contains('.') || h.endsWith('.test') || h.endsWith('.example')) {
-      return true;
-    }
     if (h == '::1') return true;
+    if (h.contains(':')) {
+      final address = InternetAddress.tryParse(h);
+      if (address == null ||
+          address.type != InternetAddressType.IPv6 ||
+          h.contains('%')) {
+        return false;
+      }
+      return address.rawAddress[0] & 0xfe == 0xfc; // fc00::/7 ULA
+    }
 
     final octets = _ipv4Octets(h);
     if (octets == null) return false;
@@ -105,6 +113,11 @@ class TransportPrivacy {
     if (parts.length != 4) return null;
     final octets = <int>[];
     for (final p in parts) {
+      if (p.isEmpty ||
+          (p.length > 1 && p.startsWith('0')) ||
+          !RegExp(r'^\d+$').hasMatch(p)) {
+        return null;
+      }
       final n = int.tryParse(p);
       if (n == null || n < 0 || n > 255) return null;
       octets.add(n);
