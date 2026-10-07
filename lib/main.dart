@@ -31,8 +31,7 @@ import 'core/screens/lock_screen.dart';
 import 'core/screens/instance_edit_screen.dart';
 import 'core/screens/onboarding_screen.dart';
 import 'core/screens/splash_screen.dart';
-import 'core/services/pairing_link.dart';
-import 'core/services/pairing_link_delivery_gate.dart';
+import 'core/services/pairing_link_navigation.dart';
 import 'core/services/active_chat_service.dart';
 import 'core/services/compression_restore_store.dart';
 import 'core/services/android_launch_action_inbox.dart';
@@ -571,9 +570,18 @@ class HermesAppState extends State<HermesApp> with WidgetsBindingObserver {
   // Deep link hermes://pair (abrir la app ya rellena desde un enlace tocado).
   // La suscripción mantiene viva la instancia de AppLinks mientras escucha.
   StreamSubscription<Uri>? _linkSub;
-  final PairingLinkDeliveryGate _pairingLinkDeliveryGate =
-      PairingLinkDeliveryGate();
-  bool _pairingLinkRetryScheduled = false;
+  late final PairingLinkNavigation _pairingLinkNavigation =
+      PairingLinkNavigation(
+        lock: widget.appLock,
+        navigatorKey: _navigatorKey,
+        routeForLink: (link) => MaterialPageRoute<void>(
+          builder: (_) => InstanceEditScreen(
+            connManager: widget.connManager,
+            initialLink: link,
+            fromDeepLink: true,
+          ),
+        ),
+      );
 
   // Share Sheet Android. La bandeja cifra el contenido hasta convertirlo en un
   // borrador local; nunca lo envía automáticamente al agente.
@@ -1237,6 +1245,9 @@ class HermesAppState extends State<HermesApp> with WidgetsBindingObserver {
     voice.readAloud.addListener(_onReadAloudRuntimeChanged);
     FlutterForegroundTask.addTaskDataCallback(_onVoiceTaskData);
     // Deep link hermes://pair → abrir el alta de instancia ya rellena.
+    // Attach before listening for initial/stream links, including unlocks
+    // occurring while the navigator is still mounting.
+    _pairingLinkNavigation;
     _initDeepLinks();
     // ACTION_SEND/ACTION_SEND_MULTIPLE → borrador revisable en un chat nuevo.
     widget.connManager.activeConnectionId.addListener(_retryPendingShare);
@@ -2170,58 +2181,16 @@ class HermesAppState extends State<HermesApp> with WidgetsBindingObserver {
     try {
       final links = AppLinks();
       final initial = await links.getInitialLink();
-      if (initial != null) _handlePairingUri(initial);
-      _linkSub = links.uriLinkStream.listen(_handlePairingUri, onError: (_) {});
+      if (!mounted) return;
+      if (initial != null) _pairingLinkNavigation.handle(initial);
+      _linkSub = links.uriLinkStream.listen(
+        _pairingLinkNavigation.handle,
+        onError: (_) {},
+      );
     } catch (e) {
       // Sin deep links disponibles: el resto del onboarding sigue funcionando.
       debugPrint('main: _initDeepLinks falló (sin deep links disponibles): $e');
     }
-  }
-
-  /// Si la URI es un enlace de emparejado válido, abre el alta de instancia ya
-  /// precargada (reutiliza InstanceEditScreen.initialLink). Si no, la ignora.
-  void _handlePairingUri(Uri uri) {
-    final link = PairingLink.tryParse(uri.toString());
-    if (link == null) return;
-    final nav = _navigatorKey.currentState;
-    if (nav == null) {
-      _pairingLinkDeliveryGate.defer(uri);
-      _scheduleDeferredPairingLink();
-      return;
-    }
-    if (!_pairingLinkDeliveryGate.shouldHandle(uri)) return;
-    nav.push(
-      MaterialPageRoute(
-        builder: (_) => InstanceEditScreen(
-          connManager: widget.connManager,
-          initialLink: link,
-          fromDeepLink: true,
-        ),
-      ),
-    );
-    if (_pairingLinkDeliveryGate.hasDeferred) {
-      _scheduleDeferredPairingLink();
-    }
-  }
-
-  void _scheduleDeferredPairingLink() {
-    if (_pairingLinkRetryScheduled || !mounted) return;
-    _pairingLinkRetryScheduled = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _pairingLinkRetryScheduled = false;
-      if (!mounted) return;
-      final pending = _pairingLinkDeliveryGate.takeDeferredIf(
-        _navigatorKey.currentState != null,
-      );
-      if (pending == null) {
-        if (_pairingLinkDeliveryGate.hasDeferred) {
-          _scheduleDeferredPairingLink();
-        }
-        return;
-      }
-      _handlePairingUri(pending);
-    });
-    WidgetsBinding.instance.scheduleFrame();
   }
 
   Future<void> _initShareInbox() async {
@@ -2349,6 +2318,7 @@ class HermesAppState extends State<HermesApp> with WidgetsBindingObserver {
     _gatewayIdleTimer?.cancel();
     _externalDataSyncControl.setMethodCallHandler(null);
     _linkSub?.cancel();
+    _pairingLinkNavigation.dispose();
     widget.connManager.activeConnectionId.removeListener(_retryPendingShare);
     widget.connManager.connectionsRevision.removeListener(
       _syncBackgroundCronConnections,
