@@ -12,7 +12,8 @@ import 'package:hermes_android/core/services/server_setup_generator.dart';
 SavedConnection _conn() => SavedConnection(
   id: 'c1',
   label: 'Remoto',
-  host: '127.0.0.1',
+  // A remotely reachable private address exercises the non-loopback bind guard.
+  host: '192.168.1.10',
   port: 8642,
   apiKey: 'GW_KEY_123',
 );
@@ -123,6 +124,13 @@ void main() {
         api.close();
       },
     );
+
+    test('loopback bind does not request public-listener opt-in', () {
+      final script = RemoteBridgeInstaller.buildInstallScript('', '127.0.0.1');
+      expect(script, contains('BIND="127.0.0.1"'));
+      expect(script, contains('ExecStart=\$VP \$TARGET\n'));
+      expect(script, isNot(contains('--i-know-what-im-doing')));
+    });
 
     test('puede instalar exactamente el source remoto ya verificado', () async {
       const remote = 'VERSION = "9.8.7"\nprint("verified")\n';
