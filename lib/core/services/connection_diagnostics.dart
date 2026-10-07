@@ -13,6 +13,7 @@ import 'package:http/http.dart' as http;
 
 import '../../l10n/app_localizations.dart';
 import '../utils/transport_privacy.dart';
+import '../utils/private_http_client.dart';
 import 'connection_manager.dart';
 
 /// Persiste una matriz recién comprobada únicamente cuando el diagnóstico se
@@ -291,7 +292,7 @@ class ConnectionDiagnostics {
   static const _kTimeout = Duration(seconds: 8);
 
   ConnectionDiagnostics({http.Client? httpClient})
-    : _http = httpClient ?? http.Client();
+    : _http = PrivateHttpClient(httpClient ?? http.Client());
 
   void close() => _http.close();
 

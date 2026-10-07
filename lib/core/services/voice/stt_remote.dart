@@ -21,6 +21,8 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:record/record.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:web_socket_channel/io.dart';
+import '../../utils/private_websocket_client.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
 
 import '../../utils/transport_privacy.dart';
@@ -312,7 +314,8 @@ class ServerSttEngine implements SttEngine {
   }
 
   Future<_SttChannel> _connectLegacy(Duration readyTimeout) async {
-    final legacy = WebSocketChannel.connect(_legacyUri);
+    final legacy = IOWebSocketChannel.connect(_legacyUri,
+        customClient: privateWebSocketHttpClient);
     await legacy.ready.timeout(readyTimeout);
     return (channel: legacy, stream: legacy.stream, firstMessage: null);
   }
@@ -334,7 +337,8 @@ class ServerSttEngine implements SttEngine {
   /// reintenta UNA vez con el token en la query (comportamiento anterior a
   /// este cambio) — fallback documentado para servidores viejos.
   Future<_SttChannel> _connectWithAuth(Duration readyTimeout) async {
-    final ch = WebSocketChannel.connect(_uri);
+    final ch = IOWebSocketChannel.connect(_uri,
+        customClient: privateWebSocketHttpClient);
     try {
       await ch.ready.timeout(readyTimeout);
     } catch (_) {
