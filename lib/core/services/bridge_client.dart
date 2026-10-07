@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart'
     show Uint8List, debugPrint, immutable, visibleForTesting;
 import 'package:http/http.dart' as http;
+import '../utils/private_http_client.dart';
 
 import '../utils/transport_privacy.dart';
 import 'profile_chat_mode.dart';
@@ -281,7 +282,7 @@ class BridgeClient {
              ? baseUrl.substring(0, baseUrl.length - 1)
              : baseUrl,
        ),
-       _http = httpClient ?? http.Client();
+       _http = PrivateHttpClient(httpClient ?? http.Client());
 
   Map<String, String> get _headers => {
     'Authorization': 'Bearer $token',
@@ -526,7 +527,7 @@ class BridgeClient {
         BridgeProvisionFailure.missingApiKey,
       );
     }
-    final client = httpClient ?? http.Client();
+    final client = PrivateHttpClient(httpClient ?? http.Client());
     try {
       final res = await client
           .post(
@@ -637,7 +638,7 @@ class BridgeClient {
     } on ArgumentError {
       return null;
     }
-    final client = httpClient ?? http.Client();
+    final client = PrivateHttpClient(httpClient ?? http.Client());
     try {
       final res = await client
           .get(Uri.parse('$base/bridge/health'))

@@ -16,6 +16,7 @@
 
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import '../utils/private_http_client.dart';
 
 /// A single skill entry from the skills.sh registry.
 class StoreSkill {
@@ -102,7 +103,7 @@ class SkillStoreClient {
 
   SkillStoreClient({String? bearerToken, http.Client? httpClient})
     : _bearerToken = bearerToken, // ignore: prefer_initializing_formals
-      _http = httpClient ?? http.Client();
+      _http = PrivateHttpClient(httpClient ?? http.Client());
 
   /// Whether this client has authentication credentials and can make live
   /// requests to skills.sh. Always false in the current build.
