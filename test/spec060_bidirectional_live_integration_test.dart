@@ -306,6 +306,9 @@ Future<void> _waitUntil(bool Function() predicate) async {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  // These integration tests use real loopback WebSockets, not Flutter's mocked
+  // HttpClient (which cannot detach a socket for the upgrade handshake).
+  HttpOverrides.global = null;
   SharedPreferences.setMockInitialValues({});
 
   test(
