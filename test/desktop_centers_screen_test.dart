@@ -195,6 +195,163 @@ void _expectNoPrivateProjection(WidgetTester tester) {
 }
 
 void main() {
+  for (final staleFails in [false, true]) {
+    for (final staleFinishesFirst in [false, true]) {
+      testWidgets('Projects fences stale ${staleFails ? 'failure' : 'success'} '
+          '${staleFinishesFirst ? 'before' : 'after'} current completion', (
+        tester,
+      ) async {
+        PrivateRenderCaches.clearAll();
+        addTearDown(PrivateRenderCaches.clearAll);
+        final manager = await _manager();
+        final connectionB = SavedConnection(
+          id: 'connection-b',
+          label: 'Connection B',
+          host: '127.0.0.1',
+          port: 8642,
+          apiKey: '',
+        );
+        ProjectTreeSnapshot tree(String label) => ProjectTreeSnapshot.fromJson({
+          'projects': [
+            {'id': label, 'label': label, 'repos': []},
+          ],
+        });
+        final pendingA = Completer<ProjectTreeSnapshot>();
+        final pendingB = Completer<ProjectTreeSnapshot>();
+        final gatewayA = _FakeControlGateway()..projectGate = pendingA;
+        final gatewayB = _FakeControlGateway()..projectGate = pendingB;
+        Widget screen(
+          SavedConnection connection,
+          _FakeControlGateway gateway,
+        ) => _app(
+          ProjectsCenterScreen(
+            connection: connection,
+            connectionManager: manager,
+            gateway: gateway,
+          ),
+        );
+        void completeA() {
+          if (staleFails) {
+            pendingA.completeError(
+              const DesktopControlFailure(
+                DesktopControlFailureKind.unavailable,
+              ),
+            );
+          } else {
+            pendingA.complete(tree('Project A'));
+          }
+        }
+
+        await tester.pumpWidget(screen(_connection, gatewayA));
+        await tester.pump();
+        final stateA = tester.state(find.byType(ProjectsCenterScreen));
+        await tester.pumpWidget(screen(connectionB, gatewayB));
+        await tester.pump();
+        expect(tester.state(find.byType(ProjectsCenterScreen)), same(stateA));
+        expect(gatewayA.projectTreeCalls, 1);
+        expect(gatewayB.projectTreeCalls, 1);
+        if (staleFinishesFirst) {
+          completeA();
+          await tester.pump();
+          expect(find.byType(CircularProgressIndicator), findsOneWidget);
+          expect(ProjectsCenterScreen.memoryCacheLengthForTesting, 0);
+          expect(find.text('Project A'), findsNothing);
+        }
+        pendingB.complete(tree('Project B'));
+        await tester.pumpAndSettle();
+        if (!staleFinishesFirst) {
+          completeA();
+          await tester.pumpAndSettle();
+        }
+        final strings = Strings.of(
+          tester.element(find.byType(ProjectsCenterScreen)),
+        );
+        expect(find.text('Project B'), findsOneWidget);
+        expect(find.text('Project A'), findsNothing);
+        expect(
+          find.text(
+            strings.projectsCenterStaleView(
+              strings.projectsCenterFailureUnavailable,
+            ),
+          ),
+          findsNothing,
+        );
+        expect(find.byType(CircularProgressIndicator), findsNothing);
+        expect(find.byType(LinearProgressIndicator), findsNothing);
+        expect(ProjectsCenterScreen.memoryCacheLengthForTesting, 1);
+
+        // A fresh State must hydrate B from B's cache, not from stale A.
+        await tester.pumpWidget(_app(const SizedBox.shrink()));
+        final refresh = Completer<ProjectTreeSnapshot>();
+        final reopenedGateway = _FakeControlGateway()..projectGate = refresh;
+        await tester.pumpWidget(screen(connectionB, reopenedGateway));
+        await tester.pump();
+        expect(find.text('Project B'), findsOneWidget);
+        expect(find.text('Project A'), findsNothing);
+        expect(find.byType(LinearProgressIndicator), findsOneWidget);
+        refresh.complete(tree('Project B'));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+      });
+    }
+  }
+
+  testWidgets('Projects fences overlapping loads on the same gateway', (
+    tester,
+  ) async {
+    PrivateRenderCaches.clearAll();
+    addTearDown(PrivateRenderCaches.clearAll);
+    final manager = await _manager();
+    final gateway = _FakeControlGateway();
+    await tester.pumpWidget(
+      _app(
+        ProjectsCenterScreen(
+          connection: _connection,
+          connectionManager: manager,
+          gateway: gateway,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final refresh = tester.widget<RefreshIndicator>(
+      find.byType(RefreshIndicator),
+    );
+    final older = Completer<ProjectTreeSnapshot>();
+    gateway.projectGate = older;
+    final olderLoad = refresh.onRefresh();
+    final newer = Completer<ProjectTreeSnapshot>();
+    gateway.projectGate = newer;
+    final newerLoad = refresh.onRefresh();
+    older.completeError(
+      const DesktopControlFailure(DesktopControlFailureKind.unavailable),
+    );
+    await olderLoad;
+    await tester.pump();
+    expect(find.byType(LinearProgressIndicator), findsOneWidget);
+    newer.complete(
+      ProjectTreeSnapshot.fromJson({
+        'projects': [
+          {'id': 'new', 'label': 'Newest project', 'repos': []},
+        ],
+      }),
+    );
+    await newerLoad;
+    await tester.pumpAndSettle();
+    expect(find.text('Newest project'), findsOneWidget);
+    final strings = Strings.of(
+      tester.element(find.byType(ProjectsCenterScreen)),
+    );
+    expect(
+      find.text(
+        strings.projectsCenterStaleView(
+          strings.projectsCenterFailureUnavailable,
+        ),
+      ),
+      findsNothing,
+    );
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+  });
+
   testWidgets('Projects renders authoritative project and hydrated lane', (
     tester,
   ) async {
