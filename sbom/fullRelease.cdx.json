@@ -4186,7 +4186,7 @@
       "version": "13.0.0"
     },
     {
-      "bom-ref": "pkg:pub/app_links@6.4.1",
+      "bom-ref": "pkg:pub/app_links@7.2.2",
       "licenses": [
         {
           "expression": "Apache-2.0"
@@ -4207,12 +4207,12 @@
           "value": "LICENSE"
         }
       ],
-      "purl": "pkg:pub/app_links@6.4.1",
+      "purl": "pkg:pub/app_links@7.2.2",
       "type": "library",
-      "version": "6.4.1"
+      "version": "7.2.2"
     },
     {
-      "bom-ref": "pkg:pub/app_links_linux@1.0.3",
+      "bom-ref": "pkg:pub/app_links_linux@1.0.4",
       "licenses": [
         {
           "expression": "Apache-2.0"
@@ -4233,12 +4233,12 @@
           "value": "LICENSE"
         }
       ],
-      "purl": "pkg:pub/app_links_linux@1.0.3",
+      "purl": "pkg:pub/app_links_linux@1.0.4",
       "type": "library",
-      "version": "1.0.3"
+      "version": "1.0.4"
     },
     {
-      "bom-ref": "pkg:pub/app_links_platform_interface@2.0.3",
+      "bom-ref": "pkg:pub/app_links_platform_interface@2.0.4",
       "licenses": [
         {
           "expression": "Apache-2.0"
@@ -4259,12 +4259,12 @@
           "value": "LICENSE"
         }
       ],
-      "purl": "pkg:pub/app_links_platform_interface@2.0.3",
+      "purl": "pkg:pub/app_links_platform_interface@2.0.4",
       "type": "library",
-      "version": "2.0.3"
+      "version": "2.0.4"
     },
     {
-      "bom-ref": "pkg:pub/app_links_web@1.0.4",
+      "bom-ref": "pkg:pub/app_links_web@1.0.5",
       "licenses": [
         {
           "expression": "Apache-2.0"
@@ -4285,9 +4285,9 @@
           "value": "LICENSE"
         }
       ],
-      "purl": "pkg:pub/app_links_web@1.0.4",
+      "purl": "pkg:pub/app_links_web@1.0.5",
       "type": "library",
-      "version": "1.0.4"
+      "version": "1.0.5"
     },
     {
       "bom-ref": "pkg:pub/archive@4.0.9",
@@ -6058,33 +6058,7 @@
       "version": "2.3.2"
     },
     {
-      "bom-ref": "pkg:pub/gtk@2.2.0",
-      "licenses": [
-        {
-          "expression": "MPL-2.0"
-        }
-      ],
-      "name": "gtk",
-      "properties": [
-        {
-          "name": "hermes.dependency.kind",
-          "value": "transitive"
-        },
-        {
-          "name": "hermes.dependency.source",
-          "value": "hosted"
-        },
-        {
-          "name": "hermes.license.files",
-          "value": "LICENSE"
-        }
-      ],
-      "purl": "pkg:pub/gtk@2.2.0",
-      "type": "library",
-      "version": "2.2.0"
-    },
-    {
-      "bom-ref": "pkg:pub/hermes_android@1.2.14+9420",
+      "bom-ref": "pkg:pub/hermes_android@0.1.0+1",
       "licenses": [
         {
           "expression": "GPL-3.0-only"
@@ -6105,9 +6079,9 @@
           "value": "LICENSE"
         }
       ],
-      "purl": "pkg:pub/hermes_android@1.2.14+9420",
+      "purl": "pkg:pub/hermes_android@0.1.0+1",
       "type": "application",
-      "version": "1.2.14+9420"
+      "version": "0.1.0+1"
     },
     {
       "bom-ref": "pkg:pub/highlight@0.7.0",
@@ -9803,36 +9777,35 @@
     },
     {
       "dependsOn": [
-        "pkg:pub/app_links_linux@1.0.3",
-        "pkg:pub/app_links_platform_interface@2.0.3",
-        "pkg:pub/app_links_web@1.0.4",
+        "pkg:pub/app_links_linux@1.0.4",
+        "pkg:pub/app_links_platform_interface@2.0.4",
+        "pkg:pub/app_links_web@1.0.5",
         "pkg:pub/flutter@0.0.0"
       ],
-      "ref": "pkg:pub/app_links@6.4.1"
+      "ref": "pkg:pub/app_links@7.2.2"
     },
     {
       "dependsOn": [
-        "pkg:pub/app_links_platform_interface@2.0.3",
-        "pkg:pub/flutter@0.0.0",
-        "pkg:pub/gtk@2.2.0"
+        "pkg:pub/app_links_platform_interface@2.0.4",
+        "pkg:pub/flutter@0.0.0"
       ],
-      "ref": "pkg:pub/app_links_linux@1.0.3"
+      "ref": "pkg:pub/app_links_linux@1.0.4"
     },
     {
       "dependsOn": [
         "pkg:pub/flutter@0.0.0",
         "pkg:pub/plugin_platform_interface@2.1.8"
       ],
-      "ref": "pkg:pub/app_links_platform_interface@2.0.3"
+      "ref": "pkg:pub/app_links_platform_interface@2.0.4"
     },
     {
       "dependsOn": [
-        "pkg:pub/app_links_platform_interface@2.0.3",
+        "pkg:pub/app_links_platform_interface@2.0.4",
         "pkg:pub/flutter@0.0.0",
         "pkg:pub/flutter_web_plugins@0.0.0",
         "pkg:pub/web@1.1.1"
       ],
-      "ref": "pkg:pub/app_links_web@1.0.4"
+      "ref": "pkg:pub/app_links_web@1.0.5"
     },
     {
       "dependsOn": [
@@ -10409,15 +10382,7 @@
     },
     {
       "dependsOn": [
-        "pkg:pub/ffi@2.2.0",
-        "pkg:pub/flutter@0.0.0",
-        "pkg:pub/meta@1.19.0"
-      ],
-      "ref": "pkg:pub/gtk@2.2.0"
-    },
-    {
-      "dependsOn": [
-        "pkg:pub/app_links@6.4.1",
+        "pkg:pub/app_links@7.2.2",
         "pkg:pub/archive@4.0.9",
         "pkg:pub/audioplayers@6.7.1",
         "pkg:pub/build_runner@2.15.0",
@@ -10466,7 +10431,7 @@
         "pkg:pub/whisper_ggml_plus@1.5.2",
         "pkg:pub/xterm@4.0.0"
       ],
-      "ref": "pkg:pub/hermes_android@1.2.14+9420"
+      "ref": "pkg:pub/hermes_android@0.1.0+1"
     },
     {
       "dependsOn": [
@@ -11628,7 +11593,7 @@
   ],
   "metadata": {
     "component": {
-      "bom-ref": "pkg:pub/hermes_android@1.2.14+9420",
+      "bom-ref": "pkg:pub/hermes_android@0.1.0+1",
       "licenses": [
         {
           "expression": "GPL-3.0-only"
@@ -11649,14 +11614,14 @@
           "value": "LICENSE"
         }
       ],
-      "purl": "pkg:pub/hermes_android@1.2.14+9420",
+      "purl": "pkg:pub/hermes_android@0.1.0+1",
       "type": "application",
-      "version": "1.2.14+9420"
+      "version": "0.1.0+1"
     },
     "properties": [
       {
         "name": "hermes.input.sha256",
-        "value": "774a125828376fc9d1bfc34f31ff72418d9e217bdef25c86a4fc436de8834654"
+        "value": "e70e22793f49bed6a7055cd1f9942ad2f713268a73cae595f8702eb62dbac73f"
       },
       {
         "name": "hermes.android.variant",
@@ -11668,7 +11633,7 @@
       }
     ]
   },
-  "serialNumber": "urn:uuid:7bd6829f-0091-4b4d-aadc-7d01d188ec08",
+  "serialNumber": "urn:uuid:cc769127-a6c5-4a5f-a849-bc3c3d0a5d44",
   "specVersion": "1.6",
   "version": 1
 }
