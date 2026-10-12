@@ -47,7 +47,7 @@ dependencies:
   # Misc
   url_launcher: ^6.3.0
   package_info_plus: ^8.0.0
-  app_links: ^6.3.0 # deep link hermes://pair (abrir la app ya rellena)
+  app_links: 7.2.2 # deep link hermes://pair (abrir la app ya rellena)
   share_plus: ^10.1.4 # compartir imágenes generadas (spec 030)
   gal: ^2.3.1 # guardar imágenes generadas en la galería (spec 030)
 
