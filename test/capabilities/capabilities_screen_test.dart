@@ -73,6 +73,63 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('duplicate installed plugin records render one row', (
+    tester,
+  ) async {
+    final rest = populatedServer()
+      ..gets['dashboard/plugins/hub'] = {
+        'plugins': [
+          {'name': 'deepinfra', 'runtime_status': 'enabled', 'source': 'local'},
+          {'name': 'deepinfra', 'runtime_status': 'enabled', 'source': 'local'},
+        ],
+      };
+    await _pumpHub(tester, rest);
+
+    expect(tester.takeException(), isNull);
+    await tester.tap(find.byKey(const ValueKey('cph-seg-installed')));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(
+      find.byKey(const ValueKey('cph-row-plugin:installed:deepinfra')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('duplicate installed skill records render one row', (
+    tester,
+  ) async {
+    final rest = populatedServer()
+      ..gets['skills'] = [
+        {'name': 'notes', 'enabled': true, 'provenance': 'agent'},
+        {'name': 'notes', 'enabled': true, 'provenance': 'agent'},
+      ];
+    await _pumpHub(tester, rest);
+    await tester.tap(find.byKey(const ValueKey('cph-seg-installed')));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(
+      find.byKey(const ValueKey('cph-row-skill:installed:notes')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('duplicate catalog plugin records render one row', (
+    tester,
+  ) async {
+    final rest = populatedServer();
+    final entries =
+        (rest.gets['dashboard/plugins/catalog'] as Map)['entries'] as List;
+    entries.add(Map<String, Object>.from(entries.single as Map));
+    await _pumpHub(tester, rest);
+
+    expect(tester.takeException(), isNull);
+    expect(
+      find.byKey(const ValueKey('cph-row-plugin:community:weather')),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('search filters locally and the filter menu narrows by kind', (
     tester,
   ) async {
