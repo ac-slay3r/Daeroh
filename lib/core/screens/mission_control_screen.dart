@@ -3567,18 +3567,15 @@ class _HostedRoomWorkspaceState extends State<_HostedRoomWorkspace> {
 }
 
 final class _RoomsAreaCopy {
-  final bool _english;
+  final Strings _strings;
 
-  const _RoomsAreaCopy._(this._english);
+  const _RoomsAreaCopy._(this._strings);
 
-  factory _RoomsAreaCopy.of(BuildContext context) => _RoomsAreaCopy._(
-    Localizations.localeOf(context).languageCode.toLowerCase() == 'en',
-  );
+  factory _RoomsAreaCopy.of(BuildContext context) =>
+      _RoomsAreaCopy._(Strings.of(context));
 
-  String get removeMember => _english ? 'Remove' : 'Quitar';
-  String get noMembersChosen => _english
-      ? 'Tap a bot to add it to the room.'
-      : 'Toca un bot para añadirlo a la sala.';
+  String get removeMember => _strings.missionRoomRemoveMember;
+  String get noMembersChosen => _strings.missionRoomNoMembersChosen;
 }
 
 class _LoungeEmptyState extends StatelessWidget {
