@@ -48,7 +48,7 @@ Hermes Agent upstream: https://github.com/NousResearch/hermes-agent
 - **Backend**: Hermes Agent Gateway (self-hosted)
 - **Conectividad**: Tailscale / LAN / HTTPS
 - **Seguridad**: Android Keystore, flutter_secure_storage
-- **Target**: Android 10+, GrapheneOS compatible
+- **Android mínimo**: Android 10 (API 29), GrapheneOS compatible
 
 ## Métricas de éxito de la fase inicial
 

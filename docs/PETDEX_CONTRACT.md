@@ -103,6 +103,22 @@ implementa**:
   Así el usuario puede descargar una mascota de petdex.dev e importarla **localmente**
   (sin que la app haga red ni instale por API).
 
+## Dialecto ZIP admitido por la importación local
+
+El importador acotado (`BoundedCompanionZip`) acepta **solo** ZIP32 de un único
+disco, **sin cifrar**, con entradas **STORE (0) o DEFLATE (8)**, nombres UTF-8 y
+data descriptors opcionales. El `zip.zip` real de Petdex (`pet.json` +
+`spritesheet.webp`) cumple este dialecto. Se rechazan deliberadamente, sin
+inflar ningún dato: cifrado (tradicional/fuerte), ZIP64, varios discos/volúmenes
+y cualquier otro códec (bzip2, LZMA, zstd…). Límites: 12 MiB, 256 entradas.
+
+La UI de Mascotas distingue estos casos (`UnsupportedCompanionZipException` →
+`CompanionImportException.unsupportedZipFormat`) y muestra el aviso localizado
+`petImportUnsupportedZip` (es/en) con la acción: volver a descargar el ZIP de
+Petdex o recrearlo sin contraseña y con compresión estándar. Un ZIP corrupto o
+malformado sigue mostrando el error genérico. Alcance: fuente/tests; sin
+afirmación de ejecución en dispositivo Android.
+
 ## Reevaluación futura (Fase C, solo si Petdex publica contrato estable)
 
 Para habilitar instalación in-app de forma segura, Petdex necesitaría exponer un
