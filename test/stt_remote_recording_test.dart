@@ -5,13 +5,18 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/services/voice/stt_engine.dart';
 import 'package:hermes_android/core/services/voice/stt_remote.dart';
+import 'package:hermes_android/core/services/voice/voice_lang.dart';
 import 'package:record/record.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class _Recorder implements ServerSttRecorder {
+  _Recorder({this.permitted = true});
+
+  final bool permitted;
   final audio = StreamController<Uint8List>();
   bool disposed = false;
   @override
-  Future<bool> hasPermission() async => true;
+  Future<bool> hasPermission() async => permitted;
   @override
   Future<Stream<Uint8List>> startStream(RecordConfig config) async =>
       audio.stream;
@@ -25,6 +30,7 @@ class _Recorder implements ServerSttRecorder {
 }
 
 class _Session implements ServerSttSession {
+  bool failAudio = false;
   final incoming = StreamController<dynamic>();
   final sent = <Object>[];
   bool closed = false;
@@ -35,6 +41,7 @@ class _Session implements ServerSttSession {
   Stream<dynamic> get messages => incoming.stream;
   @override
   void add(Object data) {
+    if (failAudio && data is Uint8List) throw StateError('Private connection');
     if (closed) throw StateError('Closed');
     sent.add(data);
   }
@@ -56,6 +63,87 @@ Future<void> _tick() async {
 }
 
 void main() {
+  for (final locale in ['en', 'es']) {
+    test('$locale: permission failure uses effective voice language', () async {
+      SharedPreferences.setMockInitialValues({kAppLocalePrefKey: locale});
+      final prefs = await SharedPreferences.getInstance();
+      final engine = ServerSttEngine(
+        baseUrl: 'wss://speech.invalid',
+        lang: effectiveVoiceLang(prefs),
+        recorderFactory: () => _Recorder(permitted: false),
+        connector: (_) async => throw StateError('Must not connect'),
+      );
+      addTearDown(engine.dispose);
+      final errors = <Object>[];
+      await engine.listen().handleError(errors.add).toList();
+      expect(errors, hasLength(1));
+      expect(
+        errors.single.toString(),
+        locale == 'es'
+            ? 'Exception: Se necesita permiso para usar el micrófono y reconocer la voz.'
+            : 'Exception: Microphone permission is required for speech recognition.',
+      );
+    });
+
+    test('$locale: connection failure has localized visible message', () async {
+      SharedPreferences.setMockInitialValues({kAppLocalePrefKey: locale});
+      final prefs = await SharedPreferences.getInstance();
+      final recorder = _Recorder();
+      final session = _Session()..failAudio = true;
+      final engine = ServerSttEngine(
+        baseUrl: 'wss://speech.invalid',
+        lang: effectiveVoiceLang(prefs),
+        recorderFactory: () => recorder,
+        connector: (_) async => session,
+      );
+      addTearDown(engine.dispose);
+      final ready = Completer<void>();
+      final errors = <Object>[];
+      final done = Completer<void>();
+      engine.listen(onCaptureReady: ready.complete).listen(
+        (_) {},
+        onError: errors.add,
+        onDone: done.complete,
+      );
+      await ready.future;
+      recorder.audio.add(Uint8List.fromList([0, 100]));
+      await done.future;
+      expect(errors, hasLength(1));
+      expect(
+        errors.single.toString(),
+        locale == 'es'
+            ? 'Exception: Error de conexión con el servidor. Inténtalo de nuevo.'
+            : 'Exception: Server connection error. Please retry.',
+      );
+    });
+
+    test('$locale: startup connection failure uses localized text', () async {
+      SharedPreferences.setMockInitialValues({kAppLocalePrefKey: locale});
+      final prefs = await SharedPreferences.getInstance();
+      var attempts = 0;
+      final engine = ServerSttEngine(
+        baseUrl: 'wss://speech.invalid',
+        lang: effectiveVoiceLang(prefs),
+        recorderFactory: _Recorder.new,
+        connector: (_) async {
+          attempts++;
+          throw StateError('Private connection details');
+        },
+      );
+      addTearDown(engine.dispose);
+      final errors = <Object>[];
+      await engine.listen().handleError(errors.add).toList();
+      expect(attempts, 2);
+      expect(errors, hasLength(1));
+      expect(
+        errors.single.toString(),
+        locale == 'es'
+            ? 'Exception: No se pudo iniciar el reconocimiento de voz del servidor.'
+            : 'Exception: Could not start server speech recognition.',
+      );
+    });
+  }
+
   test(
     'three recordings each use fresh resources and exactly one final',
     () async {
