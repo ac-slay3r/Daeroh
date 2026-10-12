@@ -227,6 +227,42 @@ void main() {
       expect(leftovers, isEmpty);
     });
 
+    test('ZIP cifrado se marca como formato no admitido', () async {
+      final zip = _zip({
+        'pet.json': utf8.encode(_validManifest()),
+        'spritesheet.webp': _fakeWebp(),
+      });
+      final data = ByteData.sublistView(zip);
+      final central = data.getUint32(zip.length - 6, Endian.little);
+      data.setUint16(central + 8, 1, Endian.little); // encrypted flag
+      await expectLater(
+        service.importFromZipBytes(zip, storageRoot: root),
+        throwsA(
+          isA<CompanionImportException>().having(
+            (e) => e.unsupportedZipFormat,
+            'unsupportedZipFormat',
+            isTrue,
+          ),
+        ),
+      );
+    });
+
+    test('ZIP corrupto NO se marca como formato no admitido', () async {
+      await expectLater(
+        service.importFromZipBytes(
+          Uint8List.fromList(List.filled(64, 7)),
+          storageRoot: root,
+        ),
+        throwsA(
+          isA<CompanionImportException>().having(
+            (e) => e.unsupportedZipFormat,
+            'unsupportedZipFormat',
+            isFalse,
+          ),
+        ),
+      );
+    });
+
     test('rechaza un slug no permitido', () async {
       final zip = _zip({
         'pet.json': utf8.encode(_validManifest(slug: 'Bad/Slug')),
@@ -273,6 +309,94 @@ void main() {
         () => small.importFromZipBytes(zip, storageRoot: root),
         throwsA(isA<CompanionImportException>()),
       );
+    });
+
+    test('rechaza expansión declarada antes de inflar el ZIP', () async {
+      final zip = _zip({
+        'pet.json': utf8.encode(_validManifest()),
+        'spritesheet.webp': _fakeWebp(256 * 1024),
+      });
+      expect(zip.length, lessThan(4096));
+      final small = const CompanionImportService(maxZipBytes: 4096);
+      await expectLater(
+        small.importFromZipBytes(zip, storageRoot: root),
+        throwsA(isA<CompanionImportException>()),
+      );
+      expect(root.listSync(), isEmpty);
+    });
+
+    test(
+      'bomb fixture and forged sizes leave existing installation intact',
+      () async {
+        final pet = await service.importFromZipBytes(
+          _zip({
+            'pet.json': utf8.encode(_validManifest()),
+            'spritesheet.webp': _fakeWebp(),
+          }),
+          storageRoot: root,
+        );
+        final sprite = File(pet.spritesheetAsset).readAsBytesSync();
+        final manifest = File('${root.path}/kitty/pet.json').readAsBytesSync();
+        for (final forge in [false, true]) {
+          final zip = File(
+            'test/companion/fixtures/manifest_bomb.zip',
+          ).readAsBytesSync();
+          if (forge) {
+            final data = ByteData.sublistView(zip);
+            final central = data.getUint32(zip.length - 6, Endian.little);
+            data.setUint32(22, 32, Endian.little);
+            data.setUint32(central + 24, 32, Endian.little);
+          }
+          await expectLater(
+            service.importFromZipBytes(zip, storageRoot: root),
+            throwsA(isA<CompanionImportException>()),
+          );
+          expect(File(pet.spritesheetAsset).readAsBytesSync(), sprite);
+          expect(
+            File('${root.path}/kitty/pet.json').readAsBytesSync(),
+            manifest,
+          );
+          expect(root.listSync().length, 1);
+        }
+      },
+    );
+
+    test('limita expansión real aunque mienta el directorio central', () async {
+      final zip = _zip({
+        'pet.json': List.filled(128 * 1024, 0x20),
+        'spritesheet.webp': _fakeWebp(),
+      });
+      expect(zip.length, lessThan(4096));
+      // Central-directory file header: signature + 24 = uncompressed size.
+      final data = ByteData.sublistView(zip);
+      var patched = false;
+      for (var i = 0; i <= zip.length - 54; i++) {
+        if (data.getUint32(i, Endian.little) == 0x02014b50 &&
+            utf8.decode(zip.sublist(i + 46, i + 54)) == 'pet.json') {
+          data.setUint32(i + 24, 32, Endian.little);
+          patched = true;
+          break;
+        }
+      }
+      expect(patched, isTrue);
+      await expectLater(
+        service.importFromZipBytes(zip, storageRoot: root),
+        throwsA(isA<CompanionImportException>()),
+      );
+      expect(root.listSync(), isEmpty);
+    });
+
+    test('rechaza demasiadas entradas incluso si son directorios', () async {
+      final zip = _zip({
+        'pet.json': utf8.encode(_validManifest()),
+        'spritesheet.webp': _fakeWebp(),
+        for (var i = 0; i < 255; i++) 'extras/$i/': <int>[],
+      });
+      await expectLater(
+        service.importFromZipBytes(zip, storageRoot: root),
+        throwsA(isA<CompanionImportException>()),
+      );
+      expect(root.listSync(), isEmpty);
     });
 
     test('nunca sobrescribe una mascota base (slug protegido)', () async {

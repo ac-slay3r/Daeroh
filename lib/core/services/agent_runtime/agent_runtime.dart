@@ -5,8 +5,9 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import '../secure_storage_policy.dart';
 
 /// Estado de un runtime de agente desde el punto de vista de la Consola.
 enum AgentRuntimeStatus {
@@ -143,7 +144,7 @@ class AgentRuntimeConsts {
   static Future<String> getOrGenerateLocalToken() async {
     // Limpia cualquier UUID heredado de versiones anteriores (best-effort) para
     // que no quede ruido en SecureStorage; el token efectivo es siempre el fijo.
-    const storage = FlutterSecureStorage();
+    const storage = sharedSecureStorage;
     const legacyKey = 'local_agent_session_token';
     try {
       final legacy = await storage.read(key: legacyKey);

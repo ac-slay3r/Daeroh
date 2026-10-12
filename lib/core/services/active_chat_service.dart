@@ -1,5 +1,6 @@
 import '../models/bot_mention.dart';
 import 'bot_mention_roster.dart';
+import 'secure_storage_policy.dart';
 // Servicio singleton que posee el streaming SSE de los chats. Vive por encima
 // del Navigator (en HermesAppState), así que la respuesta/ejecución del agente
 // CONTINÚA aunque el usuario salga de la pantalla del chat. La pantalla del chat
@@ -1989,7 +1990,7 @@ class CancelledTurnTombstoneStore {
        _nowMs = nowMs ?? (() => DateTime.now().millisecondsSinceEpoch);
 
   factory CancelledTurnTombstoneStore.secure({
-    FlutterSecureStorage secureStorage = const FlutterSecureStorage(),
+    FlutterSecureStorage secureStorage = sharedSecureStorage,
   }) => CancelledTurnTombstoneStore(
     read: () => secureStorage.read(key: _storageKey),
     write: (value) => secureStorage.write(key: _storageKey, value: value),

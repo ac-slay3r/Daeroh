@@ -4,6 +4,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'mission_store_mutation_queue.dart';
+import 'secure_storage_policy.dart';
 
 enum MissionBotChatPinState { absent, available, corrupt, unavailable }
 
@@ -42,7 +43,7 @@ final class MissionBotChatStore {
 
   MissionBotChatStore(
     this._prefs, {
-    FlutterSecureStorage secureStorage = const FlutterSecureStorage(),
+    FlutterSecureStorage secureStorage = sharedSecureStorage,
   }) : _secure = secureStorage;
 
   static String _scope(String value) =>
