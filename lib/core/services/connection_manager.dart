@@ -1075,10 +1075,15 @@ class ConnectionManager {
     await bestEffortCleanup(
       () async => MissionBotChatStore(prefs).deleteForConnection(id),
     );
-    // Credenciales (Keystore).
-    await _secure.deleteApiKey(id);
-    await _secure.deleteDashboardSecrets(id);
-    await _secure.deleteBridge(id);
+    // Credenciales (Keystore): intentar todas aunque falle otra authority.
+    // Esperar todos los intentos y propagar el error antes de retirar la
+    // conexión, para no anunciar una baja completa si quedan secretos.
+    await Future.wait<void>([
+      _secure.deleteApiKey(id),
+      _secure.deleteDashboardSecrets(id),
+      _secure.deleteBridge(id),
+      _secure.deleteSsh(id),
+    ], eagerError: false);
     // Todos los datos con ámbito de esta conexión (caps, perfil activo, runs,
     // aprobaciones, sesiones archivadas/ocultas, borradores de memoria).
     await _removeConnectionPrefs(id);
