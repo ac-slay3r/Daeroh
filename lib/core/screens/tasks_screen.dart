@@ -89,6 +89,9 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
   String? _assigneeFilter;
   bool _includeArchived = false;
   _TasksView _view = _TasksView.list;
+  // Shared by explicit loads, background refreshes and local filter changes.
+  // Comparing values alone misses A → B → A and filter reset interleavings.
+  int _requestGeneration = 0;
 
   List<KanbanBoardRef> _boards = const [];
   late String? _selectedBoard;
@@ -122,7 +125,7 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
     _client = widget.clientOverride ?? KanbanClient(widget.connection);
     _load().whenComplete(() {
       if (mounted) {
-        _subscribeEvents();
+        if (!_paused) _subscribeEvents();
         _scheduleInitialTaskOpen();
       }
     });
@@ -172,6 +175,8 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
       case AppLifecycleState.hidden:
       case AppLifecycleState.detached:
         _paused = true;
+        _refreshDebounce?.cancel();
+        _refreshDebounce = null;
         _reconnectTimer?.cancel();
         _eventsSub?.cancel();
         _eventsSub = null;
@@ -214,14 +219,24 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
     super.dispose();
   }
 
+  bool _isCurrentRequest(int generation, String? slug, bool includeArchived) =>
+      mounted &&
+      generation == _requestGeneration &&
+      slug == _selectedBoard &&
+      includeArchived == _includeArchived;
+
   Future<void> _load() async {
+    final slug = _selectedBoard;
+    final includeArchived = _includeArchived;
+    final generation = ++_requestGeneration;
+    bool current() => _isCurrentRequest(generation, slug, includeArchived);
     if (!_loading) setState(() => _loading = true);
     try {
       final board = await _client.getBoard(
-        includeArchived: _includeArchived,
-        board: _selectedBoard,
+        includeArchived: includeArchived,
+        board: slug,
       );
-      if (!mounted) return;
+      if (!current()) return;
       setState(() {
         _board = board;
         _error = null;
@@ -229,10 +244,11 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
       });
       // Cookie ya establecida por getBoard: descubrir capacidades y perfiles
       // secuencialmente para no disparar logins paralelos que se pisen.
-      await _discoverBoards();
+      await _discoverBoards(generation);
+      if (!mounted || generation != _requestGeneration) return;
       await _ensureProfiles();
     } catch (e) {
-      if (!mounted) return;
+      if (!current()) return;
       setState(() {
         _error = _humanError(e);
         _loading = false;
@@ -240,11 +256,11 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _discoverBoards() async {
+  Future<void> _discoverBoards(int generation) async {
     if (_boardCapabilityChecked) return;
     try {
       final catalog = await _client.getBoardsIfSupported();
-      if (!mounted) return;
+      if (!mounted || generation != _requestGeneration) return;
       if (catalog == null) {
         _boardCapabilityChecked = true;
         return;
@@ -267,6 +283,7 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
   }
 
   void _subscribeEvents() {
+    if (_disposed || _paused) return;
     _eventsSub?.cancel();
     final stream =
         widget.eventStreamOverride ??
@@ -308,19 +325,25 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
 
   // Agrupa ráfagas de eventos en un solo refresco del board.
   void _scheduleRefresh() {
+    if (_disposed || _paused) return;
     _refreshDebounce?.cancel();
     _refreshDebounce = Timer(const Duration(milliseconds: 450), () {
-      if (!_disposed) _silentReload();
+      if (!_disposed && !_paused) _silentReload();
     });
   }
 
   Future<void> _silentReload() async {
+    // A background refresh must not supersede an explicit loading request.
+    if (_disposed || _paused || _loading) return;
+    final slug = _selectedBoard;
+    final includeArchived = _includeArchived;
+    final generation = ++_requestGeneration;
     try {
       final board = await _client.getBoard(
-        includeArchived: _includeArchived,
-        board: _selectedBoard,
+        includeArchived: includeArchived,
+        board: slug,
       );
-      if (!mounted) return;
+      if (!_isCurrentRequest(generation, slug, includeArchived)) return;
       setState(() {
         _board = board;
         _error = null;
@@ -712,7 +735,7 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
       _includeArchived = false;
     });
     await _load();
-    if (mounted) _subscribeEvents();
+    if (mounted && slug == _selectedBoard) _subscribeEvents();
   }
 
   Future<void> _openFilters() async {
@@ -755,6 +778,7 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
                             onPressed: () {
                               queryCtrl.clear();
                               setState(() => _searchQuery = '');
+                              _invalidateFilteredRequest();
                               setSheet(() {});
                             },
                             icon: const Icon(Icons.close_rounded),
@@ -762,6 +786,7 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
                   ),
                   onChanged: (value) {
                     setState(() => _searchQuery = value);
+                    _invalidateFilteredRequest();
                     setSheet(() {});
                   },
                 ),
@@ -821,7 +846,18 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
       _taskFilter = filter;
       _includeArchived = filter == KanbanMobileGroup.archived;
     });
-    if (needsArchiveFetch) await _load();
+    if (needsArchiveFetch) {
+      await _load();
+    } else {
+      _invalidateFilteredRequest();
+    }
+  }
+
+  void _invalidateFilteredRequest() {
+    _requestGeneration++;
+    // A filtered-out response cannot finish a visible loading state. Restart
+    // that request using the current filters; otherwise filtering stays local.
+    if (_loading) _load();
   }
 
   void _clearFilters() {
@@ -831,6 +867,7 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
       _assigneeFilter = null;
       _includeArchived = false;
     });
+    _invalidateFilteredRequest();
   }
 
   String _filterLabel(Strings s, KanbanMobileGroup group) {
