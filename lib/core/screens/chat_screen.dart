@@ -5912,6 +5912,7 @@ class _ChatScreenState extends State<ChatScreen>
         widget.connection.id,
         widget.session.id,
         profile: widget.session.profile,
+        retainForNavigation: true,
       );
     }
 

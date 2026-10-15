@@ -1322,6 +1322,7 @@ class HermesAppState extends State<HermesApp> with WidgetsBindingObserver {
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden ||
         state == AppLifecycleState.detached) {
+      unawaited(widget.activeChats.suspendIdleConnections());
       unawaited(widget.activeChats.globalActivity.flushJournal());
       unawaited(updateHomeWidget((snapshot) => snapshot));
     }
