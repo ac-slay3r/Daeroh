@@ -4020,6 +4020,10 @@ class ActiveChat {
   static const Duration _voiceBargeHandoffRetention = Duration(seconds: 30);
   static const Duration _desktopRecoveryDelayCap = Duration(seconds: 15);
   static const Duration _desktopRecoveryFallbackDelay = Duration(seconds: 1);
+  // A restored socket with no authoritative proof is not a network outage.
+  // Keep the transcript and remote run untouched, but don't strand the user
+  // in an endless reconnect state after repeated exact recovery reads.
+  static const int _maxUnprovenConnectedRecoveryAttempts = 3;
   static const Duration _compressionRestoreRpcBudget = Duration(seconds: 10);
 
   static List<Duration> _normalizeDesktopRecoveryBackoff(
@@ -17443,6 +17447,7 @@ class ActiveChat {
       // el usuario cancele, llegue un terminal o se destruya el chat.
       final epochInvalidated = _turnEpochInvalidated.future;
       var attempt = 0;
+      var unprovenConnectedAttempts = 0;
       Object lastError = originalError;
       while (_canRecoverTurn(turnEpoch)) {
         final delay = _atLeastGatewayBackoff(
@@ -17495,7 +17500,19 @@ class ActiveChat {
               ? status.state?.name ?? 'unknown'
               : 'unknown';
           debugPrint('[active-chat] result kind=$resultKind');
-          if (!status.known || status.state == null) continue;
+          if (!status.known || status.state == null) {
+            unprovenConnectedAttempts += 1;
+            if (unprovenConnectedAttempts >=
+                _maxUnprovenConnectedRecoveryAttempts) {
+              debugPrint(
+                '[active-chat] recovery gave up kind=unproven_connected '
+                'attempts=$unprovenConnectedAttempts',
+              );
+              _degradeLegacyTurnRecovery(turnEpoch, originalError);
+              return;
+            }
+            continue;
+          }
           switch (status.state!) {
             case DesktopTurnState.accepted:
               if (!_commitDesktopRecoverySnapshot(gateway, binding)) continue;
@@ -17528,6 +17545,16 @@ class ActiveChat {
                     gateway,
                     turnEpoch,
                   )) {
+                unprovenConnectedAttempts += 1;
+                if (unprovenConnectedAttempts >=
+                    _maxUnprovenConnectedRecoveryAttempts) {
+                  debugPrint(
+                    '[active-chat] recovery gave up kind=unproven_connected '
+                    'attempts=$unprovenConnectedAttempts',
+                  );
+                  _degradeLegacyTurnRecovery(turnEpoch, originalError);
+                  return;
+                }
                 continue;
               }
               // Durable ownership must exist before recovery authority is
