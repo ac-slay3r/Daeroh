@@ -642,6 +642,111 @@ void main() {
   });
 
   test(
+    'forced refresh survives a later invalidation during a page-zero flight',
+    () async {
+      final firstResponse = Completer<http.Response>();
+      final secondResponse = Completer<http.Response>();
+      final secondRequestStarted = Completer<void>();
+      var pageRequests = 0;
+      final dashboard = _dashboard(
+        MockClient((_) async {
+          pageRequests += 1;
+          if (pageRequests == 1) return firstResponse.future;
+          secondRequestStarted.complete();
+          return secondResponse.future;
+        }),
+      );
+      final gateway = _gateway(
+        MockClient((_) async => http.Response('{}', 500)),
+      );
+      final repository = SessionRepository(dashboard, gateway);
+      addTearDown(() {
+        repository.close();
+        dashboard.close();
+        gateway.close();
+      });
+
+      final first = repository.refresh(const SessionLibraryQuery());
+      final afterInvalidation = repository.refresh(
+        const SessionLibraryQuery(),
+        force: true,
+      );
+      await secondRequestStarted.future;
+      expect(pageRequests, 2);
+
+      firstResponse.complete(
+        http.Response(
+          jsonEncode({
+            'sessions': [_row(1)],
+            'total': 1,
+            'limit': 20,
+            'offset': 0,
+          }),
+          200,
+        ),
+      );
+      secondResponse.complete(
+        http.Response(
+          jsonEncode({
+            'sessions': [_row(2)],
+            'total': 1,
+            'limit': 20,
+            'offset': 0,
+          }),
+          200,
+        ),
+      );
+      await Future.wait([first, afterInvalidation]);
+
+      expect(repository.snapshot.sessions.single.id, 'session-2');
+    },
+  );
+
+  test('coalesces equivalent concurrent page-zero refreshes', () async {
+    final delayed = Completer<http.Response>();
+    final requestStarted = Completer<void>();
+    var pageRequests = 0;
+    final dashboard = _dashboard(
+      MockClient((request) async {
+        expect(request.url.path, '/api/sessions');
+        pageRequests += 1;
+        if (!requestStarted.isCompleted) requestStarted.complete();
+        return delayed.future;
+      }),
+    );
+    final gateway = _gateway(MockClient((_) async => http.Response('{}', 500)));
+    final repository = SessionRepository(dashboard, gateway);
+    addTearDown(() {
+      repository.close();
+      dashboard.close();
+      gateway.close();
+    });
+
+    final first = repository.refresh(const SessionLibraryQuery());
+    final second = repository.refresh(const SessionLibraryQuery());
+
+    await requestStarted.future;
+    expect(pageRequests, 1);
+    delayed.complete(
+      http.Response(
+        jsonEncode({
+          'sessions': [_row(1)],
+          'total': 1,
+          'limit': 20,
+          'offset': 0,
+        }),
+        200,
+      ),
+    );
+    final snapshots = await Future.wait([first, second]);
+
+    expect(snapshots.map((snapshot) => snapshot.sessions.single.id), [
+      'session-1',
+      'session-1',
+    ]);
+  });
+
+  test(
     'búsqueda remota usa FTS y fallback local queda no exhaustivo',
     () async {
       var searchAvailable = true;
