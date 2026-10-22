@@ -636,6 +636,113 @@ void main() {
     },
   );
 
+  test(
+    'native history backfills a visible conversation after canonical repair',
+    () async {
+      final server = _ControlledTranscriptServer();
+      final invisibleTail = [
+        for (var i = 0; i < 60; i++) ...[
+          {
+            'id': 'native-assistant-tool-$i',
+            'message_id': 'native-assistant-tool-$i',
+            'role': 'assistant',
+            'content': '',
+            'tool_calls': [
+              {
+                'id': 'native-tool-call-$i',
+                'type': 'function',
+                'function': {'name': 'execute_code', 'arguments': '{}'},
+              },
+            ],
+          },
+          {
+            'id': 'native-tool-result-$i',
+            'message_id': 'native-tool-result-$i',
+            'role': 'tool',
+            'tool_call_id': 'native-tool-call-$i',
+            'content': 'internal result',
+          },
+        ],
+      ];
+      final gateway = _HistoryGateway()
+        ..snapshot = const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-native-invisible-tail',
+          storedSessionId: 'stored-chat',
+          created: false,
+          messageCount: 122,
+        )
+        ..loader = () async => SessionMessagesPage.fromRaw(
+          rawMessages: [
+            for (final row in invisibleTail)
+              {
+                'role': row['role'],
+                'text': row['content'],
+                'row_id': row['id'],
+                'message_id': row['message_id'],
+                if (row['tool_calls'] != null) 'tool_calls': row['tool_calls'],
+                if (row['tool_call_id'] != null)
+                  'tool_call_id': row['tool_call_id'],
+              },
+          ],
+          pagination: null,
+          paginationProvided: false,
+        );
+      final chat = _chat(
+        'native-invisible-tail-backfill',
+        server.client(),
+        gateway: gateway,
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: 122);
+      await server.waitForRequests(1);
+      expect(server.requests[0].url.queryParameters['offset'], '0');
+      server.completePage(0, invisibleTail);
+      for (var attempt = 0; attempt < 100 && server.requests.length < 2; attempt++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+
+      expect(chat.hasEarlierMessages, isTrue);
+      expect(
+        chat.messages.where(
+          (row) =>
+              (row['role'] == 'user' || row['role'] == 'assistant') &&
+              (row['content'] as String? ?? '').trim().isNotEmpty,
+        ),
+        isEmpty,
+      );
+      expect(server.requests, hasLength(2));
+      expect(server.requests[1].url.queryParameters['offset'], '120');
+      server.completePage(1, const [
+        {
+          'id': 'older-native-user',
+          'message_id': 'older-native-user',
+          'role': 'user',
+          'content': 'Older native question',
+        },
+        {
+          'id': 'older-native-assistant',
+          'message_id': 'older-native-assistant',
+          'role': 'assistant',
+          'content': 'Older native answer',
+        },
+      ]);
+      for (var attempt = 0;
+          attempt < 100 &&
+              !chat.messages.any(
+                (row) => row['message_id'] == 'older-native-user',
+              );
+          attempt++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+
+      expect(
+        chat.messages.any((row) => row['message_id'] == 'older-native-user'),
+        isTrue,
+      );
+    },
+  );
+
   for (final edited in <bool>[false, true]) {
     test(
       'complete native ${edited ? 'edited' : 'short'} transcript does not invent earlier history',

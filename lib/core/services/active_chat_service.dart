@@ -9542,25 +9542,36 @@ class ActiveChat {
     _NativeSessionHistoryPage page,
   ) async {
     final repairedTail = await _loadEarlierMessagesPage();
-    if (!repairedTail ||
-        !page.requiresExactBoundaryProbe ||
-        !_earlierMessagesAvailable) {
-      return;
-    }
+    if (!repairedTail) return;
 
-    // A native transcript that exactly fills the expected first REST page still
-    // needs an empty offset probe before it can be declared complete. Preserve
-    // the established transient-read retry without delaying first paint.
-    for (var attempt = 0;
-        attempt < 2 && !_disposed && _earlierMessagesAvailable;
-        attempt++) {
-      final previousOffset = _earlierMessagesNextOffset;
-      await _loadEarlierMessagesPage();
-      if (!_earlierMessagesAvailable ||
-          _earlierMessagesNextOffset != previousOffset) {
-        return;
+    if (page.requiresExactBoundaryProbe && _earlierMessagesAvailable) {
+      // A native transcript that exactly fills the expected first REST page
+      // still needs an empty offset probe before it can be declared complete.
+      // Preserve the established transient-read retry without delaying first
+      // paint.
+      for (var attempt = 0;
+          attempt < 2 && !_disposed && _earlierMessagesAvailable;
+          attempt++) {
+        final previousOffset = _earlierMessagesNextOffset;
+        await _loadEarlierMessagesPage();
+        if (!_earlierMessagesAvailable ||
+            _earlierMessagesNextOffset != previousOffset) {
+          break;
+        }
       }
     }
+
+    // Canonical tail repair can itself yield only tool/system rows. Continue
+    // the same bounded, asynchronous initial-window traversal used for direct
+    // REST loads so a native first paint never strands an editorially empty
+    // transcript until the reader taps "load earlier".
+    if (_disposed) return;
+    await _backfillInitialConversationWindow(
+      refreshedPageHadVisibleConversation:
+          _visibleConversationMessageCountIn(_messages) > 0,
+      verifyPotentialUserGenerationReplacement:
+          _unconfirmedRetainedTranscriptIdentities.isNotEmpty,
+    );
   }
 
   Future<List<Map<String, dynamic>>> _loadStoredMessages(String profile) async {
