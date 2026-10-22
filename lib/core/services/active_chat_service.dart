@@ -3468,17 +3468,27 @@ enum _SessionMessagesPageAction {
 enum _SessionMessagesPageProjectionDisposition { publish, preserve, reject }
 
 final class _NativeSessionHistoryPage extends SessionMessagesPage {
-  _NativeSessionHistoryPage(SessionMessagesPage page, {bool? hasEarlier})
-    : super(
-        messages: page.messages,
-        pagination: null,
-        paginationProvided: false,
-        rawMessageCount: page.rawMessageCount,
-        messagesFullyParsed: page.messagesFullyParsed,
-        resolvedTipId: page.resolvedTipId,
-        coverage: page.coverage,
-        hasEarlier: hasEarlier ?? page.hasEarlier,
-      );
+  _NativeSessionHistoryPage(
+    SessionMessagesPage page, {
+    bool? hasEarlier,
+    this.needsCanonicalRestVerification = false,
+    this.requiresExactBoundaryProbe = false,
+  }) : super(
+         messages: page.messages,
+         pagination: null,
+         paginationProvided: false,
+         rawMessageCount: page.rawMessageCount,
+         messagesFullyParsed: page.messagesFullyParsed,
+         resolvedTipId: page.resolvedTipId,
+         coverage: page.coverage,
+         hasEarlier: hasEarlier ?? page.hasEarlier,
+       );
+
+  /// The Gateway transcript is safe to render, but its unpaginated RPC shape
+  /// cannot establish REST scrollback boundaries. Repair it after first paint.
+  final bool needsCanonicalRestVerification;
+
+  final bool requiresExactBoundaryProbe;
 }
 
 final class _SessionMessagesPageReadContext {
@@ -8796,6 +8806,7 @@ class ActiveChat {
       List<Map<String, dynamic>>? prefetchedNewestFirst;
       var prefetchedTranscriptAccepted = false;
       var prefetchedTranscriptComplete = false;
+      _NativeSessionHistoryPage? prefetchedNativePage;
       int? prefetchedRawMessageCount;
       DesktopSessionSnapshot? resumedSnapshot;
       Object? prefetchError;
@@ -9126,6 +9137,9 @@ class ActiveChat {
         final privacyCheckpoint = privacySnapshot?.privacyCheckpoint;
         prefetchError = prefetch.error;
         if (prefetch.value case final page?) {
+          if (page is _NativeSessionHistoryPage) {
+            prefetchedNativePage = page;
+          }
           var normalized = const <Map<String, dynamic>>[];
           _RefreshedTranscriptGraft? graft;
           final transition = _consumeSessionMessagesPageEvidence(
@@ -9365,6 +9379,7 @@ class ActiveChat {
           onMessagesPublished?.call();
           _emit(ActiveChatEvent.messagesHydrated);
         }
+        _scheduleNativeHistoryCanonicalRepair(prefetchedNativePage);
         return;
       }
 
@@ -9411,6 +9426,7 @@ class ActiveChat {
           }
         }
         messagesLoaded = true;
+        _scheduleNativeHistoryCanonicalRepair(prefetchedNativePage);
         return;
       }
       if (prefetchError == null) {
@@ -9500,14 +9516,51 @@ class ActiveChat {
     // improves the initial editorial window; making it part of this await chain
     // left a chat blank behind up to 64 sequential REST reads.
     onMessagesPublished?.call();
-    unawaited(
-      _backfillInitialConversationWindow(
-        refreshedPageHadVisibleConversation:
-            _visibleConversationMessageCountIn(normalized) > 0,
-        verifyPotentialUserGenerationReplacement:
-            verifyPotentialUserGenerationReplacement,
-      ),
-    );
+    if (page is _NativeSessionHistoryPage &&
+        page.needsCanonicalRestVerification) {
+      _scheduleNativeHistoryCanonicalRepair(page);
+    } else {
+      unawaited(
+        _backfillInitialConversationWindow(
+          refreshedPageHadVisibleConversation:
+              _visibleConversationMessageCountIn(normalized) > 0,
+          verifyPotentialUserGenerationReplacement:
+              verifyPotentialUserGenerationReplacement,
+        ),
+      );
+    }
+  }
+
+  void _scheduleNativeHistoryCanonicalRepair(_NativeSessionHistoryPage? page) {
+    if (page == null || !page.needsCanonicalRestVerification) return;
+    // The native Gateway response is already rendered. A REST offset-zero read
+    // now establishes pagination or repairs it without gating first paint.
+    unawaited(_repairNativeHistoryCanonicalBoundary(page));
+  }
+
+  Future<void> _repairNativeHistoryCanonicalBoundary(
+    _NativeSessionHistoryPage page,
+  ) async {
+    final repairedTail = await _loadEarlierMessagesPage();
+    if (!repairedTail ||
+        !page.requiresExactBoundaryProbe ||
+        !_earlierMessagesAvailable) {
+      return;
+    }
+
+    // A native transcript that exactly fills the expected first REST page still
+    // needs an empty offset probe before it can be declared complete. Preserve
+    // the established transient-read retry without delaying first paint.
+    for (var attempt = 0;
+        attempt < 2 && !_disposed && _earlierMessagesAvailable;
+        attempt++) {
+      final previousOffset = _earlierMessagesNextOffset;
+      await _loadEarlierMessagesPage();
+      if (!_earlierMessagesAvailable ||
+          _earlierMessagesNextOffset != previousOffset) {
+        return;
+      }
+    }
   }
 
   Future<List<Map<String, dynamic>>> _loadStoredMessages(String profile) async {
@@ -9674,6 +9727,23 @@ class ActiveChat {
         if (nativePage.rawMessageCount > requestedLimit ||
             (_transcriptIsComplete && _messages.isNotEmpty)) {
           return nativePage;
+        }
+        final nativePageHasUsableCurrentTranscript =
+            nativePage.messages.isNotEmpty &&
+            nativePage.messagesFullyParsed &&
+            _transcriptRowsHaveUnambiguousIdentityEvidence(nativePage.messages);
+        if (nativePageHasUsableCurrentTranscript) {
+          // `session.history` is sufficient for the current UI tail. Its
+          // unpaginated shape cannot prove the canonical REST boundary, so the
+          // caller schedules offset-zero REST repair after publication.
+          return _NativeSessionHistoryPage(
+            nativePage,
+            needsCanonicalRestVerification: true,
+            requiresExactBoundaryProbe:
+                readContext?.hardExpectedMessageCount ==
+                    nativePage.rawMessageCount &&
+                nativePage.rawMessageCount == requestedLimit,
+          );
         }
         try {
           final canonicalPage = await _getStoredMessagesRestPage(

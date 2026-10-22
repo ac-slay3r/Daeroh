@@ -575,6 +575,67 @@ void main() {
     },
   );
 
+  test(
+    'usable native history publishes before canonical REST verification finishes',
+    () async {
+      final server = _ControlledTranscriptServer();
+      final rows = _rows(2);
+      final gateway = _HistoryGateway()
+        ..snapshot = const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-native-first-paint',
+          storedSessionId: 'stored-chat',
+          created: false,
+          messageCount: 2,
+        )
+        ..loader = () async => SessionMessagesPage.fromRaw(
+          rawMessages: [
+            for (final row in rows)
+              {
+                'role': row['role'],
+                'text': row['content'],
+                'row_id': row['id'],
+              },
+          ],
+          pagination: null,
+          paginationProvided: false,
+        );
+      final chat = _chat(
+        'native-first-paint-before-rest',
+        server.client(),
+        gateway: gateway,
+      );
+      addTearDown(chat.dispose);
+      var publications = 0;
+      final firstPublication = Completer<void>();
+
+      final loading = chat.loadMessages(
+        expectedMessageCount: 2,
+        onMessagesPublished: () {
+          publications++;
+          if (!firstPublication.isCompleted) firstPublication.complete();
+        },
+      );
+      await Future.any<void>([
+        firstPublication.future,
+        Future<void>.delayed(const Duration(seconds: 1)),
+      ]);
+
+      expect(gateway.historyRequests, hasLength(1));
+      expect(firstPublication.isCompleted, isTrue);
+      expect(publications, 1);
+      expect(
+        chat.messages.map((row) => row['content']),
+        rows.reversed.map((row) => row['content']),
+      );
+
+      await loading;
+      await server.waitForRequests(1);
+      server.completePage(0, rows);
+      await Future<void>.delayed(Duration.zero);
+      expect(chat.hasEarlierMessages, isFalse);
+    },
+  );
+
   for (final edited in <bool>[false, true]) {
     test(
       'complete native ${edited ? 'edited' : 'short'} transcript does not invent earlier history',
@@ -602,6 +663,11 @@ void main() {
         addTearDown(chat.dispose);
 
         await chat.loadMessages(expectedMessageCount: 4);
+        for (var attempt = 0;
+            attempt < 100 && server.requests.isEmpty;
+            attempt++) {
+          await Future<void>.delayed(Duration.zero);
+        }
 
         expect(gateway.historyRequests, hasLength(1));
         expect(server.requests, hasLength(1));
@@ -634,6 +700,12 @@ void main() {
     addTearDown(chat.dispose);
 
     await chat.loadMessages(expectedMessageCount: 120);
+    for (var attempt = 0;
+        attempt < 100 &&
+            (server.requests.length < 2 || chat.hasEarlierMessages);
+        attempt++) {
+      await Future<void>.delayed(Duration.zero);
+    }
 
     expect(chat.messages, hasLength(120));
     expect(chat.hasEarlierMessages, isFalse);
@@ -677,6 +749,13 @@ void main() {
     addTearDown(delegate.close);
 
     await chat.loadMessages(expectedMessageCount: 120);
+    for (var attempt = 0;
+        attempt < 100 &&
+            (!failedLookahead || server.requests.length < 2 ||
+                chat.hasEarlierMessages);
+        attempt++) {
+      await Future<void>.delayed(Duration.zero);
+    }
 
     expect(failedLookahead, isTrue);
     expect(chat.messages, hasLength(120));
@@ -750,14 +829,16 @@ void main() {
       await chat.loadMessages(expectedMessageCount: 40);
       expect(chat.messages, hasLength(40));
       expect(chat.hasEarlierMessages, isTrue);
-
-      expect(await chat.loadEarlierMessages(), isTrue);
+      for (var attempt = 0;
+          attempt < 100 && chat.messages.length < 120;
+          attempt++) {
+        await Future<void>.delayed(Duration.zero);
+      }
       expect(chat.messages, hasLength(120));
-      expect(chat.messages.first['content'], 'msg 300');
-      expect(chat.messages.last['content'], 'msg 181');
 
       expect(await chat.loadEarlierMessages(), isTrue);
       expect(chat.messages, hasLength(240));
+      expect(chat.messages.first['content'], 'msg 300');
       expect(chat.messages.last['content'], 'msg 61');
 
       expect(await chat.loadEarlierMessages(), isTrue);
@@ -767,7 +848,7 @@ void main() {
 
       expect(
         server.requests.map((request) => request.queryParameters['offset']),
-        ['0', '0', '120', '240'],
+        ['0', '120', '240'],
       );
       expect(
         server.requests.map(
@@ -1215,7 +1296,11 @@ void main() {
       addTearDown(chat.dispose);
 
       await chat.loadMessages(expectedMessageCount: 122);
-      for (var attempt = 0; attempt < 100 && server.requests.length < 2; attempt++) {
+      for (
+        var attempt = 0;
+        attempt < 100 && server.requests.length < 2;
+        attempt++
+      ) {
         await Future<void>.delayed(Duration.zero);
       }
 
@@ -1288,9 +1373,7 @@ void main() {
       await Future<void>.delayed(Duration.zero);
 
       expect(
-        chat.messages.any(
-          (row) => row['content'] == 'Older visible question',
-        ),
+        chat.messages.any((row) => row['content'] == 'Older visible question'),
         isTrue,
       );
     },
@@ -1343,12 +1426,12 @@ void main() {
           'content': 'fresh older question',
         },
       ]);
-      for (var attempt = 0;
-          attempt < 100 &&
-              !chat.messages.any(
-                (row) => row['message_id'] == 'fresh-user',
-              );
-          attempt++) {
+      for (
+        var attempt = 0;
+        attempt < 100 &&
+            !chat.messages.any((row) => row['message_id'] == 'fresh-user');
+        attempt++
+      ) {
         await Future<void>.delayed(Duration.zero);
       }
 
@@ -1440,7 +1523,11 @@ void main() {
       addTearDown(chat.dispose);
 
       await chat.loadMessages(expectedMessageCount: 7802);
-      for (var attempt = 0; attempt < 200 && server.requests.length < 65; attempt++) {
+      for (
+        var attempt = 0;
+        attempt < 200 && server.requests.length < 65;
+        attempt++
+      ) {
         await Future<void>.delayed(Duration.zero);
       }
       expect(server.requests.length, 65);
@@ -1551,12 +1638,14 @@ void main() {
         ]);
 
       await chat.loadMessages(expectedMessageCount: 241);
-      for (var attempt = 0;
-          attempt < 100 &&
-              chat.messages.any(
-                (row) => row['message_id'] == 'old-user-generation',
-              );
-          attempt++) {
+      for (
+        var attempt = 0;
+        attempt < 100 &&
+            chat.messages.any(
+              (row) => row['message_id'] == 'old-user-generation',
+            );
+        attempt++
+      ) {
         await Future<void>.delayed(Duration.zero);
       }
 
