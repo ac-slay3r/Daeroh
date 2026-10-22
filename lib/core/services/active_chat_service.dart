@@ -6914,6 +6914,7 @@ class ActiveChat {
   bool _earlierMessagesAvailable = false;
   int _earlierMessagesNextOffset = 0;
   bool _earlierMessagesInFlight = false;
+  Future<void>? _earlierMessagesFlight;
   int _remainingInitialBackfillPages = _maxInitialBackfillPages;
 
   /// Solo se eleva a UI tras un intento real de backfill que no obtuvo una
@@ -9495,14 +9496,18 @@ class ActiveChat {
     // REST 8642 no trae display_metadata: igual que tras el terminal, una
     // fila editorial nueva se hidrata (una sola vez) desde session.history.
     unawaited(_hydrateEditorialDisplayMetadataFromDurableHistory());
-    await _backfillInitialConversationWindow(
-      refreshedPageHadVisibleConversation:
-          _visibleConversationMessageCountIn(normalized) > 0,
-      verifyPotentialUserGenerationReplacement:
-          verifyPotentialUserGenerationReplacement,
-    );
-    if (!loadStillAuthorized()) return;
+    // The current durable tail is safe to show now. Older-page traversal only
+    // improves the initial editorial window; making it part of this await chain
+    // left a chat blank behind up to 64 sequential REST reads.
     onMessagesPublished?.call();
+    unawaited(
+      _backfillInitialConversationWindow(
+        refreshedPageHadVisibleConversation:
+            _visibleConversationMessageCountIn(normalized) > 0,
+        verifyPotentialUserGenerationReplacement:
+            verifyPotentialUserGenerationReplacement,
+      ),
+    );
   }
 
   Future<List<Map<String, dynamic>>> _loadStoredMessages(String profile) async {
@@ -11715,7 +11720,7 @@ class ActiveChat {
     while (!_disposed &&
         _earlierMessagesAvailable &&
         _remainingInitialBackfillPages > 0) {
-      final loaded = await loadEarlierMessages();
+      final loaded = await loadEarlierMessages(waitForInFlight: true);
       if (!loaded) return;
       _remainingInitialBackfillPages -= 1;
       final foundVisibleConversation = _messages.any((message) {
@@ -11736,13 +11741,20 @@ class ActiveChat {
   /// unidad conversacional visible. Una página puede contener exclusivamente
   /// filas internas (tools/system); en ese caso un único gesto debe atravesarla
   /// porque la lista no cambia de geometría y no generará otro evento de scroll.
-  Future<bool> loadEarlierMessages({bool continuePastInvisible = false}) async {
-    if (!continuePastInvisible) return _loadEarlierMessagesPage();
+  Future<bool> loadEarlierMessages({
+    bool continuePastInvisible = false,
+    bool waitForInFlight = true,
+  }) async {
+    if (!continuePastInvisible) {
+      return _loadEarlierMessagesPage(waitForInFlight: waitForInFlight);
+    }
     var visibleUnitCount = ChatRenderProjection.build(_messages).units.length;
     var loadedAnyPage = false;
     var remainingPages = _maxInitialBackfillPages;
     while (!_disposed && _earlierMessagesAvailable && remainingPages > 0) {
-      final loaded = await _loadEarlierMessagesPage();
+      final loaded = await _loadEarlierMessagesPage(
+        waitForInFlight: waitForInFlight,
+      );
       if (!loaded) return loadedAnyPage;
       loadedAnyPage = true;
       remainingPages -= 1;
@@ -11757,11 +11769,17 @@ class ActiveChat {
 
   /// Consume una página REST anterior. Una petición en vuelo por chat; un fallo
   /// no es fatal y el siguiente gesto puede reintentarlo.
-  Future<bool> _loadEarlierMessagesPage() async {
-    if (_disposed || !_earlierMessagesAvailable || _earlierMessagesInFlight) {
-      return false;
+  Future<bool> _loadEarlierMessagesPage({bool waitForInFlight = false}) async {
+    if (_disposed || !_earlierMessagesAvailable) return false;
+    if (_earlierMessagesInFlight) {
+      final flight = _earlierMessagesFlight;
+      if (!waitForInFlight || flight == null) return false;
+      await flight;
+      return _loadEarlierMessagesPage(waitForInFlight: true);
     }
     _earlierMessagesInFlight = true;
+    final flight = Completer<void>();
+    _earlierMessagesFlight = flight.future;
     final loadEpoch = _messageLoadEpoch;
     final requestedTailHydration = _needsTranscriptTailHydration;
     final requestedNextOffset = _earlierMessagesNextOffset;
@@ -11898,6 +11916,10 @@ class ActiveChat {
       return false;
     } finally {
       _earlierMessagesInFlight = false;
+      if (identical(_earlierMessagesFlight, flight.future)) {
+        _earlierMessagesFlight = null;
+      }
+      if (!flight.isCompleted) flight.complete();
     }
   }
 
