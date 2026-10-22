@@ -5295,6 +5295,8 @@
   "diagBundlePreviewTitle": "Review diagnostic",
   "diagBundlePrivacy": "Includes only states and counters. It contains no servers, credentials, conversations, paths, or identifiers.",
   "diagBundleError": "The local diagnostic could not be prepared",
+  "diagnosticsTelemetryTitle": "Share reliability diagnostics",
+  "diagnosticsTelemetrySubtitle": "Off by default. Sends only sanitized timing and failure signals to your private diagnostic service; never prompts, messages, files, credentials, endpoints, or identifiers.",
   "dependencyDashboardTitle": "The Dashboard needs configuration",
   "dependencyDashboardBody": "This feature uses the Hermes Dashboard. Configure access so the app can load and save this data.",
   "dependencyConfigure": "Configure",

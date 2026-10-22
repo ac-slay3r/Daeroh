@@ -6476,6 +6476,8 @@
   "diagBundlePreviewTitle": "Revisar diagnóstico",
   "diagBundlePrivacy": "Incluye solo estados y contadores. No contiene servidores, credenciales, conversaciones, rutas ni identificadores.",
   "diagBundleError": "No se pudo preparar el diagnóstico local",
+  "diagnosticsTelemetryTitle": "Compartir diagnósticos de fiabilidad",
+  "diagnosticsTelemetrySubtitle": "Desactivado por defecto. Envía solo tiempos y fallos saneados a tu servicio de diagnóstico privado; nunca prompts, mensajes, archivos, credenciales, endpoints ni identificadores.",
   "dependencyDashboardTitle": "El Dashboard necesita configuración",
   "dependencyDashboardBody": "Esta función usa el Dashboard de Hermes. Configura su acceso para que la app pueda cargar y guardar estos datos.",
   "dependencyConfigure": "Configurar",

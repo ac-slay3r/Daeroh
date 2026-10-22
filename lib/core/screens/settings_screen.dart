@@ -15,6 +15,7 @@ import '../app_header_title.dart';
 import '../models/session_category.dart';
 import '../services/chat_draft_store.dart';
 import '../services/connection_manager.dart';
+import '../services/diagnostics_consent_store.dart';
 
 import '../services/font_size_service.dart';
 import '../services/local_transcript_store.dart';
@@ -291,6 +292,9 @@ class SettingsScreen extends StatelessWidget {
               _SectionHeader(Strings.of(context).setSecData),
               HermesGroup(
                 children: [
+                  DiagnosticsConsentTile(
+                    consent: DiagnosticsConsentStore(connManager.prefs),
+                  ),
                   DiagnosticBundleTile(
                     controller: DiagnosticBundleController(
                       manager: connManager,
