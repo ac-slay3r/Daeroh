@@ -515,7 +515,7 @@ void main() {
   );
 
   test(
-    'production empty recovery proof keeps retrying across channel rotation',
+    'production empty recovery proof releases the composer after reconnect',
     () async {
       final fixture = _SharedGatewayFixture(emitSubmitLifecycle: false)
         ..recoveryResumeGate = Completer<void>();
@@ -579,7 +579,7 @@ void main() {
       await _waitUntil(() => fixture.resumedDurables.length >= 2);
 
       expect(delivery.markRunningCalls, 1);
-      expect(chat.state, ChatPipelineState.connecting);
+      await _waitUntil(() => chat.state == ChatPipelineState.failed);
       expect(chat.desktopRuntimeSessionId, isNull);
       expect(
         chat.messages,

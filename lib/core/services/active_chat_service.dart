@@ -4020,6 +4020,10 @@ class ActiveChat {
   static const Duration _voiceBargeHandoffRetention = Duration(seconds: 30);
   static const Duration _desktopRecoveryDelayCap = Duration(seconds: 15);
   static const Duration _desktopRecoveryFallbackDelay = Duration(seconds: 1);
+  // A restored socket with no authoritative proof is not a network outage.
+  // Keep the transcript and remote run untouched, but don't strand the user
+  // in an endless reconnect state after repeated exact recovery reads.
+  static const int _maxUnprovenConnectedRecoveryAttempts = 3;
   static const Duration _compressionRestoreRpcBudget = Duration(seconds: 10);
 
   static List<Duration> _normalizeDesktopRecoveryBackoff(
@@ -5097,6 +5101,7 @@ class ActiveChat {
 
   void _schedulePassiveActivityExpiry() {
     _cancelPassiveActivityExpiry();
+    if (_isDetachedIdle) return;
     final generation = _passiveActivityExpiryGeneration;
     _passiveActivityExpiryTimer = Timer(_passiveRemoteActivityWindow, () {
       _passiveActivityExpiryTimer = null;
@@ -7807,9 +7812,19 @@ class ActiveChat {
   }
 
   void _markAttached() {
+    final wasDetachedIdle = _isDetachedIdle;
     _releaseRequested = false;
     if (_detachedIdleParked.isCompleted) {
       _detachedIdleParked = Completer<void>();
+    }
+    if (wasDetachedIdle &&
+        _passiveActivityVisible &&
+        _passiveRemoteActivityState == DesktopPassiveActivityState.unknown) {
+      _schedulePassiveActivityExpiry();
+    }
+    final restoredCompression = _restoredCompression;
+    if (restoredCompression != null && !_restoredCompressionProbeInFlight) {
+      unawaited(_probeRestoredCompression(restoredCompression));
     }
   }
 
@@ -7837,6 +7852,10 @@ class ActiveChat {
   void _parkDetachedIdleLifecycle({bool terminalJustCompleted = false}) {
     if (_disposed || !_isDetachedIdle) return;
     if (!_detachedIdleParked.isCompleted) _detachedIdleParked.complete();
+    _cancelPassiveActivityExpiry();
+    _restoredCompressionProbeTimer?.cancel();
+    _restoredCompressionProbeTimer = null;
+    _clearDesktopCompactingIndicator();
     final terminalWasPending = _terminalTimer != null;
     _terminalTimer?.cancel();
     _terminalTimer = null;
@@ -14584,6 +14603,7 @@ class ActiveChat {
 
   void _scheduleRestoredCompressionProbe(CompressionRestoreRecord record) {
     _restoredCompressionProbeTimer?.cancel();
+    if (_isDetachedIdle) return;
     _restoredCompressionProbeTimer = Timer(
       _compressionRestoreProbeInterval,
       () => unawaited(_probeRestoredCompression(record)),
@@ -17427,6 +17447,7 @@ class ActiveChat {
       // el usuario cancele, llegue un terminal o se destruya el chat.
       final epochInvalidated = _turnEpochInvalidated.future;
       var attempt = 0;
+      var unprovenConnectedAttempts = 0;
       Object lastError = originalError;
       while (_canRecoverTurn(turnEpoch)) {
         final delay = _atLeastGatewayBackoff(
@@ -17479,7 +17500,19 @@ class ActiveChat {
               ? status.state?.name ?? 'unknown'
               : 'unknown';
           debugPrint('[active-chat] result kind=$resultKind');
-          if (!status.known || status.state == null) continue;
+          if (!status.known || status.state == null) {
+            unprovenConnectedAttempts += 1;
+            if (unprovenConnectedAttempts >=
+                _maxUnprovenConnectedRecoveryAttempts) {
+              debugPrint(
+                '[active-chat] recovery gave up kind=unproven_connected '
+                'attempts=$unprovenConnectedAttempts',
+              );
+              _degradeLegacyTurnRecovery(turnEpoch, originalError);
+              return;
+            }
+            continue;
+          }
           switch (status.state!) {
             case DesktopTurnState.accepted:
               if (!_commitDesktopRecoverySnapshot(gateway, binding)) continue;
@@ -17512,6 +17545,16 @@ class ActiveChat {
                     gateway,
                     turnEpoch,
                   )) {
+                unprovenConnectedAttempts += 1;
+                if (unprovenConnectedAttempts >=
+                    _maxUnprovenConnectedRecoveryAttempts) {
+                  debugPrint(
+                    '[active-chat] recovery gave up kind=unproven_connected '
+                    'attempts=$unprovenConnectedAttempts',
+                  );
+                  _degradeLegacyTurnRecovery(turnEpoch, originalError);
+                  return;
+                }
                 continue;
               }
               // Durable ownership must exist before recovery authority is
@@ -19181,6 +19224,10 @@ class ActiveChat {
 
   void _armAutoCompactionStaleTimer() {
     _autoCompactionStaleTimer?.cancel();
+    if (_isDetachedIdle) {
+      _clearDesktopCompactingIndicator();
+      return;
+    }
     _autoCompactionStaleTimer = Timer(_autoCompactionStaleAfter, () {
       _autoCompactionStaleTimer = null;
       if (_disposed) return;
@@ -26187,6 +26234,7 @@ class ActiveChatService {
   final GlobalActivityAggregate globalActivity;
 
   final Map<String, ActiveChat> _chats = {};
+  final Set<String> _navigationReleaseRequested = <String>{};
   final Map<String, List<SteerProjection>> _steerProjectionCache = {};
   final Map<ActiveChat, _HomeWidgetChatMetadata> _homeWidgetMetadata = {};
   final LinkedHashMap<String, int> _observedFirstTokenLatencyCache =
@@ -26197,6 +26245,8 @@ class ActiveChatService {
   String? _homeWidgetActiveConnectionId;
   HermesHomeWidgetSnapshot? _lastHomeWidgetSemantic;
   bool _disposed = false;
+  bool _appSuspended = false;
+  int _lifecycleGeneration = 0;
 
   static String chatKey(String connectionId, String sessionId) =>
       '$connectionId::$sessionId';
@@ -26927,6 +26977,8 @@ class ActiveChatService {
       sessionProfile ?? sessionSnapshot?.profile,
     );
     final key = _registryKey(connection.id, sessionId, owner);
+    _cancelNavigationRelease(key);
+    _pruneNavigationReleases(except: key);
     final existing = of(connection.id, sessionId, profile: owner);
     if (existing != null) {
       if (existing.bindKnownStoredSession(
@@ -27164,6 +27216,8 @@ class ActiveChatService {
   /// Es la única reconciliación que sondea el socket (resume del ciclo de
   /// vida); la de un solo chat (`sessions.changed`, Reintentar) no.
   Future<void> reconcileAfterResume() async {
+    _lifecycleGeneration += 1;
+    _appSuspended = false;
     final chats = _chats.values.toList(growable: false);
     for (final chat in chats) {
       chat.probeTransportNow();
@@ -27228,30 +27282,44 @@ class ActiveChatService {
   }
 
   Future<void> suspendIdleConnections() async {
+    final lifecycleGeneration = ++_lifecycleGeneration;
+    _appSuspended = true;
     await Future.wait(
       _chats.values.map((chat) => chat.suspendIdleDesktopConnection()),
     );
+    if (_disposed || lifecycleGeneration != _lifecycleGeneration) return;
+    _pruneNavigationReleases();
   }
 
   /// Suelta el chat al cerrar la pantalla: si NO está en streaming, lo libera
   /// (cierra el cliente HTTP); si está en streaming, lo deja correr en segundo
   /// plano (se reaprovechará al volver y se reapará al terminar sin oyentes).
-  void release(String connectionId, String sessionId, {String? profile}) {
+  void release(
+    String connectionId,
+    String sessionId, {
+    String? profile,
+    bool retainForNavigation = false,
+  }) {
     final entry = _entryFor(connectionId, sessionId, profile: profile);
     if (entry == null) return;
     final chat = entry.value;
     _rememberSteerProjections(chat);
+    if (retainForNavigation) {
+      _navigationReleaseRequested.add(entry.key);
+    } else {
+      _cancelNavigationRelease(entry.key);
+    }
     chat.requestReleaseWhenUnused();
     if (chat.sessionActivity.active ||
         chat.hasPendingBackgroundProcessRefresh ||
         chat.hasPendingDurableCancellation ||
         chat.hasListeners ||
         chat.voiceBargeHandoffPending ||
-        chat.showReleaseToDesktopControl) {
+        chat.showReleaseToDesktopControl && !_appSuspended) {
       _refreshActiveIds();
       return;
     }
-    _dispose(entry.key);
+    _releaseDetachedChat(entry.key);
   }
 
   void _onChatUnused(String key) {
@@ -27263,10 +27331,10 @@ class ActiveChatService {
         chat.hasPendingDurableCancellation ||
         chat.hasListeners ||
         chat.voiceBargeHandoffPending ||
-        chat.showReleaseToDesktopControl) {
+        chat.showReleaseToDesktopControl && !_appSuspended) {
       return;
     }
-    _dispose(key);
+    _releaseDetachedChat(key);
   }
 
   /// Marca el inicio de un envío: registra la sesión como activa.
@@ -27307,10 +27375,41 @@ class ActiveChatService {
         chat.hasPendingDurableCancellation ||
         chat.hasListeners ||
         chat.voiceBargeHandoffPending ||
-        chat.showReleaseToDesktopControl) {
+        chat.showReleaseToDesktopControl && !_appSuspended) {
       return;
     }
-    _dispose(key);
+    _releaseDetachedChat(key);
+  }
+
+  void _releaseDetachedChat(String key) {
+    if (!_navigationReleaseRequested.contains(key) || _appSuspended) {
+      _dispose(key);
+    }
+  }
+
+  void _pruneNavigationReleases({String? except}) {
+    for (final key in _navigationReleaseRequested.toList(growable: false)) {
+      if (key == except) continue;
+      final chat = _chats[key];
+      if (chat == null) {
+        _navigationReleaseRequested.remove(key);
+        continue;
+      }
+      if (!chat.releaseRequested ||
+          chat.sessionActivity.active ||
+          chat.hasPendingBackgroundProcessRefresh ||
+          chat.hasPendingDurableCancellation ||
+          chat.hasListeners ||
+          chat.voiceBargeHandoffPending ||
+          chat.showReleaseToDesktopControl && !_appSuspended) {
+        continue;
+      }
+      _dispose(key);
+    }
+  }
+
+  void _cancelNavigationRelease(String key) {
+    _navigationReleaseRequested.remove(key);
   }
 
   /// Baja el foreground service salvo que (a) el usuario activó la escucha
@@ -27356,6 +27455,7 @@ class ActiveChatService {
   }
 
   void _dispose(String key) {
+    _cancelNavigationRelease(key);
     final chat = _chats.remove(key);
     if (chat != null) {
       _homeWidgetMetadata.remove(chat);
@@ -27393,6 +27493,7 @@ class ActiveChatService {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    _navigationReleaseRequested.clear();
     for (final chat in _chats.values) {
       chat.dispose();
     }
