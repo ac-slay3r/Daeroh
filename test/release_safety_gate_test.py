@@ -2198,7 +2198,7 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertIn("v1.2.9", policy)
         self.assertIn("86edaa150fabd33d8184f5b958400cabadacb49632f7ec50ecbe49608058d159", policy)
         self.assertIn(
-            "f366fdfc011b65c1b3f44e777fc876be21d3492ec3b0b0cf014536c0ac3490c3",
+            "a5c01dcc94b535a9905eb18f4cd9b4daf0148e934e9751f71ff8072bdedda559",
             policy,
         )
 
@@ -2222,7 +2222,7 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertIn("./tool/sbom/generate.sh", workflow)
         self.assertIn("git diff --exit-code -- sbom", workflow)
         self.assertIn(
-            "f366fdfc011b65c1b3f44e777fc876be21d3492ec3b0b0cf014536c0ac3490c3",
+            "a5c01dcc94b535a9905eb18f4cd9b4daf0148e934e9751f71ff8072bdedda559",
             workflow,
         )
 
@@ -2605,13 +2605,24 @@ class FinalPublicProvenanceGateTest(unittest.TestCase):
 
 
 class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
+    def test_authoritative_lock_digest_matches_release_gates(self):
+        digest = hashlib.sha256((ROOT / "pubspec.lock").read_bytes()).hexdigest()
+        policy = json.loads(
+            (ROOT / "tool/release/release_contract.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(policy["source"]["authoritativeLockSha256"], digest)
+        workflow = (ROOT / ".github/workflows/build-apk.yml").read_text(encoding="utf-8")
+        double_build = (ROOT / "tool/release/double_build.sh").read_text(encoding="utf-8")
+        self.assertIn(f'echo "{digest}  pubspec.lock"', workflow)
+        self.assertIn(f'readonly LOCK_SHA256="{digest}"', double_build)
+
     def test_contract_pins_lock_channels_and_keyless_identity(self):
         policy = json.loads(
             (ROOT / "tool/release/release_contract.json").read_text(encoding="utf-8")
         )
         self.assertEqual(
             policy["source"]["authoritativeLockSha256"],
-            "f366fdfc011b65c1b3f44e777fc876be21d3492ec3b0b0cf014536c0ac3490c3",
+            "a5c01dcc94b535a9905eb18f4cd9b4daf0148e934e9751f71ff8072bdedda559",
         )
         self.assertEqual(policy["android"]["packageId"], "dev.xpetalab.hermesconsole")
         self.assertEqual(set(policy["channels"]), {"direct-public", "play-private"})
@@ -2708,7 +2719,7 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
         self.assertIn("git clone --no-local", source)
         self.assertIn("PUB_CACHE", source)
         self.assertIn("GRADLE_USER_HOME", source)
-        self.assertIn("f366fdfc011b65c1b3f44e777fc876be21d3492ec3b0b0cf014536c0ac3490c3", source)
+        self.assertIn("a5c01dcc94b535a9905eb18f4cd9b4daf0148e934e9751f71ff8072bdedda559", source)
         self.assertIn("compare_rebuilds.py", source)
         self.assertIn("ANDROID_HOME", source)
         self.assertIn("ANDROID_SDK_ROOT", source)

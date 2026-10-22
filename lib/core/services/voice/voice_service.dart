@@ -2385,6 +2385,7 @@ class VoiceService {
   ServerSttEngine _newServerEngine() => ServerSttEngine(
     baseUrl: _engineSettings.serverSttUrl,
     token: _serverTokenCache,
+    lang: voiceLang,
     onLevel: (v) => micLevel.value = v,
   );
 

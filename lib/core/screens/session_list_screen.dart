@@ -240,7 +240,7 @@ class _SessionListScreenState extends State<SessionListScreen>
   @override
   void didPopNext() {
     unawaited(DrawerGestureExclusion.setEnabled(true));
-    unawaited(_fetchSessions(showLoader: false));
+    unawaited(_fetchSessions(showLoader: false, forceRemote: true));
   }
 
   @override
@@ -302,7 +302,8 @@ class _SessionListScreenState extends State<SessionListScreen>
     });
     _libraryScrollController.addListener(_onLibraryScroll);
     _loadPrefs();
-    _checkHealth();
+    unawaited(_fetchSessions());
+    unawaited(_checkHealth(refreshSessions: false));
   }
 
   Future<void> _loadPrefs() async {
@@ -354,7 +355,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     }
   }
 
-  Future<void> _checkHealth() async {
+  Future<void> _checkHealth({bool refreshSessions = true}) async {
     _retryTimer?.cancel();
     _retryTimer = null;
     if (!mounted) return;
@@ -364,7 +365,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     if (!mounted || !_health.recordResult(generation, healthy: ok)) return;
     setState(() {});
     if (ok) {
-      _fetchSessions();
+      if (refreshSessions) unawaited(_fetchSessions());
       unawaited(_refreshRemoteActivity());
     } else {
       await _showLocalDrafts();
@@ -704,20 +705,20 @@ class _SessionListScreenState extends State<SessionListScreen>
         event.connectionId != widget.connection.id) {
       return;
     }
-    unawaited(_fetchSessions(showLoader: false));
+    unawaited(_fetchSessions(showLoader: false, forceRemote: true));
   }
 
   Future<void> _refreshFromSessionEvent() async {
     if (mounted &&
         _foreground &&
         _appliedSessionChangeEpoch < _sessionChangeEpoch) {
-      await _fetchSessions(showLoader: false);
+      await _fetchSessions(showLoader: false, forceRemote: true);
       await _refreshRemoteActivity();
     }
   }
 
   Future<void> _refreshSessionsAndActivity() async {
-    await _fetchSessions();
+    await _fetchSessions(forceRemote: true);
     await _refreshRemoteActivity();
   }
 
@@ -937,7 +938,10 @@ class _SessionListScreenState extends State<SessionListScreen>
     }
   }
 
-  Future<bool> _fetchSessions({bool showLoader = true}) async {
+  Future<bool> _fetchSessions({
+    bool showLoader = true,
+    bool forceRemote = false,
+  }) async {
     // Puede invocarse desde un closure del drawer después de que la pantalla se
     // haya desmontado (HermesDrawer._go) → setState() after dispose(). Guard.
     if (!mounted) return false;
@@ -958,7 +962,11 @@ class _SessionListScreenState extends State<SessionListScreen>
       final repository = _repository;
       final SessionLibrarySnapshot? library = repository == null
           ? null
-          : await repository.refresh(scope, keepIds: _sessionKeepIds);
+          : await repository.refresh(
+              scope,
+              keepIds: _sessionKeepIds,
+              force: forceRemote,
+            );
       final rawRemoteSessions =
           library?.sessions ??
           await _client.getSessions(profile: scope.profile);
@@ -1183,7 +1191,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     setState(() {
       _pendingArchiveByLogicalId.remove(session.logicalId);
     });
-    await _fetchSessions();
+    await _fetchSessions(forceRemote: true);
     if (!mounted) return;
     HermesNotice.of(context).showSnackBar(
       SnackBar(content: Text(Strings.of(context).slArchiveSyncFailed)),
@@ -1477,7 +1485,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       _evictDeletedSessions([session]);
     } else {
       // El detalle puede haber ramificado o reanudado: refrescar barato.
-      _fetchSessions();
+      _fetchSessions(forceRemote: true);
     }
   }
 
@@ -1826,11 +1834,11 @@ class _SessionListScreenState extends State<SessionListScreen>
   Widget _buildBody() {
     final colors = Theme.of(context).hermes;
     final s = Strings.of(context);
-    if (_health.checking && !_health.healthy) {
+    if (_health.checking && !_health.healthy && _loading) {
       return _ConnectingState(host: widget.connection.host);
     }
 
-    if (!_health.healthy) {
+    if (!_health.checking && !_health.healthy) {
       return _ConnectionIssueState(
         baseUrl: widget.connection.baseUrl,
         onRetry: _checkHealth,

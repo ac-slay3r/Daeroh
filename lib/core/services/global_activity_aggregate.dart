@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../models/desktop_active_session.dart';
+import 'secure_storage_policy.dart';
 import 'tui_gateway_client.dart';
 
 /// Closed, display-safe vocabulary shared by Home, chat and badges.
@@ -514,7 +515,7 @@ final class GlobalActivityJournal {
        _now = now ?? DateTime.now;
 
   factory GlobalActivityJournal.secure({
-    FlutterSecureStorage storage = const FlutterSecureStorage(),
+    FlutterSecureStorage storage = sharedSecureStorage,
   }) => GlobalActivityJournal(
     read: () => storage.read(key: _storageKey),
     write: (value) => storage.write(key: _storageKey, value: value),

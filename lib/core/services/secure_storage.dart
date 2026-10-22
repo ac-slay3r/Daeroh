@@ -1,12 +1,13 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import 'secure_storage_policy.dart';
+
 /// Wraps flutter_secure_storage for API key storage using Android Keystore.
 class SecureStorage {
   final FlutterSecureStorage _storage;
 
-  // flutter_secure_storage ≥10.x migrates to custom AES-256 ciphers
-  // automatically on first access — no AndroidOptions needed.
-  SecureStorage() : _storage = const FlutterSecureStorage();
+  // Preserve automatic cipher migration; never reset shared keys on error.
+  SecureStorage() : _storage = sharedSecureStorage;
 
   static String _key(String connectionId) => 'api_key_$connectionId';
   static String _dashKey(String connectionId, String field) =>
@@ -36,9 +37,10 @@ class SecureStorage {
       _storage.delete(key: _dashKey(connectionId, field));
 
   Future<void> deleteDashboardSecrets(String connectionId) async {
-    for (final f in const ['token', 'user', 'pass']) {
-      await _storage.delete(key: _dashKey(connectionId, f));
-    }
+    await Future.wait<void>([
+      for (final f in const ['token', 'user', 'pass'])
+        _storage.delete(key: _dashKey(connectionId, f)),
+    ], eagerError: false);
   }
 
   // ── Mobile Bridge (url + token, opcional por instancia) ───────────────
@@ -53,9 +55,10 @@ class SecureStorage {
       _storage.write(key: _bridgeKey(connectionId, field), value: value);
 
   Future<void> deleteBridge(String connectionId) async {
-    for (final f in const ['url', 'token']) {
-      await _storage.delete(key: _bridgeKey(connectionId, f));
-    }
+    await Future.wait<void>([
+      for (final f in const ['url', 'token'])
+        _storage.delete(key: _bridgeKey(connectionId, f)),
+    ], eagerError: false);
   }
 
   // ── SSH (usuario/host/puerto/método + secretos + host key TOFU) ───────
@@ -74,18 +77,21 @@ class SecureStorage {
       _storage.write(key: _sshKey(connectionId, field), value: value);
 
   Future<void> deleteSsh(String connectionId) async {
-    for (final f in const [
-      'user',
-      'host',
-      'port',
-      'method',
-      'password',
-      'privkey',
-      'passphrase',
-      'hostkey',
-    ]) {
-      await _storage.delete(key: _sshKey(connectionId, f));
-    }
+    // Un campo dañado no debe impedir purgar los demás secretos/host trust.
+    // Future.wait conserva el error, pero espera todos los intentos.
+    await Future.wait<void>([
+      for (final f in const [
+        'user',
+        'host',
+        'port',
+        'method',
+        'password',
+        'privkey',
+        'passphrase',
+        'hostkey',
+      ])
+        _storage.delete(key: _sshKey(connectionId, f)),
+    ], eagerError: false);
   }
 
   // ── Secretos app-level (no por conexión), p.ej. clave de ElevenLabs ───

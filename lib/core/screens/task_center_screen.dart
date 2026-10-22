@@ -535,7 +535,7 @@ class _TaskCenterScreenState extends State<TaskCenterScreen> {
       appBar: HermesAppBar(
         centerTitle: false,
         title: Text(
-          'EJECUCIONES',
+          s.drawerTaskCenter.toUpperCase(),
           style: TextStyle(
             fontWeight: FontWeight.bold,
             fontSize: 15,

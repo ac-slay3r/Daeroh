@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/attachment_draft.dart';
 import '../models/session.dart';
 import 'attachment_uploader.dart';
+import 'secure_storage_policy.dart';
 import 'session_deletion.dart';
 import 'turn_outbox_store.dart';
 
@@ -105,7 +106,7 @@ class ChatDraftStore {
 
   ChatDraftStore(
     this._prefs, {
-    FlutterSecureStorage secureStorage = const FlutterSecureStorage(),
+    FlutterSecureStorage secureStorage = sharedSecureStorage,
     Future<bool> Function(AttachmentDraft)? deletePrivateCopy,
     this.mutationNamespaceForTesting = '',
   }) : _secure = secureStorage,

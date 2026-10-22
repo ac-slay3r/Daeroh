@@ -570,6 +570,9 @@ class RoomWatchView {
 
 /// Presents decisions (implemented by the listener with rich notifications).
 abstract interface class RoomNoticePresenter {
+  /// A plain exception means no deduped notice was delivered. A presenter
+  /// that can partially deliver must throw [RoomNoticePresentationFailure]
+  /// with the keys already accepted by its sink. Normal return commits all.
   Future<void> present(
     String connId,
     HostedGroupRoom room,
@@ -577,9 +580,22 @@ abstract interface class RoomNoticePresenter {
   );
 }
 
+/// A batch can post approvals before a later notice fails. Only identities
+/// acknowledged by the presenter remain claimed when that batch is retried.
+class RoomNoticePresentationFailure implements Exception {
+  RoomNoticePresentationFailure(this.cause, Iterable<String> deliveredKeys)
+    : deliveredKeys = Set.unmodifiable(deliveredKeys);
+
+  final Object cause;
+  final Set<String> deliveredKeys;
+}
+
 /// Claims a dedupe key once across isolates (the notification ledger).
 typedef RoomNoticeClaim =
     Future<bool> Function(String connId, String roomId, String dedupeKey);
+
+typedef RoomNoticeRelease =
+    Future<void> Function(String connId, String roomId, String dedupeKey);
 
 /// IO driver for one connection. Called from the listener tick; holds no
 /// timers. Backoff is per connection and doubles up to [maxDelay].
@@ -589,6 +605,7 @@ class RoomWatcher {
     required this.prefs,
     required this.presenter,
     required this.claim,
+    required this.release,
     DateTime Function()? now,
     this.baseDelay = const Duration(minutes: 1),
     this.maxDelay = const Duration(minutes: 15),
@@ -601,8 +618,12 @@ class RoomWatcher {
   final SharedPreferences prefs;
   final RoomNoticePresenter presenter;
   final RoomNoticeClaim claim;
+  final RoomNoticeRelease release;
   final Duration baseDelay;
   final Duration maxDelay;
+
+  /// Maximum room reads per pass, not a cap on retained room state.
+  /// A non-positive budget performs listing/pruning only.
   final int maxRooms;
   final int pageLimit;
 
@@ -614,13 +635,66 @@ class RoomWatcher {
   int _failures = 0;
   DateTime? _retryAt;
   bool _anyWorking = false;
+  int _nextRoomIndex = 0;
+  final Map<String, int> _roomOrder = {};
+  Set<String> _listedRoomIds = const {};
   final Map<String, ({String memberId, String text})> _lastMessages = {};
   List<RoomWatchView> _views = const [];
 
-  /// Rooms seen by the last successful tick (widgets, presence).
+  /// Last successful evidence for each still-listed room, including rooms
+  /// skipped by the polling budget or whose latest read failed. Unknown is
+  /// not completion. This cache lives only for this connection's watcher;
+  /// it is replaced on successful reads and pruned by the full listing.
   List<RoomWatchView> get views => _views;
 
+  /// All active rooms in the last successful listing, including rooms not
+  /// polled this pass. Used to keep their Live Updates until removal.
+  Set<String> get listedRoomIds => _listedRoomIds;
+
   static const storageKey = 'bg_room_watch_v1';
+
+  // Failed releases survive watcher recreation. Store only authoritative
+  // identities, never notice text, and drain before claiming this room again.
+  String _releaseKey(String roomId) =>
+      'bg_room_release_v1:${jsonEncode([connId, roomId])}';
+
+  // Keep the obligation even if journal creation fails. A missing durable
+  // journal must not let this watcher reclaim or advance an undelivered room.
+  final Map<String, Set<String>> _pendingReleases = {};
+
+  Future<void> _drainReleases(String roomId) async {
+    final key = _releaseKey(roomId);
+    // A failed remove can still evict the local preferences cache. Consult
+    // durable storage before deciding recovery is complete (also on restart).
+    await prefs.reload();
+    final pending = <String>{
+      ...?_pendingReleases[roomId],
+      ...?prefs.getStringList(key),
+    };
+    if (pending.isEmpty) return;
+    _pendingReleases[roomId] = pending;
+    // Best effort crash recovery. Failure (including a false return) does not
+    // discard memory or prevent release through the independently stored ledger.
+    // Retry journaling on every drain if release remains unavailable.
+    try {
+      await prefs.setStringList(key, pending.toList());
+    } catch (_) {
+      // The in-memory obligation remains until release AND removal succeed.
+    }
+    for (final dedupe in pending) {
+      await release(connId, roomId, dedupe);
+    }
+    if (!await prefs.remove(key)) {
+      throw StateError('Could not persist room claim release');
+    }
+    _pendingReleases.remove(roomId);
+  }
+
+  Future<void> _releaseFailed(String roomId, Set<String> keys) async {
+    if (keys.isEmpty) return;
+    (_pendingReleases[roomId] ??= <String>{}).addAll(keys);
+    await _drainReleases(roomId);
+  }
 
   bool get anyWorking => _anyWorking;
   Duration? get retryAfter {
@@ -714,7 +788,8 @@ class RoomWatcher {
     }
   }
 
-  /// One incremental pass. Returns false when skipped by backoff or failed.
+  /// One incremental pass. True means the listing and at least one room read
+  /// succeeded (or no reads were scheduled); views retain still-listed evidence.
   Future<bool> tick(BotModeGateway gateway) async {
     if (!allowsAttempt) return false;
     final all = _loadAll();
@@ -728,99 +803,172 @@ class RoomWatcher {
         _retryAt = _now().add(maxDelay);
         return false;
       }
-      final rooms = (await gateway.listGroups(
+      final listedRooms = (await gateway.listGroups(
         generation: caps.generation,
-      )).where((r) => !r.disbanded).take(maxRooms).toList();
-      final seen = <String>{};
+      )).where((r) => !r.disbanded).toList();
+      final listedKeys = {
+        for (final room in listedRooms) roomKey(connId, room),
+      };
+      // Keep first-seen order for retained identities; append new rooms in
+      // listing order. Reindex after removals to bound the in-memory metadata.
+      final orderedKeys = [
+        ..._roomOrder.keys.where(listedKeys.contains),
+        ...listedKeys.where((key) => !_roomOrder.containsKey(key)),
+      ];
+      _roomOrder
+        ..clear()
+        ..addEntries([
+          for (var i = 0; i < orderedKeys.length; i++)
+            MapEntry(orderedKeys[i], i),
+        ]);
+      listedRooms.sort(
+        (a, b) => _roomOrder[roomKey(connId, a)]!.compareTo(
+          _roomOrder[roomKey(connId, b)]!,
+        ),
+      );
+      // Rotate attempted slices even when individual rooms fail, so one bad
+      // room cannot starve the tail. Failed room state remains untouched.
+      // Stable identity order prevents server-side activity reordering from
+      // repeatedly moving a room out of the next slice. For stable membership
+      // and a positive budget, every room is attempted within ceil(count /
+      // maxRooms) passes. The in-memory offset resets on watcher recreation;
+      // membership changes wrap it into the new list without pruning skips.
+      final count = listedRooms.length;
+      final start = count == 0 ? 0 : _nextRoomIndex % count;
+      var take = maxRooms;
+      if (take < 0) take = 0;
+      if (take > count) take = count;
+      final rooms = [
+        for (var i = 0; i < take; i++) listedRooms[(start + i) % count],
+      ];
       final views = <RoomWatchView>[];
       for (final listed in rooms) {
-        final key = roomKey(connId, listed);
-        seen.add(key);
-        final previousRaw = all[key];
-        final previous = previousRaw == null
-            ? null
-            : RoomWatchState.fromJson(previousRaw);
-        // Quiet rooms cost one `groups.state`; the log is read only when
-        // the server says there is something past our cursor.
-        final state = await gateway.groupState(
-          listed.roomId,
-          generation: caps.generation,
-        );
-        final room = state.room;
-        var events = <HostedGroupEvent>[];
-        var latest = room.latestSeq;
-        if (previous != null && room.latestSeq > previous.cursor) {
-          var since = previous.cursor;
-          for (var page = 0; page < maxPagesPerTick; page++) {
-            final log = await gateway.groupLog(
-              room.roomId,
-              sinceSeq: since,
-              limit: pageLimit,
-              generation: caps.generation,
-            );
-            events.addAll(log.events);
-            final stalled = log.cursor <= since;
-            since = log.cursor;
-            // Complete read: adopt the head. Partial: the next tick resumes
-            // from the cursor we actually reached.
-            latest = log.hasMore && !stalled ? log.cursor : log.latestSeq;
-            if (!log.hasMore || stalled) break;
+        try {
+          await _drainReleases(listed.roomId);
+          final key = roomKey(connId, listed);
+          final previousRaw = all[key];
+          final previous = previousRaw == null
+              ? null
+              : RoomWatchState.fromJson(previousRaw);
+          // Quiet rooms cost one `groups.state`; the log is read only when
+          // the server says there is something past our cursor.
+          final state = await gateway.groupState(
+            listed.roomId,
+            generation: caps.generation,
+          );
+          final room = state.room;
+          var events = <HostedGroupEvent>[];
+          var latest = room.latestSeq;
+          if (previous != null && room.latestSeq > previous.cursor) {
+            var since = previous.cursor;
+            for (var page = 0; page < maxPagesPerTick; page++) {
+              final log = await gateway.groupLog(
+                room.roomId,
+                sinceSeq: since,
+                limit: pageLimit,
+                generation: caps.generation,
+              );
+              events.addAll(log.events);
+              final stalled = log.cursor <= since;
+              since = log.cursor;
+              // Complete read: adopt the head. Partial: the next tick resumes
+              // from the cursor we actually reached.
+              latest = log.hasMore && !stalled ? log.cursor : log.latestSeq;
+              if (!log.hasMore || stalled) break;
+            }
+          } else if (previous != null && room.latestSeq < previous.cursor) {
+            // Authority rotated or the log rewound: rebaseline silently.
+            events = [];
           }
-        } else if (previous != null && room.latestSeq < previous.cursor) {
-          // Authority rotated or the log rewound: rebaseline silently.
-          events = [];
-        }
-        final level = await roomPrefs.notificationLevel(prefsRoomKey(room));
-        final decision = decideRoomNotices(
-          previous: previous,
-          driverStatus: state.driverStatus,
-          newEvents: events,
-          latestSeq: latest,
-          level: level,
-          nowMs: _now().millisecondsSinceEpoch,
-        );
-        working = working || decision.next.live;
-        final fresh = <RoomNotice>[];
-        for (final notice in decision.notices) {
-          final dedupe = notice.dedupeKey;
-          if (dedupe == null || await claim(connId, room.roomId, dedupe)) {
-            fresh.add(
-              notice is RoomRoundFinishedNotice
-                  ? await _withEarlierReplies(gateway, room, notice, caps)
-                  : notice,
-            );
-          }
-        }
-        if (fresh.isNotEmpty) {
-          await presenter.present(connId, room, fresh);
-        }
-        all[key] = decision.next.toJson();
-        for (final event in events) {
-          if (event.kind == 'message.member' && event.publicText != null) {
-            _lastMessages[key] = (
-              memberId: event.activity.memberId ?? event.actor.id,
-              text: event.publicText!,
-            );
-          }
-        }
-        views.add(
-          RoomWatchView(
-            room: room,
+          final level = await roomPrefs.notificationLevel(prefsRoomKey(room));
+          final decision = decideRoomNotices(
+            previous: previous,
             driverStatus: state.driverStatus,
-            state: decision.next,
-            lastMemberId: _lastMessages[key]?.memberId,
-            lastText: _lastMessages[key]?.text,
-          ),
-        );
+            newEvents: events,
+            latestSeq: latest,
+            level: level,
+            nowMs: _now().millisecondsSinceEpoch,
+          );
+          working = working || decision.next.live;
+          final fresh = <RoomNotice>[];
+          final acquired = <String>{};
+          try {
+            for (final notice in decision.notices) {
+              final dedupe = notice.dedupeKey;
+              if (dedupe != null) {
+                if (!await claim(connId, room.roomId, dedupe)) continue;
+                acquired.add(dedupe);
+              }
+              fresh.add(
+                notice is RoomRoundFinishedNotice
+                    ? await _withEarlierReplies(gateway, room, notice, caps)
+                    : notice,
+              );
+            }
+            if (fresh.isNotEmpty) {
+              await presenter.present(connId, room, fresh);
+            }
+          } catch (error) {
+            if (error is RoomNoticePresentationFailure) {
+              acquired.removeAll(error.deliveredKeys);
+            }
+            await _releaseFailed(room.roomId, acquired);
+            rethrow;
+          }
+          all[key] = decision.next.toJson();
+          for (final event in events) {
+            if (event.kind == 'message.member' && event.publicText != null) {
+              _lastMessages[key] = (
+                memberId: event.activity.memberId ?? event.actor.id,
+                text: event.publicText!,
+              );
+            }
+          }
+          views.add(
+            RoomWatchView(
+              room: room,
+              driverStatus: state.driverStatus,
+              state: decision.next,
+              lastMemberId: _lastMessages[key]?.memberId,
+              lastText: _lastMessages[key]?.text,
+            ),
+          );
+        } catch (error) {
+          if (kDebugMode) {
+            debugPrint(
+              '[hermes-rooms] room read failed (${error.runtimeType})',
+            );
+          }
+        }
       }
-      _views = List.unmodifiable(views);
+      final retained = <String, RoomWatchView>{
+        for (final view in _views)
+          if (listedKeys.contains(roomKey(connId, view.room)))
+            roomKey(connId, view.room): view,
+        for (final view in views) roomKey(connId, view.room): view,
+      };
+      _views = List.unmodifiable(retained.values);
+      // Only an absent/disbanded room is removed. Skipping a room in the
+      // current slice must not discard its cursor or pending approval state.
       all.removeWhere(
-        (key, _) => key.startsWith('$connId|') && !seen.contains(key),
+        (key, _) => key.startsWith('$connId|') && !listedKeys.contains(key),
       );
       await prefs.setString(storageKey, jsonEncode(all));
+      _nextRoomIndex = count == 0 ? 0 : (start + take) % count;
+      _listedRoomIds = Set.unmodifiable({
+        for (final room in listedRooms) room.roomId,
+      });
+      _anyWorking =
+          working ||
+          listedKeys.any(
+            (key) => all[key] != null && RoomWatchState.fromJson(all[key]).live,
+          );
+      if (rooms.isNotEmpty && views.isEmpty) {
+        _recordFailure();
+        return false;
+      }
       _failures = 0;
       _retryAt = null;
-      _anyWorking = working;
       return true;
     } catch (error) {
       if (kDebugMode) {

@@ -1,6 +1,7 @@
 import '../bots/data/room_log_cursor.dart';
 import 'bot_mention_roster.dart';
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 
 import '../models/agent_profile.dart';
@@ -343,50 +344,122 @@ Future<List<Session>> loadMissionControlSessions({
   required MissionDashboardGet dashboardGet,
   required MissionSessionsLoader legacyGatewayLoader,
 }) async {
-  final query = Uri(
-    queryParameters: const {
-      'profile': 'all',
-      'limit': '200',
-      'offset': '0',
-      'min_messages': '0',
-      'archived': 'exclude',
-      'order': 'recent',
-      'full': '1',
-      'include_children': 'true',
-    },
-  ).query;
-  late final Map<String, dynamic> data;
-  try {
-    data = await dashboardGet('profiles/sessions?$query');
-  } on DashboardHttpException catch (error) {
-    if (error.statusCode != 404 && error.statusCode != 405) rethrow;
-    return legacyGatewayLoader();
-  }
-  final errors = data['errors'];
-  final hasPartialErrors = switch (errors) {
-    null => false,
-    List value => value.isNotEmpty,
-    Map value => value.isNotEmpty,
-    String value => value.trim().isNotEmpty,
-    _ => true,
-  };
-  if (hasPartialErrors) {
-    throw const FormatException('Partial aggregate session response');
-  }
-  final raw = data['sessions'] ?? data['data'];
-  if (raw is! List) {
-    throw const FormatException('Malformed aggregate session response');
-  }
+  const pageLimit = 200;
   final sessions = <Session>[];
-  for (final value in raw) {
-    final session = Session.tryParse(value);
-    if (session == null) {
-      throw const FormatException('Malformed aggregate session row');
+  final observed = <(String, String)>{};
+  final observedByProfile = <String, int>{};
+  final expectedByProfile = <String, int>{};
+  var expectedTotal = 0;
+  final pageSignatures = <String>{};
+  var offset = 0;
+  while (true) {
+    final query = Uri(
+      queryParameters: {
+        'profile': 'all',
+        'limit': '$pageLimit',
+        'offset': '$offset',
+        'min_messages': '0',
+        'archived': 'exclude',
+        'order': 'recent',
+        'full': '1',
+        'include_children': 'true',
+      },
+    ).query;
+    late final Map<String, dynamic> data;
+    try {
+      data = await dashboardGet('profiles/sessions?$query');
+    } on DashboardHttpException catch (error) {
+      // Once the aggregate route has answered, a later failure is not proof
+      // of a legacy server. Never replace its owners with a partial fallback.
+      if (offset != 0 || (error.statusCode != 404 && error.statusCode != 405)) {
+        rethrow;
+      }
+      return legacyGatewayLoader();
     }
-    if ((session.profile ?? '').trim().isEmpty) {
-      throw const FormatException('Aggregate session owner is missing');
+    final errors = data['errors'];
+    final hasPartialErrors = switch (errors) {
+      null => false,
+      List value => value.isNotEmpty,
+      Map value => value.isNotEmpty,
+      String value => value.trim().isNotEmpty,
+      _ => true,
+    };
+    if (hasPartialErrors) {
+      throw const FormatException('Partial aggregate session response');
     }
-    if (!session.id.startsWith('mob-aux-')) sessions.add(session);
+    final raw = data['sessions'] ?? data['data'];
+    if (raw is! List) {
+      throw const FormatException('Malformed aggregate session response');
+    }
+    final limit = data['limit'] ?? pageLimit;
+    final serverOffset = data['offset'] ?? offset;
+    final total = data['total'];
+    if (limit is! int ||
+        limit <= 0 ||
+        serverOffset != offset ||
+        (total != null && (total is! int || total < 0))) {
+      throw const FormatException('Malformed aggregate session pagination');
+    }
+    if (total is int && total > expectedTotal) expectedTotal = total;
+    final profileTotals = data['profile_totals'];
+    if (profileTotals != null) {
+      if (profileTotals is! Map) {
+        throw const FormatException('Malformed aggregate profile totals');
+      }
+      for (final entry in profileTotals.entries) {
+        final owner = entry.key;
+        final count = entry.value;
+        if (owner is! String ||
+            owner.trim().isEmpty ||
+            count is! int ||
+            count < 0) {
+          throw const FormatException('Malformed aggregate profile totals');
+        }
+        final key = owner.trim();
+        if (count > (expectedByProfile[key] ?? 0)) {
+          expectedByProfile[key] = count;
+        }
+      }
+    }
+    final identities = <List<String>>[];
+    for (final value in raw) {
+      final session = Session.tryParse(value);
+      if (session == null) {
+        throw const FormatException('Malformed aggregate session row');
+      }
+      final owner = (session.profile ?? '').trim();
+      if (owner.isEmpty) {
+        throw const FormatException('Aggregate session owner is missing');
+      }
+      identities.add([owner, session.id]);
+      if (observed.add((owner, session.id))) {
+        observedByProfile.update(
+          owner,
+          (count) => count + 1,
+          ifAbsent: () => 1,
+        );
+        if (!session.id.startsWith('mob-aux-')) sessions.add(session);
+      }
+    }
+    // Pinned rows may be back-filled outside the LIMIT/OFFSET window. Neither
+    // raw row count nor the number of unique/visible rows is the page stride.
+    if ((raw.isEmpty && total is int && offset < total) ||
+        (raw.length >= limit && !pageSignatures.add(jsonEncode(identities)))) {
+      throw const FormatException('Aggregate session pagination stalled');
+    }
+    offset += limit;
+    if (total is int ? offset >= total : raw.length < limit) break;
+  }
+  // Traversing every advertised window is not proof that the server supplied
+  // every row: older Dashboards cap each profile's fetched prefix at 500.
+  // Count physical identities before hiding auxiliary rows; repeated pins do
+  // not count twice, and extra rows from one owner cannot cover another's gap.
+  // Retain the largest advertised counts so later metadata cannot erase a gap.
+  if (observed.length < expectedTotal ||
+      expectedByProfile.entries.any(
+        (entry) => (observedByProfile[entry.key] ?? 0) < entry.value,
+      )) {
+    throw const FormatException('Incomplete aggregate session response');
   }
   return List<Session>.unmodifiable(sessions);
 }
@@ -479,15 +552,22 @@ final class MissionControlRepository
     final desktop = lease.client;
     return MissionControlRepository(
       profilesLoader: () async {
-        final rosterGeneration = BotMentionRoster.shared.generation(connection.id);
-        final profiles = await loadMissionControlProfiles(
-        // One profiles.list snapshot now carries Desktop's last/preferred
-        // session projections and hidden worker liveness. Older Gateways omit
-        // those optional fields and keep returning the same profile roster.
-        desktopLoader: () => desktop.listProfiles(includeSessions: true),
-        legacyDashboardLoader: dashboard.getProfiles,
+        final rosterGeneration = BotMentionRoster.shared.generation(
+          connection.id,
         );
-        BotMentionRoster.shared.replace(connection.id, connection.label, profiles, expectedGeneration: rosterGeneration);
+        final profiles = await loadMissionControlProfiles(
+          // One profiles.list snapshot now carries Desktop's last/preferred
+          // session projections and hidden worker liveness. Older Gateways omit
+          // those optional fields and keep returning the same profile roster.
+          desktopLoader: () => desktop.listProfiles(includeSessions: true),
+          legacyDashboardLoader: dashboard.getProfiles,
+        );
+        BotMentionRoster.shared.replace(
+          connection.id,
+          connection.label,
+          profiles,
+          expectedGeneration: rosterGeneration,
+        );
         return profiles;
       },
       sessionsLoader: () => loadMissionControlSessions(
@@ -538,6 +618,9 @@ final class MissionControlRepository
       'sessions': ?sessionsResult.error,
       'kanban': ?boardResult.error,
       'hostedGroups': ?groupsResult.error,
+      if (groupsResult.value case final groups?
+          when groups.roomFailures.isNotEmpty)
+        'hostedGroups': groups.roomFailures,
     };
     return MissionBackendSnapshot(
       profiles: profilesResult.value ?? const [],
@@ -568,23 +651,29 @@ final class MissionControlRepository
     final states = <HostedGroupRoom>[];
     final logs = <HostedGroupLogPage>[];
     final driverStatuses = <String, RoomDriverStatus>{};
+    final roomFailures = <String, Object>{};
     final listedIds = {for (final room in listed) room.roomId};
     _logCursors.removeWhere((roomId, _) => !listedIds.contains(roomId));
     for (final listedRoom in listed) {
-      final read = await _readRoom(
-        gateway,
-        listedRoom.roomId,
-        generation: capabilities.generation,
-      );
-      final state = read.room;
-      if (state.roomId != listedRoom.roomId ||
-          state.revision < listedRoom.revision) {
-        throw const FormatException('incoherent hosted room state');
-      }
-      states.add(state);
-      logs.add(read.log);
-      if (read.driverStatus case final status?) {
-        driverStatuses[state.roomId] = status;
+      try {
+        final read = await _readRoom(
+          gateway,
+          listedRoom.roomId,
+          generation: capabilities.generation,
+        );
+        final state = read.room;
+        if (state.roomId != listedRoom.roomId ||
+            state.revision < listedRoom.revision) {
+          throw const FormatException('incoherent hosted room state');
+        }
+        states.add(state);
+        logs.add(read.log);
+        if (read.driverStatus case final status?) {
+          driverStatuses[state.roomId] = status;
+        }
+      } catch (error) {
+        _logCursors.remove(listedRoom.roomId);
+        roomFailures[listedRoom.roomId] = error;
       }
     }
     return HostedGroupsSnapshot(
@@ -592,13 +681,18 @@ final class MissionControlRepository
       rooms: List.unmodifiable(states),
       logs: List.unmodifiable(logs),
       driverStatuses: Map.unmodifiable(driverStatuses),
+      roomFailures: Map.unmodifiable(roomFailures),
     );
   }
 
   /// `groups.state` (+driver status) and the room log. Incremental gateways
   /// read only `since_seq = cursor`; legacy ones re-read the full log.
   Future<
-    ({HostedGroupRoom room, HostedGroupLogPage log, RoomDriverStatus? driverStatus})
+    ({
+      HostedGroupRoom room,
+      HostedGroupLogPage log,
+      RoomDriverStatus? driverStatus,
+    })
   >
   _readRoom(
     MissionHostedGroupsGateway gateway,

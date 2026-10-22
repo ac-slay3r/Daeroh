@@ -2,13 +2,13 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/session.dart';
 import '../models/transcript_privacy_state.dart';
 import '../utils/assistant_content.dart';
 import '../utils/chat_turn.dart';
+import 'secure_storage_policy.dart';
 import 'session_deletion.dart';
 import 'session_reconciler.dart';
 
@@ -56,7 +56,7 @@ final class LocalTranscriptSnapshot {
 /// claves históricas quedan conservadas pero fuera del alcance operativo; una
 /// copia v3 previa en SharedPreferences solo se admite como fallback de lectura.
 class LocalTranscriptStore {
-  static const _storage = FlutterSecureStorage();
+  static const _storage = sharedSecureStorage;
   static const _maxStoredMessages = 1000;
   static const _maxEncodedBytes = 2 * 1024 * 1024;
 

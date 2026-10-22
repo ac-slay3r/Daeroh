@@ -118,8 +118,10 @@ final class CapabilitiesSnapshot {
   }) {
     final byName = {for (final p in installed) p.installedName: p};
     final used = <String>{};
+    final catalogIds = <String>{};
     final out = <CapabilityItem>[];
     for (final entry in catalog) {
+      if (!catalogIds.add(entry.id)) continue;
       final local = byName[entry.installedName];
       if (local != null) {
         used.add(local.installedName);
@@ -135,7 +137,7 @@ final class CapabilitiesSnapshot {
       }
     }
     for (final p in installed) {
-      if (!used.contains(p.installedName)) out.add(p);
+      if (used.add(p.installedName)) out.add(p);
     }
     return out;
   }

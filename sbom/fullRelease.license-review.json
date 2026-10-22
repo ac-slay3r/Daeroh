@@ -1,5 +1,5 @@
 {
-  "inputFingerprint": "774a125828376fc9d1bfc34f31ff72418d9e217bdef25c86a4fc436de8834654",
+  "inputFingerprint": "e70e22793f49bed6a7055cd1f9942ad2f713268a73cae595f8702eb62dbac73f",
   "status": "COMPLETE",
   "unresolvedComponents": [],
   "unresolvedSourceAssets": [
@@ -35,7 +35,10 @@
     "android/app/src/qa/res/drawable-nodpi/botw_sample_scout_failed.png",
     "android/app/src/qa/res/drawable-nodpi/botw_sample_scout_idle.png",
     "android/app/src/qa/res/drawable-nodpi/botw_sample_scout_needs.png",
-    "android/app/src/qa/res/drawable-nodpi/botw_sample_scout_working.png"
+    "android/app/src/qa/res/drawable-nodpi/botw_sample_scout_working.png",
+    "assets/branding/daeroh_foreground.svg",
+    "assets/branding/daeroh_launcher.svg",
+    "assets/branding/daeroh_logo.png"
   ],
   "variant": "fullRelease"
 }

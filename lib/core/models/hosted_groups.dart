@@ -1046,6 +1046,9 @@ final class HostedGroupsSnapshot {
   final List<HostedGroupRoom> rooms;
   final List<HostedGroupLogPage> logs;
 
+  /// Rooms listed by the gateway whose state or log could not be verified.
+  final Map<String, Object> roomFailures;
+
   /// `groups.state.driver_status` per room id, when the gateway reported it.
   final Map<String, RoomDriverStatus> driverStatuses;
 
@@ -1053,6 +1056,7 @@ final class HostedGroupsSnapshot {
     this.capabilities,
     this.rooms = const [],
     this.logs = const [],
+    this.roomFailures = const {},
     this.driverStatuses = const {},
   });
 

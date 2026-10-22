@@ -25,13 +25,16 @@ import 'package:web_socket_channel/io.dart';
 import '../../utils/private_websocket_client.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
 
+import '../../../l10n/app_localizations.dart';
+import '../../../l10n/app_localizations_en.dart';
+import '../../../l10n/app_localizations_es.dart';
 import '../../utils/transport_privacy.dart';
 import 'stt_engine.dart';
 import 'voice_latency_trace.dart';
 
 @visibleForTesting
-String serverSttPublicErrorMessage(Object? _) =>
-    'Server speech recognition failed.';
+String serverSttPublicErrorMessage(Object? _, {String lang = 'en'}) =>
+    (lang == 'es' ? StringsEs() : StringsEn()).voiceSttRecognitionFailed;
 
 @visibleForTesting
 Map<String, double>? serverSttPublicMeta(Object? raw) {
@@ -136,6 +139,11 @@ class ServerSttEngine implements SttEngine {
   /// Token del servidor (se añade como `?token=`). Puede ir vacío.
   final String token;
 
+  /// Effective app voice language (resolved by VoiceService via voice_lang.dart).
+  final String lang;
+
+  Strings get _strings => lang == 'es' ? StringsEs() : StringsEn();
+
   /// Reporta el nivel de micrófono normalizado (0..1) para el orbe.
   final void Function(double level)? onLevel;
 
@@ -156,6 +164,7 @@ class ServerSttEngine implements SttEngine {
   ServerSttEngine({
     required String baseUrl,
     this.token = '',
+    this.lang = 'en',
     this.onLevel,
     this.enableGhostGate = true,
     this.ignoreServerEndpoint = false,
@@ -491,7 +500,7 @@ class ServerSttEngine implements SttEngine {
         _recorder = recorder;
         if (!await recorder.hasPermission()) {
           if (_isCurrent(operation)) {
-            controller.addError(Exception('No microphone permission.'));
+            controller.addError(Exception(_strings.voiceSttPermissionDenied));
             await controller.close();
           }
           return;
@@ -529,7 +538,7 @@ class ServerSttEngine implements SttEngine {
       _recorder = recorder;
       if (!await recorder.hasPermission()) {
         if (_isCurrent(operation)) {
-          controller.addError(Exception('No microphone permission.'));
+          controller.addError(Exception(_strings.voiceSttPermissionDenied));
           await controller.close();
         }
         return;
@@ -537,7 +546,7 @@ class ServerSttEngine implements SttEngine {
       if (!_isCurrent(operation)) return;
       if (baseUrl.trim().isEmpty) {
         controller.addError(
-          Exception('Set the STT server URL in Settings › Voice.'),
+          Exception(_strings.voiceSttServerUrlMissing),
         );
         await controller.close();
         return;
@@ -592,9 +601,7 @@ class ServerSttEngine implements SttEngine {
               (_) => _startOperation(operation, onCaptureReady),
             );
           } else {
-            _failTurn(
-              'Server closed before transcription finished. Please retry.',
-            );
+            _failTurn(_strings.voiceSttClosedBeforeFinal);
           }
         }
 
@@ -614,9 +621,7 @@ class ServerSttEngine implements SttEngine {
         await wsSub.cancel();
         await session.close();
         if (operation.connectionRetries++ > 0) {
-          _failTurn(
-            'Server closed before speech recognition was ready. Please retry.',
-          );
+          _failTurn(_strings.voiceSttClosedBeforeReady);
           return;
         }
       }
@@ -638,9 +643,7 @@ class ServerSttEngine implements SttEngine {
     } catch (_) {
       if (_isCurrent(operation)) {
         _failTurn(
-          _persistent
-              ? 'Could not resume server STT.'
-              : 'Could not start server STT.',
+          _persistent ? _strings.voiceSttResumeFailed : _strings.voiceSttStartFailed,
         );
       }
     } finally {
@@ -668,7 +671,7 @@ class ServerSttEngine implements SttEngine {
             session.add(bytes);
             if (bytes.isNotEmpty) operation.audioSent = true;
           } catch (_) {
-            _failTurn('Server connection error. Please retry.');
+            _failTurn(_strings.voiceSttConnectionFailed);
             return;
           }
           // `speechLastAboveThreshold` describe la última muestra de voz que
@@ -682,7 +685,7 @@ class ServerSttEngine implements SttEngine {
         }
       },
       onError: (Object _) {
-        if (_isCurrent(operation)) _failTurn('Microphone capture failed.');
+        if (_isCurrent(operation)) _failTurn(_strings.voiceSttCaptureFailed);
       },
     );
   }
@@ -775,7 +778,7 @@ class ServerSttEngine implements SttEngine {
         // siguiente turno.
         break;
       case 'error':
-        _failTurn(serverSttPublicErrorMessage(msg));
+        _failTurn(serverSttPublicErrorMessage(msg, lang: lang));
         break;
     }
   }
@@ -946,7 +949,7 @@ class ServerSttEngine implements SttEngine {
       if (persistent) {
         _endTurn();
       } else if (!_closing) {
-        _failTurn('Server transcription timed out. Please retry.');
+        _failTurn(_strings.voiceSttTimedOut);
       }
     });
   }

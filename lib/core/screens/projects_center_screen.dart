@@ -56,6 +56,7 @@ class _ProjectsCenterScreenState extends State<ProjectsCenterScreen> {
   ProjectTreeSnapshot? _snapshot;
   Object? _failure;
   bool _loading = true;
+  int _loadGeneration = 0;
 
   @override
   void initState() {
@@ -83,6 +84,15 @@ class _ProjectsCenterScreenState extends State<ProjectsCenterScreen> {
   }
 
   Future<void> _load() async {
+    final gateway = widget.gateway;
+    final connectionId = widget.connection.id;
+    final generation = ++_loadGeneration;
+    bool isCurrentLoad() =>
+        mounted &&
+        generation == _loadGeneration &&
+        identical(gateway, widget.gateway) &&
+        connectionId == widget.connection.id;
+
     if (mounted) {
       setState(() {
         _loading = true;
@@ -90,19 +100,19 @@ class _ProjectsCenterScreenState extends State<ProjectsCenterScreen> {
       });
     }
     try {
-      final snapshot = await widget.gateway.projectTree();
-      if (!mounted) return;
-      _memoryCache.remove(widget.connection.id);
-      _memoryCache[widget.connection.id] = snapshot;
+      final snapshot = await gateway.projectTree();
+      if (!isCurrentLoad()) return;
+      _memoryCache.remove(connectionId);
+      _memoryCache[connectionId] = snapshot;
       while (_memoryCache.length > _cacheLimit) {
         _memoryCache.remove(_memoryCache.keys.first);
       }
       setState(() => _snapshot = snapshot);
     } catch (error) {
-      if (!mounted) return;
+      if (!isCurrentLoad()) return;
       setState(() => _failure = error);
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (isCurrentLoad()) setState(() => _loading = false);
     }
   }
 

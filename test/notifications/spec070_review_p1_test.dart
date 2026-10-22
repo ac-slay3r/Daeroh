@@ -900,6 +900,7 @@ void main() {
         prefs: prefs,
         presenter: _Presenter(seen),
         claim: (_, _, _) async => true,
+        release: (_, _, _) async {},
         pageLimit: 2,
         maxPagesPerTick: 1,
       );

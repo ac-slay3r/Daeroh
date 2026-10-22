@@ -36,8 +36,8 @@ internal class HermesPcmStreamHandler(context: Context) :
     AutoCloseable {
 
     private data class AudioFocusLease(
-        // Kept as Any so loading this handler on API 24/25 never has to resolve
-        // AudioFocusRequest from a field signature.
+        // Kept as Any: app minSdk is 29, so AudioFocusRequest always resolves,
+        // but the field stays loosely typed to avoid forcing eager class load.
         val modernRequest: Any?,
         val listener: AudioManager.OnAudioFocusChangeListener,
         val lastChange: AtomicInteger,
@@ -193,10 +193,11 @@ internal class HermesPcmStreamHandler(context: Context) :
             // seconds of obsolete audio after stop.
             val targetBuffer = sampleRate * channels * BYTES_PER_SAMPLE / 4
             val bufferBytes = max(minBuffer * 2, targetBuffer)
+            // App minSdk is 29 (> O), so USAGE_ASSISTANT is always available; the
+            // SDK check and USAGE_MEDIA fallback are kept only as defense in depth.
             val usage = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 AudioAttributes.USAGE_ASSISTANT
             } else {
-                // USAGE_ASSISTANT does not exist on API 24/25.
                 AudioAttributes.USAGE_MEDIA
             }
             val attributes = AudioAttributes.Builder()

@@ -113,7 +113,9 @@ class NotificationEventLedger {
               entry['o'] == object &&
               entry['k'] == kind,
         );
-        await _prefs.setString(storageKey, jsonEncode(entries));
+        if (!await _prefs.setString(storageKey, jsonEncode(entries))) {
+          throw StateError('Could not persist notification claim release');
+        }
       });
     } finally {
       done.complete();

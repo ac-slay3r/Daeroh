@@ -1,5 +1,6 @@
 import '../models/bot_mention.dart';
 import 'bot_mention_roster.dart';
+import 'secure_storage_policy.dart';
 // Servicio singleton que posee el streaming SSE de los chats. Vive por encima
 // del Navigator (en HermesAppState), así que la respuesta/ejecución del agente
 // CONTINÚA aunque el usuario salga de la pantalla del chat. La pantalla del chat
@@ -1989,7 +1990,7 @@ class CancelledTurnTombstoneStore {
        _nowMs = nowMs ?? (() => DateTime.now().millisecondsSinceEpoch);
 
   factory CancelledTurnTombstoneStore.secure({
-    FlutterSecureStorage secureStorage = const FlutterSecureStorage(),
+    FlutterSecureStorage secureStorage = sharedSecureStorage,
   }) => CancelledTurnTombstoneStore(
     read: () => secureStorage.read(key: _storageKey),
     write: (value) => secureStorage.write(key: _storageKey, value: value),
@@ -3467,17 +3468,27 @@ enum _SessionMessagesPageAction {
 enum _SessionMessagesPageProjectionDisposition { publish, preserve, reject }
 
 final class _NativeSessionHistoryPage extends SessionMessagesPage {
-  _NativeSessionHistoryPage(SessionMessagesPage page, {bool? hasEarlier})
-    : super(
-        messages: page.messages,
-        pagination: null,
-        paginationProvided: false,
-        rawMessageCount: page.rawMessageCount,
-        messagesFullyParsed: page.messagesFullyParsed,
-        resolvedTipId: page.resolvedTipId,
-        coverage: page.coverage,
-        hasEarlier: hasEarlier ?? page.hasEarlier,
-      );
+  _NativeSessionHistoryPage(
+    SessionMessagesPage page, {
+    bool? hasEarlier,
+    this.needsCanonicalRestVerification = false,
+    this.requiresExactBoundaryProbe = false,
+  }) : super(
+         messages: page.messages,
+         pagination: null,
+         paginationProvided: false,
+         rawMessageCount: page.rawMessageCount,
+         messagesFullyParsed: page.messagesFullyParsed,
+         resolvedTipId: page.resolvedTipId,
+         coverage: page.coverage,
+         hasEarlier: hasEarlier ?? page.hasEarlier,
+       );
+
+  /// The Gateway transcript is safe to render, but its unpaginated RPC shape
+  /// cannot establish REST scrollback boundaries. Repair it after first paint.
+  final bool needsCanonicalRestVerification;
+
+  final bool requiresExactBoundaryProbe;
 }
 
 final class _SessionMessagesPageReadContext {
@@ -6913,6 +6924,7 @@ class ActiveChat {
   bool _earlierMessagesAvailable = false;
   int _earlierMessagesNextOffset = 0;
   bool _earlierMessagesInFlight = false;
+  Future<void>? _earlierMessagesFlight;
   int _remainingInitialBackfillPages = _maxInitialBackfillPages;
 
   /// Solo se eleva a UI tras un intento real de backfill que no obtuvo una
@@ -8794,6 +8806,7 @@ class ActiveChat {
       List<Map<String, dynamic>>? prefetchedNewestFirst;
       var prefetchedTranscriptAccepted = false;
       var prefetchedTranscriptComplete = false;
+      _NativeSessionHistoryPage? prefetchedNativePage;
       int? prefetchedRawMessageCount;
       DesktopSessionSnapshot? resumedSnapshot;
       Object? prefetchError;
@@ -9124,6 +9137,9 @@ class ActiveChat {
         final privacyCheckpoint = privacySnapshot?.privacyCheckpoint;
         prefetchError = prefetch.error;
         if (prefetch.value case final page?) {
+          if (page is _NativeSessionHistoryPage) {
+            prefetchedNativePage = page;
+          }
           var normalized = const <Map<String, dynamic>>[];
           _RefreshedTranscriptGraft? graft;
           final transition = _consumeSessionMessagesPageEvidence(
@@ -9363,6 +9379,7 @@ class ActiveChat {
           onMessagesPublished?.call();
           _emit(ActiveChatEvent.messagesHydrated);
         }
+        _scheduleNativeHistoryCanonicalRepair(prefetchedNativePage);
         return;
       }
 
@@ -9409,6 +9426,7 @@ class ActiveChat {
           }
         }
         messagesLoaded = true;
+        _scheduleNativeHistoryCanonicalRepair(prefetchedNativePage);
         return;
       }
       if (prefetchError == null) {
@@ -9494,14 +9512,66 @@ class ActiveChat {
     // REST 8642 no trae display_metadata: igual que tras el terminal, una
     // fila editorial nueva se hidrata (una sola vez) desde session.history.
     unawaited(_hydrateEditorialDisplayMetadataFromDurableHistory());
+    // The current durable tail is safe to show now. Older-page traversal only
+    // improves the initial editorial window; making it part of this await chain
+    // left a chat blank behind up to 64 sequential REST reads.
+    onMessagesPublished?.call();
+    if (page is _NativeSessionHistoryPage &&
+        page.needsCanonicalRestVerification) {
+      _scheduleNativeHistoryCanonicalRepair(page);
+    } else {
+      unawaited(
+        _backfillInitialConversationWindow(
+          refreshedPageHadVisibleConversation:
+              _visibleConversationMessageCountIn(normalized) > 0,
+          verifyPotentialUserGenerationReplacement:
+              verifyPotentialUserGenerationReplacement,
+        ),
+      );
+    }
+  }
+
+  void _scheduleNativeHistoryCanonicalRepair(_NativeSessionHistoryPage? page) {
+    if (page == null || !page.needsCanonicalRestVerification) return;
+    // The native Gateway response is already rendered. A REST offset-zero read
+    // now establishes pagination or repairs it without gating first paint.
+    unawaited(_repairNativeHistoryCanonicalBoundary(page));
+  }
+
+  Future<void> _repairNativeHistoryCanonicalBoundary(
+    _NativeSessionHistoryPage page,
+  ) async {
+    final repairedTail = await _loadEarlierMessagesPage();
+    if (!repairedTail) return;
+
+    if (page.requiresExactBoundaryProbe && _earlierMessagesAvailable) {
+      // A native transcript that exactly fills the expected first REST page
+      // still needs an empty offset probe before it can be declared complete.
+      // Preserve the established transient-read retry without delaying first
+      // paint.
+      for (var attempt = 0;
+          attempt < 2 && !_disposed && _earlierMessagesAvailable;
+          attempt++) {
+        final previousOffset = _earlierMessagesNextOffset;
+        await _loadEarlierMessagesPage();
+        if (!_earlierMessagesAvailable ||
+            _earlierMessagesNextOffset != previousOffset) {
+          break;
+        }
+      }
+    }
+
+    // Canonical tail repair can itself yield only tool/system rows. Continue
+    // the same bounded, asynchronous initial-window traversal used for direct
+    // REST loads so a native first paint never strands an editorially empty
+    // transcript until the reader taps "load earlier".
+    if (_disposed) return;
     await _backfillInitialConversationWindow(
       refreshedPageHadVisibleConversation:
-          _visibleConversationMessageCountIn(normalized) > 0,
+          _visibleConversationMessageCountIn(_messages) > 0,
       verifyPotentialUserGenerationReplacement:
-          verifyPotentialUserGenerationReplacement,
+          _unconfirmedRetainedTranscriptIdentities.isNotEmpty,
     );
-    if (!loadStillAuthorized()) return;
-    onMessagesPublished?.call();
   }
 
   Future<List<Map<String, dynamic>>> _loadStoredMessages(String profile) async {
@@ -9668,6 +9738,23 @@ class ActiveChat {
         if (nativePage.rawMessageCount > requestedLimit ||
             (_transcriptIsComplete && _messages.isNotEmpty)) {
           return nativePage;
+        }
+        final nativePageHasUsableCurrentTranscript =
+            nativePage.messages.isNotEmpty &&
+            nativePage.messagesFullyParsed &&
+            _transcriptRowsHaveUnambiguousIdentityEvidence(nativePage.messages);
+        if (nativePageHasUsableCurrentTranscript) {
+          // `session.history` is sufficient for the current UI tail. Its
+          // unpaginated shape cannot prove the canonical REST boundary, so the
+          // caller schedules offset-zero REST repair after publication.
+          return _NativeSessionHistoryPage(
+            nativePage,
+            needsCanonicalRestVerification: true,
+            requiresExactBoundaryProbe:
+                readContext?.hardExpectedMessageCount ==
+                    nativePage.rawMessageCount &&
+                nativePage.rawMessageCount == requestedLimit,
+          );
         }
         try {
           final canonicalPage = await _getStoredMessagesRestPage(
@@ -11714,7 +11801,7 @@ class ActiveChat {
     while (!_disposed &&
         _earlierMessagesAvailable &&
         _remainingInitialBackfillPages > 0) {
-      final loaded = await loadEarlierMessages();
+      final loaded = await loadEarlierMessages(waitForInFlight: true);
       if (!loaded) return;
       _remainingInitialBackfillPages -= 1;
       final foundVisibleConversation = _messages.any((message) {
@@ -11735,13 +11822,20 @@ class ActiveChat {
   /// unidad conversacional visible. Una página puede contener exclusivamente
   /// filas internas (tools/system); en ese caso un único gesto debe atravesarla
   /// porque la lista no cambia de geometría y no generará otro evento de scroll.
-  Future<bool> loadEarlierMessages({bool continuePastInvisible = false}) async {
-    if (!continuePastInvisible) return _loadEarlierMessagesPage();
+  Future<bool> loadEarlierMessages({
+    bool continuePastInvisible = false,
+    bool waitForInFlight = true,
+  }) async {
+    if (!continuePastInvisible) {
+      return _loadEarlierMessagesPage(waitForInFlight: waitForInFlight);
+    }
     var visibleUnitCount = ChatRenderProjection.build(_messages).units.length;
     var loadedAnyPage = false;
     var remainingPages = _maxInitialBackfillPages;
     while (!_disposed && _earlierMessagesAvailable && remainingPages > 0) {
-      final loaded = await _loadEarlierMessagesPage();
+      final loaded = await _loadEarlierMessagesPage(
+        waitForInFlight: waitForInFlight,
+      );
       if (!loaded) return loadedAnyPage;
       loadedAnyPage = true;
       remainingPages -= 1;
@@ -11756,11 +11850,17 @@ class ActiveChat {
 
   /// Consume una página REST anterior. Una petición en vuelo por chat; un fallo
   /// no es fatal y el siguiente gesto puede reintentarlo.
-  Future<bool> _loadEarlierMessagesPage() async {
-    if (_disposed || !_earlierMessagesAvailable || _earlierMessagesInFlight) {
-      return false;
+  Future<bool> _loadEarlierMessagesPage({bool waitForInFlight = false}) async {
+    if (_disposed || !_earlierMessagesAvailable) return false;
+    if (_earlierMessagesInFlight) {
+      final flight = _earlierMessagesFlight;
+      if (!waitForInFlight || flight == null) return false;
+      await flight;
+      return _loadEarlierMessagesPage(waitForInFlight: true);
     }
     _earlierMessagesInFlight = true;
+    final flight = Completer<void>();
+    _earlierMessagesFlight = flight.future;
     final loadEpoch = _messageLoadEpoch;
     final requestedTailHydration = _needsTranscriptTailHydration;
     final requestedNextOffset = _earlierMessagesNextOffset;
@@ -11897,6 +11997,10 @@ class ActiveChat {
       return false;
     } finally {
       _earlierMessagesInFlight = false;
+      if (identical(_earlierMessagesFlight, flight.future)) {
+        _earlierMessagesFlight = null;
+      }
+      if (!flight.isCompleted) flight.complete();
     }
   }
 

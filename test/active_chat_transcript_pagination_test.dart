@@ -575,6 +575,174 @@ void main() {
     },
   );
 
+  test(
+    'usable native history publishes before canonical REST verification finishes',
+    () async {
+      final server = _ControlledTranscriptServer();
+      final rows = _rows(2);
+      final gateway = _HistoryGateway()
+        ..snapshot = const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-native-first-paint',
+          storedSessionId: 'stored-chat',
+          created: false,
+          messageCount: 2,
+        )
+        ..loader = () async => SessionMessagesPage.fromRaw(
+          rawMessages: [
+            for (final row in rows)
+              {
+                'role': row['role'],
+                'text': row['content'],
+                'row_id': row['id'],
+              },
+          ],
+          pagination: null,
+          paginationProvided: false,
+        );
+      final chat = _chat(
+        'native-first-paint-before-rest',
+        server.client(),
+        gateway: gateway,
+      );
+      addTearDown(chat.dispose);
+      var publications = 0;
+      final firstPublication = Completer<void>();
+
+      final loading = chat.loadMessages(
+        expectedMessageCount: 2,
+        onMessagesPublished: () {
+          publications++;
+          if (!firstPublication.isCompleted) firstPublication.complete();
+        },
+      );
+      await Future.any<void>([
+        firstPublication.future,
+        Future<void>.delayed(const Duration(seconds: 1)),
+      ]);
+
+      expect(gateway.historyRequests, hasLength(1));
+      expect(firstPublication.isCompleted, isTrue);
+      expect(publications, 1);
+      expect(
+        chat.messages.map((row) => row['content']),
+        rows.reversed.map((row) => row['content']),
+      );
+
+      await loading;
+      await server.waitForRequests(1);
+      server.completePage(0, rows);
+      await Future<void>.delayed(Duration.zero);
+      expect(chat.hasEarlierMessages, isFalse);
+    },
+  );
+
+  test(
+    'native history backfills a visible conversation after canonical repair',
+    () async {
+      final server = _ControlledTranscriptServer();
+      final invisibleTail = [
+        for (var i = 0; i < 60; i++) ...[
+          {
+            'id': 'native-assistant-tool-$i',
+            'message_id': 'native-assistant-tool-$i',
+            'role': 'assistant',
+            'content': '',
+            'tool_calls': [
+              {
+                'id': 'native-tool-call-$i',
+                'type': 'function',
+                'function': {'name': 'execute_code', 'arguments': '{}'},
+              },
+            ],
+          },
+          {
+            'id': 'native-tool-result-$i',
+            'message_id': 'native-tool-result-$i',
+            'role': 'tool',
+            'tool_call_id': 'native-tool-call-$i',
+            'content': 'internal result',
+          },
+        ],
+      ];
+      final gateway = _HistoryGateway()
+        ..snapshot = const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-native-invisible-tail',
+          storedSessionId: 'stored-chat',
+          created: false,
+          messageCount: 122,
+        )
+        ..loader = () async => SessionMessagesPage.fromRaw(
+          rawMessages: [
+            for (final row in invisibleTail)
+              {
+                'role': row['role'],
+                'text': row['content'],
+                'row_id': row['id'],
+                'message_id': row['message_id'],
+                if (row['tool_calls'] != null) 'tool_calls': row['tool_calls'],
+                if (row['tool_call_id'] != null)
+                  'tool_call_id': row['tool_call_id'],
+              },
+          ],
+          pagination: null,
+          paginationProvided: false,
+        );
+      final chat = _chat(
+        'native-invisible-tail-backfill',
+        server.client(),
+        gateway: gateway,
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: 122);
+      await server.waitForRequests(1);
+      expect(server.requests[0].url.queryParameters['offset'], '0');
+      server.completePage(0, invisibleTail);
+      for (var attempt = 0; attempt < 100 && server.requests.length < 2; attempt++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+
+      expect(chat.hasEarlierMessages, isTrue);
+      expect(
+        chat.messages.where(
+          (row) =>
+              (row['role'] == 'user' || row['role'] == 'assistant') &&
+              (row['content'] as String? ?? '').trim().isNotEmpty,
+        ),
+        isEmpty,
+      );
+      expect(server.requests, hasLength(2));
+      expect(server.requests[1].url.queryParameters['offset'], '120');
+      server.completePage(1, const [
+        {
+          'id': 'older-native-user',
+          'message_id': 'older-native-user',
+          'role': 'user',
+          'content': 'Older native question',
+        },
+        {
+          'id': 'older-native-assistant',
+          'message_id': 'older-native-assistant',
+          'role': 'assistant',
+          'content': 'Older native answer',
+        },
+      ]);
+      for (var attempt = 0;
+          attempt < 100 &&
+              !chat.messages.any(
+                (row) => row['message_id'] == 'older-native-user',
+              );
+          attempt++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+
+      expect(
+        chat.messages.any((row) => row['message_id'] == 'older-native-user'),
+        isTrue,
+      );
+    },
+  );
+
   for (final edited in <bool>[false, true]) {
     test(
       'complete native ${edited ? 'edited' : 'short'} transcript does not invent earlier history',
@@ -602,6 +770,11 @@ void main() {
         addTearDown(chat.dispose);
 
         await chat.loadMessages(expectedMessageCount: 4);
+        for (var attempt = 0;
+            attempt < 100 && server.requests.isEmpty;
+            attempt++) {
+          await Future<void>.delayed(Duration.zero);
+        }
 
         expect(gateway.historyRequests, hasLength(1));
         expect(server.requests, hasLength(1));
@@ -634,6 +807,12 @@ void main() {
     addTearDown(chat.dispose);
 
     await chat.loadMessages(expectedMessageCount: 120);
+    for (var attempt = 0;
+        attempt < 100 &&
+            (server.requests.length < 2 || chat.hasEarlierMessages);
+        attempt++) {
+      await Future<void>.delayed(Duration.zero);
+    }
 
     expect(chat.messages, hasLength(120));
     expect(chat.hasEarlierMessages, isFalse);
@@ -677,6 +856,13 @@ void main() {
     addTearDown(delegate.close);
 
     await chat.loadMessages(expectedMessageCount: 120);
+    for (var attempt = 0;
+        attempt < 100 &&
+            (!failedLookahead || server.requests.length < 2 ||
+                chat.hasEarlierMessages);
+        attempt++) {
+      await Future<void>.delayed(Duration.zero);
+    }
 
     expect(failedLookahead, isTrue);
     expect(chat.messages, hasLength(120));
@@ -750,14 +936,16 @@ void main() {
       await chat.loadMessages(expectedMessageCount: 40);
       expect(chat.messages, hasLength(40));
       expect(chat.hasEarlierMessages, isTrue);
-
-      expect(await chat.loadEarlierMessages(), isTrue);
+      for (var attempt = 0;
+          attempt < 100 && chat.messages.length < 120;
+          attempt++) {
+        await Future<void>.delayed(Duration.zero);
+      }
       expect(chat.messages, hasLength(120));
-      expect(chat.messages.first['content'], 'msg 300');
-      expect(chat.messages.last['content'], 'msg 181');
 
       expect(await chat.loadEarlierMessages(), isTrue);
       expect(chat.messages, hasLength(240));
+      expect(chat.messages.first['content'], 'msg 300');
       expect(chat.messages.last['content'], 'msg 61');
 
       expect(await chat.loadEarlierMessages(), isTrue);
@@ -767,7 +955,7 @@ void main() {
 
       expect(
         server.requests.map((request) => request.queryParameters['offset']),
-        ['0', '0', '120', '240'],
+        ['0', '120', '240'],
       );
       expect(
         server.requests.map(
@@ -1215,6 +1403,13 @@ void main() {
       addTearDown(chat.dispose);
 
       await chat.loadMessages(expectedMessageCount: 122);
+      for (
+        var attempt = 0;
+        attempt < 100 && server.requests.length < 2;
+        attempt++
+      ) {
+        await Future<void>.delayed(Duration.zero);
+      }
 
       expect(server.requests.map((uri) => uri.queryParameters['offset']), [
         '0',
@@ -1233,6 +1428,176 @@ void main() {
         isTrue,
       );
       expect(chat.hasEarlierMessages, isFalse);
+    },
+  );
+
+  test(
+    'initial transcript page publishes before invisible-history backfill',
+    () async {
+      final server = _ControlledTranscriptServer();
+      final chat = _chat('first-paint-before-backfill', server.client());
+      addTearDown(chat.dispose);
+      var publications = 0;
+
+      final load = chat.loadMessages(
+        expectedMessageCount: 122,
+        onMessagesPublished: () => publications++,
+      );
+      await server.waitForRequests(1);
+      server.completePage(0, [
+        for (var i = 0; i < 120; i++)
+          {
+            'id': 'internal-$i',
+            'message_id': 'internal-$i',
+            'role': 'system',
+            'content': 'internal event $i',
+          },
+      ]);
+      await Future<void>.delayed(Duration.zero);
+
+      // A slow older-page fetch must not hold the first render hostage.
+      expect(publications, 1);
+      expect(chat.messagesLoaded, isTrue);
+      expect(chat.hasEarlierMessages, isTrue);
+
+      await server.waitForRequests(2);
+      expect(server.requests[1].url.queryParameters['offset'], '120');
+      server.completePage(1, const [
+        {
+          'id': 'older-user',
+          'message_id': 'older-user',
+          'role': 'user',
+          'content': 'Older visible question',
+        },
+        {
+          'id': 'older-assistant',
+          'message_id': 'older-assistant',
+          'role': 'assistant',
+          'content': 'Older visible answer',
+        },
+      ]);
+      await load;
+      await Future<void>.delayed(Duration.zero);
+
+      expect(
+        chat.messages.any((row) => row['content'] == 'Older visible question'),
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'new transcript load retries backfill after an invalidated older-page read',
+    () async {
+      final server = _ControlledTranscriptServer();
+      final chat = _chat('replacement-backfill-retry', server.client());
+      addTearDown(chat.dispose);
+      final invisibleTail = [
+        for (var i = 0; i < 120; i++)
+          {
+            'id': 'internal-$i',
+            'message_id': 'internal-$i',
+            'role': 'system',
+            'content': 'internal event $i',
+          },
+      ];
+
+      final firstLoad = chat.loadMessages(expectedMessageCount: 122);
+      await server.waitForRequests(1);
+      server.completePage(0, invisibleTail);
+      await server.waitForRequests(2);
+      expect(server.requests[1].url.queryParameters['offset'], '120');
+
+      final replacementLoad = chat.loadMessages(expectedMessageCount: 122);
+      await server.waitForRequests(3);
+      server.completePage(2, invisibleTail);
+      await replacementLoad;
+
+      // The first older-page response belongs to a stale load and must not
+      // publish, but it must release the replacement load's queued backfill.
+      server.completePage(1, const [
+        {
+          'id': 'stale-user',
+          'message_id': 'stale-user',
+          'role': 'user',
+          'content': 'stale older question',
+        },
+      ]);
+      await server.waitForRequests(4);
+      expect(server.requests[3].url.queryParameters['offset'], '120');
+      server.completePage(3, const [
+        {
+          'id': 'fresh-user',
+          'message_id': 'fresh-user',
+          'role': 'user',
+          'content': 'fresh older question',
+        },
+      ]);
+      for (
+        var attempt = 0;
+        attempt < 100 &&
+            !chat.messages.any((row) => row['message_id'] == 'fresh-user');
+        attempt++
+      ) {
+        await Future<void>.delayed(Duration.zero);
+      }
+
+      expect(
+        chat.messages.any((row) => row['message_id'] == 'fresh-user'),
+        isTrue,
+      );
+      expect(
+        chat.messages.any((row) => row['message_id'] == 'stale-user'),
+        isFalse,
+      );
+      await firstLoad;
+    },
+  );
+
+  test(
+    'manual history load waits for an automatic backfill already in flight',
+    () async {
+      final server = _ControlledTranscriptServer();
+      final chat = _chat('manual-backfill-wait', server.client());
+      addTearDown(chat.dispose);
+      final invisibleTail = [
+        for (var i = 0; i < 120; i++)
+          {
+            'id': 'internal-$i',
+            'message_id': 'internal-$i',
+            'role': 'system',
+            'content': 'internal event $i',
+          },
+      ];
+      final visibleOlderPage = _rows(120, from: 121);
+
+      final load = chat.loadMessages(expectedMessageCount: 241);
+      await server.waitForRequests(1);
+      server.completePage(0, invisibleTail);
+      await server.waitForRequests(2);
+      expect(server.requests[1].url.queryParameters['offset'], '120');
+
+      // This is the ChatScreen's explicit "load earlier" action while its
+      // automatic first-paint backfill still owns the previous-page request.
+      final manualLoad = chat.loadEarlierMessages(continuePastInvisible: true);
+      server.completePage(1, visibleOlderPage);
+      await server.waitForRequests(3);
+      expect(server.requests[2].url.queryParameters['offset'], '240');
+      server.completePage(2, const [
+        {
+          'id': 'manual-older-user',
+          'message_id': 'manual-older-user',
+          'role': 'user',
+          'content': 'manual older question',
+        },
+      ]);
+
+      expect(await manualLoad, isTrue);
+      expect(
+        chat.messages.any((row) => row['message_id'] == 'manual-older-user'),
+        isTrue,
+      );
+      await load;
     },
   );
 
@@ -1265,6 +1630,13 @@ void main() {
       addTearDown(chat.dispose);
 
       await chat.loadMessages(expectedMessageCount: 7802);
+      for (
+        var attempt = 0;
+        attempt < 200 && server.requests.length < 65;
+        attempt++
+      ) {
+        await Future<void>.delayed(Duration.zero);
+      }
       expect(server.requests.length, 65);
       expect(chat.hasEarlierMessages, isTrue);
 
@@ -1373,6 +1745,16 @@ void main() {
         ]);
 
       await chat.loadMessages(expectedMessageCount: 241);
+      for (
+        var attempt = 0;
+        attempt < 100 &&
+            chat.messages.any(
+              (row) => row['message_id'] == 'old-user-generation',
+            );
+        attempt++
+      ) {
+        await Future<void>.delayed(Duration.zero);
+      }
 
       expect(
         chat.messages.where(

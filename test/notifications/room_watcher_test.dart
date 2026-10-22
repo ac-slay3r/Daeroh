@@ -462,6 +462,9 @@ void main() {
           prefs: prefs,
           presenter: _Presenter(presented),
           claim: (c, r, k) async => claimed.add('$c/$r/$k'),
+          release: (c, r, k) async {
+            claimed.remove('$c/$r/$k');
+          },
         );
         gateway.pending = [approvalAction()];
         expect(await watcher.tick(gateway), isTrue);
@@ -474,6 +477,9 @@ void main() {
           prefs: prefs,
           presenter: _Presenter(presented),
           claim: (c, r, k) async => claimed.add('$c/$r/$k'),
+          release: (c, r, k) async {
+            claimed.remove('$c/$r/$k');
+          },
         );
         await prefs.remove(RoomWatcher.storageKey);
         await other.tick(gateway);
@@ -501,6 +507,9 @@ void main() {
         prefs: prefs,
         presenter: _Presenter(presented),
         claim: (c, r, k) async => ledger.add('$c/$r/$k'),
+        release: (c, r, k) async {
+          ledger.remove('$c/$r/$k');
+        },
       );
       final watcher = make();
       await watcher.tick(gateway); // baseline
@@ -538,6 +547,7 @@ void main() {
         prefs: prefs,
         presenter: _Presenter(presented),
         claim: (_, _, _) async => true,
+        release: (_, _, _) async {},
       );
       await watcher.tick(gateway);
       final seq = EventSeq();
@@ -575,6 +585,7 @@ void main() {
           prefs: prefs,
           presenter: _Presenter(presented),
           claim: (_, _, _) async => true,
+          release: (_, _, _) async {},
         );
         final seq = EventSeq();
         // First sight lands just after the user message: it is history.
@@ -610,6 +621,7 @@ void main() {
         prefs: prefs,
         presenter: _Presenter(presented),
         claim: (_, _, _) async => true,
+        release: (_, _, _) async {},
       );
       await watcher.tick(gateway);
       await SharedPreferencesRoomPrefs(
@@ -630,6 +642,7 @@ void main() {
         prefs: prefs,
         presenter: _Presenter([]),
         claim: (_, _, _) async => true,
+        release: (_, _, _) async {},
         now: () => now,
       );
       expect(await watcher.tick(gateway), isFalse);

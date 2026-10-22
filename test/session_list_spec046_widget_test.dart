@@ -169,6 +169,61 @@ void main() {
     );
   });
 
+  testWidgets(
+    'la biblioteca visible empieza la lectura remota sin esperar health',
+    (tester) async {
+      final health = Completer<http.Response>();
+      var pageRequests = 0;
+      final dashboard = _dashboard(
+        MockClient((request) async {
+          if (request.url.path != '/api/sessions') {
+            return http.Response('{}', 404);
+          }
+          pageRequests += 1;
+          return _pageResponse(
+            [_sessionRow(0, title: 'Loaded before health')],
+            total: 1,
+            limit: 50,
+            offset: 0,
+          );
+        }),
+      );
+      final gateway = _gateway(
+        MockClient((request) async {
+          if (request.url.path == '/health') return health.future;
+          if (request.url.path == '/api/sessions') {
+            return http.Response('{}', 200);
+          }
+          return http.Response('{}', 404);
+        }),
+      );
+      final repository = SessionRepository(dashboard, gateway);
+      addTearDown(() {
+        if (!health.isCompleted) health.complete(http.Response('{}', 200));
+        repository.close();
+        dashboard.close();
+      });
+
+      await tester.pumpWidget(
+        _host(
+          SessionListScreen(
+            connection: _connection(),
+            connManager: await _manager(),
+            clientOverride: gateway,
+            repositoryOverride: repository,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, find.text('Loaded before health'));
+
+      expect(pageRequests, 1);
+      health.complete(http.Response('{}', 200));
+      await tester.pump();
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   setUp(() {
     TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(

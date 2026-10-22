@@ -312,6 +312,20 @@ class RichRoomNoticePresenter implements RoomNoticePresenter {
     HostedGroupRoom room,
     List<RoomNotice> notices,
   ) async {
+    final delivered = <String>{};
+    try {
+      await _present(connId, room, notices, delivered);
+    } catch (error) {
+      throw RoomNoticePresentationFailure(error, delivered);
+    }
+  }
+
+  Future<void> _present(
+    String connId,
+    HostedGroupRoom room,
+    List<RoomNotice> notices,
+    Set<String> delivered,
+  ) async {
     _conn = connId;
     final t = _t;
     final builder = RichNotificationBuilder(t);
@@ -340,7 +354,7 @@ class RichRoomNoticePresenter implements RoomNoticePresenter {
         case RoomApprovalNotice(:final action):
           final profile = memberProfile(room, action.memberId);
           final name = memberName(room, action.memberId, nameFor: nameFor);
-          await sink.postConversation(
+          await _postConversation(
             builder.approval(
               tag: tag,
               conversationId: conv,
@@ -371,6 +385,7 @@ class RichRoomNoticePresenter implements RoomNoticePresenter {
               shortcutIconPath: await _roomTile(room),
             ),
           );
+          delivered.add(notice.dedupeKey);
         case RoomApprovalClearedNotice(:final requestId):
           await sink.confirm(
             id: RichNotificationIds.approval(requestId),
@@ -496,7 +511,7 @@ class RichRoomNoticePresenter implements RoomNoticePresenter {
       }
     }
     if (messages.isEmpty) return;
-    await sink.postConversation(
+    await _postConversation(
       builder.conversation(
         tag: tag,
         conversationId: conv,
@@ -524,6 +539,12 @@ class RichRoomNoticePresenter implements RoomNoticePresenter {
         alertKey: alertKey,
       ),
     );
+  }
+
+  Future<void> _postConversation(Map<String, Object?> card) async {
+    if (!await sink.postConversation(card)) {
+      throw StateError('Room notification was not accepted');
+    }
   }
 
   Future<void> _live(
