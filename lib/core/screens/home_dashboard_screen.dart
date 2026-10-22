@@ -1334,10 +1334,8 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
   }) {
     final conn = _active;
     if (conn == null) return;
-    openChatWithParent<void>(
+    openChatFromHome<void>(
       context,
-      parentBuilder: (_) =>
-          SessionListScreen(connection: conn, connManager: widget.connManager),
       builder: (_) => ChatScreen(
         connection: conn,
         session: session,
@@ -1346,7 +1344,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         initialDictation: initialDictation,
         initialVoiceMode: initialVoiceMode,
       ),
-    ).then((_) => _refreshStatus());
+    ).then((_) {
+      if (mounted) _refreshStatus();
+    });
   }
 
   ({String connectionId, String profile})? _homeDraftTarget() {

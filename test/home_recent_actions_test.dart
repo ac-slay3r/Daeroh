@@ -3,14 +3,27 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hermes_android/core/screens/chat_screen.dart';
 import 'package:hermes_android/core/screens/home_dashboard_screen.dart';
+import 'package:hermes_android/core/screens/session_list_screen.dart';
+import 'package:hermes_android/core/services/active_chat_service.dart';
+import 'package:hermes_android/core/services/app_lock.dart';
+import 'package:hermes_android/core/services/approval_policy.dart';
+import 'package:hermes_android/core/services/bridge_manager.dart';
 import 'package:hermes_android/core/services/chat_draft_store.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
+import 'package:hermes_android/core/services/font_size_service.dart';
+import 'package:hermes_android/core/services/notifications/notification_service.dart';
+import 'package:hermes_android/core/services/secure_storage.dart';
 import 'package:hermes_android/core/widgets/home_prompt_composer.dart';
 import 'package:hermes_android/core/services/session_archive.dart';
 import 'package:hermes_android/core/services/session_deletion.dart';
+import 'package:hermes_android/core/services/sftp_transfer_service.dart';
+import 'package:hermes_android/core/services/ssh_manager.dart';
+import 'package:hermes_android/core/services/ssh_session_service.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
 import 'package:hermes_android/l10n/app_localizations.dart';
+import 'package:hermes_android/main.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -224,6 +237,101 @@ void main() {
 
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'abrir un reciente de Inicio va directo al chat sin crear la biblioteca',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({'onboarding_done': true});
+      final prefs = await SharedPreferences.getInstance();
+      final manager = await ConnectionManager.create(prefs);
+      final activeChats = ActiveChatService();
+      addTearDown(activeChats.dispose);
+      await manager.saveConnection(
+        'QA',
+        '127.0.0.2',
+        8642,
+        'test-key',
+        kind: InstanceKind.vps,
+      );
+      final connection = manager.getConnections().single;
+      await manager.setActiveConnection(connection.id);
+      final session = Session(
+        id: 'recent-direct-chat',
+        title: 'Abrir directo',
+        model: 'hermes-agent',
+        source: 'mobile',
+        messageCount: 1,
+        isActive: false,
+        preview: 'Contenido',
+        startedAt: DateTime.now().millisecondsSinceEpoch / 1000,
+      );
+      final client = _RecentHomeClient(session);
+      activeChats.attach(
+        connection: connection,
+        sessionId: session.id,
+        sessionTitle: session.displayTitle,
+        api: client,
+        disableForegroundKeepAlive: true,
+      );
+      final secureStorage = SecureStorage();
+      final notifications = NotificationService(prefs);
+      final sshManager = SshManager(secureStorage, manager);
+
+      await tester.pumpWidget(
+        HermesApp(
+          connManager: manager,
+          appLock: AppLockService(prefs),
+          approvalPolicy: ApprovalPolicyService(prefs),
+          fontSize: FontSizeService(prefs),
+          bridgeManager: BridgeManager(secureStorage, manager),
+          sshManager: sshManager,
+          sftpTransfers: SftpTransferService(sshManager, notifications),
+          sshSessions: SshSessionService(sshManager),
+          notifications: notifications,
+          activeChats: activeChats,
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 5));
+
+      final navigator = Navigator.of(
+        tester.element(find.byType(Navigator).first),
+      );
+      navigator.push<void>(
+        PageRouteBuilder<void>(
+          transitionDuration: Duration.zero,
+          reverseTransitionDuration: Duration.zero,
+          pageBuilder: (_, _, _) => HomeDashboardScreen(
+            connManager: manager,
+            clientFactory: (_) => client,
+          ),
+        ),
+      );
+      for (var attempt = 0; attempt < 30; attempt++) {
+        await tester.pump(const Duration(milliseconds: 50));
+        if (find.text('Abrir directo').evaluate().isNotEmpty) break;
+      }
+      expect(find.text('Abrir directo'), findsOneWidget);
+
+      await tester.tap(find.text('Abrir directo'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 350));
+
+      expect(find.byType(ChatScreen), findsOneWidget);
+      expect(
+        find.byType(SessionListScreen, skipOffstage: false),
+        findsNothing,
+        reason: 'Inicio no debe construir la biblioteca antes de abrir un chat',
+      );
+
+      await tester.binding.handlePopRoute();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 350));
+      expect(find.byType(ChatScreen), findsNothing);
+      expect(find.byType(HomeDashboardScreen), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
