@@ -70,9 +70,15 @@ def source_timestamp() -> str | None:
     return instant.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def serial_number(variant: str, input_fingerprint: str, commit: str | None) -> str:
+def serial_number(variant: str, input_fingerprint: str, _commit: str | None = None) -> str:
+    """Return a stable SBOM serial from inputs tracked in the SBOM itself.
+
+    A Git revision is deliberately not part of this value: pull-request merge
+    refs and the commit that records an SBOM can differ without changing its
+    declared inputs.
+    """
     seed = hashlib.sha256(
-        f"hermes-console:{variant}:{input_fingerprint}:{commit or ''}".encode()
+        f"hermes-console:{variant}:{input_fingerprint}".encode()
     ).hexdigest()[:32]
     return f"urn:uuid:{seed[0:8]}-{seed[8:12]}-4{seed[13:16]}-a{seed[17:20]}-{seed[20:32]}"
 
@@ -97,7 +103,27 @@ def inventory_asset_paths() -> list[Path]:
     return paths
 
 
-def fingerprint_inputs() -> str:
+def resolved_flutter_identity() -> dict[str, str]:
+    """Return the stable SDK fields that can change generated components."""
+    try:
+        details = json.loads(run("flutter", "--version", "--machine"))
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"invalid flutter --version --machine output: {error}") from error
+    fields = (
+        "frameworkVersion",
+        "frameworkRevision",
+        "engineRevision",
+        "dartSdkVersion",
+    )
+    missing = [field for field in fields if not isinstance(details.get(field), str)]
+    if missing:
+        raise SystemExit(
+            "flutter --version --machine missing required fields: " + ", ".join(missing)
+        )
+    return {field: details[field] for field in fields}
+
+
+def fingerprint_inputs(*, flutter_identity: dict[str, str] | None = None) -> str:
     """Hash only inputs that affect the generated inventories.
 
     SBOM outputs and Git metadata are deliberately excluded so a checked-in
@@ -130,6 +156,13 @@ def fingerprint_inputs() -> str:
         digest.update(relative)
         digest.update(len(data).to_bytes(8, "big"))
         digest.update(data)
+    identity = flutter_identity or resolved_flutter_identity()
+    identity_data = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    identity_label = b"flutter-sdk-identity"
+    digest.update(len(identity_label).to_bytes(8, "big"))
+    digest.update(identity_label)
+    digest.update(len(identity_data).to_bytes(8, "big"))
+    digest.update(identity_data)
     return digest.hexdigest()
 
 

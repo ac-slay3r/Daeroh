@@ -3594,7 +3594,7 @@
       "version": "2.20.0"
     },
     {
-      "bom-ref": "pkg:maven/io.flutter/arm64_v8a_release@1.0.0-5d531788691ec3404cac0cee66ead4007b177363",
+      "bom-ref": "pkg:maven/io.flutter/arm64_v8a_release@1.0.0-deb287481e3ce9468f3434937ced4240a70539ca",
       "group": "io.flutter",
       "licenses": [
         {
@@ -3616,12 +3616,12 @@
           "value": "curated-catalog"
         }
       ],
-      "purl": "pkg:maven/io.flutter/arm64_v8a_release@1.0.0-5d531788691ec3404cac0cee66ead4007b177363",
+      "purl": "pkg:maven/io.flutter/arm64_v8a_release@1.0.0-deb287481e3ce9468f3434937ced4240a70539ca",
       "type": "library",
-      "version": "1.0.0-5d531788691ec3404cac0cee66ead4007b177363"
+      "version": "1.0.0-deb287481e3ce9468f3434937ced4240a70539ca"
     },
     {
-      "bom-ref": "pkg:maven/io.flutter/armeabi_v7a_release@1.0.0-5d531788691ec3404cac0cee66ead4007b177363",
+      "bom-ref": "pkg:maven/io.flutter/armeabi_v7a_release@1.0.0-deb287481e3ce9468f3434937ced4240a70539ca",
       "group": "io.flutter",
       "licenses": [
         {
@@ -3643,12 +3643,12 @@
           "value": "curated-catalog"
         }
       ],
-      "purl": "pkg:maven/io.flutter/armeabi_v7a_release@1.0.0-5d531788691ec3404cac0cee66ead4007b177363",
+      "purl": "pkg:maven/io.flutter/armeabi_v7a_release@1.0.0-deb287481e3ce9468f3434937ced4240a70539ca",
       "type": "library",
-      "version": "1.0.0-5d531788691ec3404cac0cee66ead4007b177363"
+      "version": "1.0.0-deb287481e3ce9468f3434937ced4240a70539ca"
     },
     {
-      "bom-ref": "pkg:maven/io.flutter/flutter_embedding_release@1.0.0-5d531788691ec3404cac0cee66ead4007b177363",
+      "bom-ref": "pkg:maven/io.flutter/flutter_embedding_release@1.0.0-deb287481e3ce9468f3434937ced4240a70539ca",
       "group": "io.flutter",
       "licenses": [
         {
@@ -3670,12 +3670,12 @@
           "value": "curated-catalog"
         }
       ],
-      "purl": "pkg:maven/io.flutter/flutter_embedding_release@1.0.0-5d531788691ec3404cac0cee66ead4007b177363",
+      "purl": "pkg:maven/io.flutter/flutter_embedding_release@1.0.0-deb287481e3ce9468f3434937ced4240a70539ca",
       "type": "library",
-      "version": "1.0.0-5d531788691ec3404cac0cee66ead4007b177363"
+      "version": "1.0.0-deb287481e3ce9468f3434937ced4240a70539ca"
     },
     {
-      "bom-ref": "pkg:maven/io.flutter/x86_64_release@1.0.0-5d531788691ec3404cac0cee66ead4007b177363",
+      "bom-ref": "pkg:maven/io.flutter/x86_64_release@1.0.0-deb287481e3ce9468f3434937ced4240a70539ca",
       "group": "io.flutter",
       "licenses": [
         {
@@ -3697,9 +3697,9 @@
           "value": "curated-catalog"
         }
       ],
-      "purl": "pkg:maven/io.flutter/x86_64_release@1.0.0-5d531788691ec3404cac0cee66ead4007b177363",
+      "purl": "pkg:maven/io.flutter/x86_64_release@1.0.0-deb287481e3ce9468f3434937ced4240a70539ca",
       "type": "library",
-      "version": "1.0.0-5d531788691ec3404cac0cee66ead4007b177363"
+      "version": "1.0.0-deb287481e3ce9468f3434937ced4240a70539ca"
     },
     {
       "bom-ref": "pkg:maven/org.apache.commons/commons-imaging@1.0-alpha3",
@@ -6058,7 +6058,7 @@
       "version": "2.3.2"
     },
     {
-      "bom-ref": "pkg:pub/hermes_android@0.1.0+1",
+      "bom-ref": "pkg:pub/hermes_android@0.1.8+9",
       "licenses": [
         {
           "expression": "GPL-3.0-only"
@@ -6079,9 +6079,9 @@
           "value": "LICENSE"
         }
       ],
-      "purl": "pkg:pub/hermes_android@0.1.0+1",
+      "purl": "pkg:pub/hermes_android@0.1.8+9",
       "type": "application",
-      "version": "0.1.0+1"
+      "version": "0.1.8+9"
     },
     {
       "bom-ref": "pkg:pub/highlight@0.7.0",
@@ -7876,6 +7876,32 @@
       "purl": "pkg:pub/riverpod@2.6.1",
       "type": "library",
       "version": "2.6.1"
+    },
+    {
+      "bom-ref": "pkg:pub/sentry@10.2.0",
+      "licenses": [
+        {
+          "expression": "BSD-3-Clause"
+        }
+      ],
+      "name": "sentry",
+      "properties": [
+        {
+          "name": "hermes.dependency.kind",
+          "value": "direct"
+        },
+        {
+          "name": "hermes.dependency.source",
+          "value": "hosted"
+        },
+        {
+          "name": "hermes.license.files",
+          "value": "LICENSE"
+        }
+      ],
+      "purl": "pkg:pub/sentry@10.2.0",
+      "type": "library",
+      "version": "10.2.0"
     },
     {
       "bom-ref": "pkg:pub/share_plus@10.1.4",
@@ -10418,6 +10444,7 @@
         "pkg:pub/path_provider@2.1.5",
         "pkg:pub/qr_code_scanner_plus@2.2.0",
         "pkg:pub/record@6.2.1",
+        "pkg:pub/sentry@10.2.0",
         "pkg:pub/share_plus@10.1.4",
         "pkg:pub/shared_preferences@2.5.5",
         "pkg:pub/sherpa_onnx@1.13.2",
@@ -10431,7 +10458,7 @@
         "pkg:pub/whisper_ggml_plus@1.5.2",
         "pkg:pub/xterm@4.0.0"
       ],
-      "ref": "pkg:pub/hermes_android@0.1.0+1"
+      "ref": "pkg:pub/hermes_android@0.1.8+9"
     },
     {
       "dependsOn": [
@@ -10996,6 +11023,17 @@
         "pkg:pub/state_notifier@1.0.0"
       ],
       "ref": "pkg:pub/riverpod@2.6.1"
+    },
+    {
+      "dependsOn": [
+        "pkg:pub/ffi@2.2.0",
+        "pkg:pub/http@1.6.0",
+        "pkg:pub/meta@1.19.0",
+        "pkg:pub/stack_trace@1.12.1",
+        "pkg:pub/uuid@4.5.3",
+        "pkg:pub/web@1.1.1"
+      ],
+      "ref": "pkg:pub/sentry@10.2.0"
     },
     {
       "dependsOn": [
@@ -11593,7 +11631,7 @@
   ],
   "metadata": {
     "component": {
-      "bom-ref": "pkg:pub/hermes_android@0.1.0+1",
+      "bom-ref": "pkg:pub/hermes_android@0.1.8+9",
       "licenses": [
         {
           "expression": "GPL-3.0-only"
@@ -11614,14 +11652,14 @@
           "value": "LICENSE"
         }
       ],
-      "purl": "pkg:pub/hermes_android@0.1.0+1",
+      "purl": "pkg:pub/hermes_android@0.1.8+9",
       "type": "application",
-      "version": "0.1.0+1"
+      "version": "0.1.8+9"
     },
     "properties": [
       {
         "name": "hermes.input.sha256",
-        "value": "e70e22793f49bed6a7055cd1f9942ad2f713268a73cae595f8702eb62dbac73f"
+        "value": "5b7695aa37a3383f42e39b0e8b24e67921110df217225e54c10c2918dc611afc"
       },
       {
         "name": "hermes.android.variant",
@@ -11633,7 +11671,7 @@
       }
     ]
   },
-  "serialNumber": "urn:uuid:a41fc85b-67a2-48cb-af71-99194c41f29a",
+  "serialNumber": "urn:uuid:73b9c0da-1330-429f-aa4a-c43209fb0e89",
   "specVersion": "1.6",
   "version": 1
 }
