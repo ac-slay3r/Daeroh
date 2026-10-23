@@ -6,7 +6,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:whisper_ggml_plus/whisper_ggml_plus.dart';
 
@@ -24,6 +23,7 @@ import 'stt_remote.dart';
 import 'stt_sherpa.dart';
 import 'tts_engine.dart';
 import 'tts_model_manager.dart';
+import 'whisper_model_downloader.dart';
 import 'voice_lang.dart';
 import 'voice_settings.dart';
 
@@ -3003,28 +3003,11 @@ class VoiceService {
   /// lo espera. Idempotente.
   Future<void> downloadWhisperModel({void Function(double)? onProgress}) async {
     final path = await _whisperPath();
-    final file = File(path);
-    if (file.existsSync()) {
-      onProgress?.call(1);
-      return;
-    }
-    final req = http.Request('GET', whisperModel.modelUri);
-    final res = await http.Client().send(req);
-    if (res.statusCode != 200) {
-      throw Exception('Model download failed (${res.statusCode}).');
-    }
-    final total = res.contentLength ?? 0;
-    var received = 0;
-    final tmp = File('$path.part');
-    final sink = tmp.openWrite();
-    await for (final chunk in res.stream) {
-      sink.add(chunk);
-      received += chunk.length;
-      if (total > 0) onProgress?.call(received / total);
-    }
-    await sink.close();
-    await tmp.rename(path);
-    onProgress?.call(1);
+    await WhisperModelDownloader().download(
+      source: whisperModel.modelUri,
+      target: File(path),
+      onProgress: onProgress,
+    );
   }
 
   // ── Modelos del STT en vivo (sherpa-onnx) ───────────────────────────
