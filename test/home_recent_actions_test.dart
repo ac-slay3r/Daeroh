@@ -13,6 +13,7 @@ import 'package:hermes_android/core/services/bridge_manager.dart';
 import 'package:hermes_android/core/services/chat_draft_store.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/font_size_service.dart';
+import 'package:hermes_android/core/services/local_transcript_store.dart';
 import 'package:hermes_android/core/services/notifications/notification_service.dart';
 import 'package:hermes_android/core/services/secure_storage.dart';
 import 'package:hermes_android/core/widgets/home_prompt_composer.dart';
@@ -132,6 +133,42 @@ class _DeferredRecentHomeClient extends ApiClient {
   void close() {}
 }
 
+class _UnavailableRecentHomeClient extends ApiClient {
+  _UnavailableRecentHomeClient()
+    : super(
+        baseUrl: 'http://127.0.0.1:8642',
+        apiKey: 'test-key',
+        httpClient: MockClient((_) async => http.Response('{}', 404)),
+      );
+
+  @override
+  Future<bool> healthCheck() async => true;
+
+  @override
+  Future<List<Session>> getSessions({
+    bool includeChildren = false,
+    String? profile,
+  }) => Future<List<Session>>.error(StateError('session library unavailable'));
+
+  @override
+  void close() {}
+}
+
+class _OfflineRecentHomeClient extends ApiClient {
+  _OfflineRecentHomeClient()
+    : super(
+        baseUrl: 'http://127.0.0.1:8642',
+        apiKey: 'test-key',
+        httpClient: MockClient((_) async => http.Response('{}', 404)),
+      );
+
+  @override
+  Future<bool> healthCheck() async => false;
+
+  @override
+  void close() {}
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -235,6 +272,108 @@ void main() {
       );
       expect((recentTile as dynamic).session.profile, 'canonical-owner');
 
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'Home stays online when only the recent-session library is unavailable',
+    (tester) async {
+      final manager = await ConnectionManager.create(
+        await SharedPreferences.getInstance(),
+      );
+      await manager.saveConnection(
+        'QA',
+        '127.0.0.2',
+        8642,
+        'test-key',
+        kind: InstanceKind.vps,
+      );
+      final connection = manager.getConnections().single;
+      await manager.setActiveConnection(connection.id);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          locale: const Locale('en'),
+          theme: AppTheme.fromId('dark'),
+          localizationsDelegates: Strings.localizationsDelegates,
+          supportedLocales: Strings.supportedLocales,
+          home: HomeDashboardScreen(
+            connManager: manager,
+            clientFactory: (_) => _UnavailableRecentHomeClient(),
+          ),
+        ),
+      );
+      for (var attempt = 0; attempt < 40; attempt++) {
+        await tester.pump(const Duration(milliseconds: 50));
+        if (find.text('agent online · QA').evaluate().isNotEmpty) break;
+      }
+
+      expect(find.text('agent online · QA'), findsOneWidget);
+      expect(
+        find.text('Chat is connected. Conversations could not be refreshed.'),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('home-offline-retry')), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'Home shows device history while the agent is offline',
+    (tester) async {
+      final manager = await ConnectionManager.create(
+        await SharedPreferences.getInstance(),
+      );
+      await manager.saveConnection(
+        'QA',
+        '127.0.0.2',
+        8642,
+        'test-key',
+        kind: InstanceKind.localhost,
+      );
+      final connection = manager.getConnections().single;
+      await manager.setActiveConnection(connection.id);
+      await LocalTranscriptStore.saveFromNewestFirst(
+        connection.id,
+        'device-history',
+        const [
+          {'role': 'assistant', 'content': 'Saved locally'},
+          {'role': 'user', 'content': 'Keep this chat'},
+        ],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          locale: const Locale('en'),
+          theme: AppTheme.fromId('dark'),
+          localizationsDelegates: Strings.localizationsDelegates,
+          supportedLocales: Strings.supportedLocales,
+          home: HomeDashboardScreen(
+            connManager: manager,
+            clientFactory: (_) => _OfflineRecentHomeClient(),
+          ),
+        ),
+      );
+      for (var attempt = 0; attempt < 40; attempt++) {
+        await tester.pump(const Duration(milliseconds: 50));
+        if (find.text('Chat local').evaluate().isNotEmpty) break;
+      }
+
+      if (const bool.fromEnvironment('HERMES_LOCAL_AGENT')) {
+        expect(find.text('off'), findsOneWidget);
+      }
+      expect(find.text('Chat local'), findsOneWidget);
+      expect(
+        find.text(
+          'Showing chats saved on this device. They may not match the server.',
+        ),
+        findsOneWidget,
+      );
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);

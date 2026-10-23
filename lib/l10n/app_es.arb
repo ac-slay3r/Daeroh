@@ -64,6 +64,8 @@
   "@homeStatusAgentConsole": {
     "description": "Etiqueta de marca cuando no hay instancia activa (sin traducir)."
   },
+  "homeSessionLibraryUnavailable": "El chat está conectado. No se pudieron actualizar las conversaciones.",
+  "homeDeviceHistoryNotice": "Mostrando chats guardados en este dispositivo. Pueden no coincidir con el servidor.",
   "homeHelpPrompt": "¿Qué hacemos hoy?",
   "@homeHelpPrompt": {
     "description": "Saludo principal del home, estilo asistente."

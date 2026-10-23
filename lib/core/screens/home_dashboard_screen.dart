@@ -101,6 +101,8 @@ class HomeDashboardScreen extends StatefulWidget {
   State<HomeDashboardScreen> createState() => _HomeDashboardScreenState();
 }
 
+enum _HomeHistoryState { current, unavailable, deviceCache }
+
 class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     with WidgetsBindingObserver, RouteAware {
   static const String _activeKey = 'last_connection_id';
@@ -110,6 +112,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
   bool _healthOk = false;
   bool _checking = false;
   List<Session> _recentSessions = [];
+  _HomeHistoryState _historyState = _HomeHistoryState.current;
   SessionArchive? _archive;
   final Map<String, ({double activityAt, String? user, String? assistant})>
   _turnPreviews = {};
@@ -933,6 +936,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     );
     if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
     bool ok = false;
+    var historyState = _HomeHistoryState.current;
     List<Session> sessions = [];
     List<ChatDraftEntry> drafts = [];
     // Los borradores viven en el Keystore. Un fallo puntual al desbloquearlo no
@@ -960,45 +964,62 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         ok = await LocalTermuxAgentProvider(
           apps: const AndroidApps(),
         ).isAgentRunning();
-        if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
+      } else {
+        ok = await client.healthCheck();
+      }
+    } catch (e) {
+      debugPrint('[home-dashboard] health check failed: $e');
+      ok = false;
+    }
+    if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
+
+    if (ok && conn.kind != InstanceKind.localhost && !appLockEnabled) {
+      // La comprobación del bridge ya no depende de abrir Chat/Ajustes.
+      // Con App Lock activo no iniciamos una mutación automática que el
+      // usuario no acaba de autorizar; la acción manual permanece visible.
+      unawaited(BridgeUpdateService.maintainIfEnabled(conn));
+    }
+
+    try {
+      if (conn.kind == InstanceKind.localhost) {
+        // El bridge local no expone /api/sessions — usamos el transcript
+        // guardado en SharedPreferences por LocalTranscriptStore.
         if (ok) {
-          // Tras actualizar el APK, el bridge desplegado en el dispositivo puede
-          // ser uno VIEJO que sirve endpoints antiguos → modelos/skills/info del
-          // servidor salen vacíos. Si el agente está vivo, auto-actualizamos el
-          // bridge a la versión esperada (en segundo plano, una vez por sesión).
           _ensureLocalBridgeFresh(conn);
-          // El bridge local no expone /api/sessions — usamos el transcript
-          // guardado en SharedPreferences por LocalTranscriptStore.
           sessions = await LocalTranscriptStore.listForConnection(
             conn.id,
             profile: ownerProfile,
           );
-          if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
+          historyState = _HomeHistoryState.deviceCache;
         }
-      } else {
-        ok = await client.healthCheck();
-        if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
-        if (ok) {
-          sessions = await client.getSessions(profile: ownerProfile);
-          if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
-          sessions.sort((a, b) => b.lastActivityAt.compareTo(a.lastActivityAt));
-          // La comprobación del bridge ya no depende de abrir Chat/Ajustes.
-          // Con App Lock activo no iniciamos una mutación automática que el
-          // usuario no acaba de autorizar; la acción manual permanece visible.
-          if (!appLockEnabled) {
-            unawaited(BridgeUpdateService.maintainIfEnabled(conn));
-          }
-        }
+      } else if (ok) {
+        sessions = await client.getSessions(profile: ownerProfile);
+        sessions.sort((a, b) => b.lastActivityAt.compareTo(a.lastActivityAt));
       }
     } catch (e) {
-      debugPrint(
-        '[home-dashboard] excepción silenciada (fallback: ok = false): $e',
-      );
-      ok = false;
+      // Session history is auxiliary to the agent transport. Do not turn a
+      // successful health probe into a false offline state because it fails.
+      debugPrint('[home-dashboard] session library unavailable: $e');
+      historyState = _HomeHistoryState.unavailable;
     } finally {
       client.close();
     }
     if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
+
+    if (historyState != _HomeHistoryState.current || !ok) {
+      try {
+        final deviceHistory = await LocalTranscriptStore.listForConnection(
+          conn.id,
+          profile: ownerProfile,
+        );
+        if (deviceHistory.isNotEmpty) {
+          sessions = deviceHistory;
+          historyState = _HomeHistoryState.deviceCache;
+        }
+      } catch (e) {
+        debugPrint('[home-dashboard] device history unavailable: $e');
+      }
+    }
     if (!mounted) return;
     final merged = <String, Session>{};
     for (final session in sessions) {
@@ -1045,6 +1066,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
       _healthOk = ok;
       _checking = false;
       _archive = archive;
+      _historyState = historyState;
       _recentSessions = recentSessions;
     });
     await _refreshRemoteActivity(conn, ownerProfile);
@@ -1843,7 +1865,10 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
               // un margen de aire adicional para que no quede pegado.
               final dockBottomClearance =
                   48 + 12 + 6 + MediaQuery.paddingOf(context).bottom + 16;
-              final showChat = !kLocalAgentEnabled || !isLocalAndOffline;
+              final showChat =
+                  !kLocalAgentEnabled ||
+                  !isLocalAndOffline ||
+                  _recentSessions.isNotEmpty;
               final banners = <Widget>[
                 if (kLocalAgentEnabled &&
                     (_installInProgress || _uninstallInProgress))
@@ -1890,6 +1915,11 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
                     onRetry: _refreshStatus,
                     onEditInstance: _openInstances,
                   ),
+                if (!_checking && _historyState != _HomeHistoryState.current)
+                  _HomeHistoryNotice(
+                    colors: colors,
+                    deviceCache: _historyState == _HomeHistoryState.deviceCache,
+                  ),
               ];
               // El compositor y los avisos de estado viven fuera del área que
               // scrollea: solo la lista de conversaciones recientes se mueve
@@ -1927,8 +1957,8 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
                               ? Duration.zero
                               : const Duration(milliseconds: 220),
                           child: _buildPromptStage(
-                            enabled: !isRemoteAndOffline,
-                            dimmed: isRemoteAndOffline,
+                            enabled: !isRemoteAndOffline && !isLocalAndOffline,
+                            dimmed: isRemoteAndOffline || isLocalAndOffline,
                           ),
                         ),
                       ],
@@ -2080,6 +2110,51 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
             },
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _HomeHistoryNotice extends StatelessWidget {
+  final HermesThemeColors colors;
+  final bool deviceCache;
+
+  const _HomeHistoryNotice({required this.colors, required this.deviceCache});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = Strings.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: colors.surfaceVariant.withValues(alpha: 0.22),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              Icon(
+                deviceCache
+                    ? Icons.phone_android_rounded
+                    : Icons.sync_problem_rounded,
+                size: 18,
+                color: colors.textSecondary,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  deviceCache
+                      ? s.homeDeviceHistoryNotice
+                      : s.homeSessionLibraryUnavailable,
+                  key: const ValueKey('home-history-notice'),
+                  style: TextStyle(fontSize: 12.5, color: colors.textSecondary),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
