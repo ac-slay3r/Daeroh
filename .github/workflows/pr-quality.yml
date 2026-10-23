@@ -2,9 +2,9 @@ name: Code Quality Checks
 
 on:
   pull_request:
-    branches: [main]
+    branches: [feat/daeroh-android-build]
   push:
-    branches: [main]
+    branches: [feat/daeroh-android-build]
 
 permissions:
   contents: read
