@@ -13,6 +13,8 @@
   "homeStatusOnline": "agent online · {label}",
   "homeStatusOffline": "offline · {label}",
   "homeStatusAgentConsole": "agent console",
+  "homeSessionLibraryUnavailable": "Chat is connected. Conversations could not be refreshed.",
+  "homeDeviceHistoryNotice": "Showing chats saved on this device. They may not match the server.",
   "homeHelpPrompt": "What are we doing today?",
   "homeChatsSection": "Conversations",
   "homeRecentToday": "Today",
