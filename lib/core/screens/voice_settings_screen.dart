@@ -132,6 +132,7 @@ class _VoiceSettingsScreenState extends State<VoiceSettingsScreen> {
   bool _serverTokenObscured = true;
   bool _serverTesting = false;
   bool? _serverTestOk; // null = sin probar
+  final Set<ServerSttEngine> _serverTestEngines = <ServerSttEngine>{};
 
   // Estado del TTS por streaming (Kokoro local / nube formato OpenAI).
   final _streamUrlCtrl = TextEditingController();
@@ -633,6 +634,12 @@ class _VoiceSettingsScreenState extends State<VoiceSettingsScreen> {
     _nativeVoiceDashboard = null;
     if (_ownsNativeVoiceDashboard) dashboard?.close();
     _ownsNativeVoiceDashboard = false;
+    final serverTestEngines = _serverTestEngines.toList(growable: false);
+    _serverTestEngines.clear();
+    for (final engine in serverTestEngines) {
+      engine.revokeLegacyQueryTokenFallback();
+      unawaited(engine.dispose());
+    }
     ++_previewEpoch;
     final previewEngine = _previewEngine;
     _previewEngine = null;
@@ -699,6 +706,12 @@ class _VoiceSettingsScreenState extends State<VoiceSettingsScreen> {
     final v = _voice;
     if (v == null) return;
     final url = _serverUrlCtrl.text.trim();
+    try {
+      ServerSttEngine.requireSafeBaseUrl(url);
+    } on ArgumentError {
+      if (mounted) setState(() => _serverTestOk = false);
+      return;
+    }
     await _update(_s.copyWith(serverSttUrl: url));
     await v.setServerSttToken(_serverTokenCtrl.text.trim());
     if (!test) {
@@ -709,13 +722,22 @@ class _VoiceSettingsScreenState extends State<VoiceSettingsScreen> {
       _serverTesting = true;
       _serverTestOk = null;
     });
-    final ok = await ServerSttEngine(
+    final engine = ServerSttEngine(
       baseUrl: url,
       token: _serverTokenCtrl.text.trim(),
-    ).ping();
+      allowLegacyQueryTokenFallback: _s.allowLegacyQueryTokenFallback,
+    );
+    _serverTestEngines.add(engine);
+    var ok = false;
+    try {
+      ok = await engine.ping();
+    } finally {
+      _serverTestEngines.remove(engine);
+      await engine.dispose();
+    }
     if (mounted) {
       setState(() {
-        _serverTesting = false;
+        _serverTesting = _serverTestEngines.isNotEmpty;
         _serverTestOk = ok;
       });
     }
@@ -3376,6 +3398,29 @@ class _VoiceSettingsScreenState extends State<VoiceSettingsScreen> {
               onPressed: () =>
                   setState(() => _serverTokenObscured = !_serverTokenObscured),
             ),
+          ),
+          const SizedBox(height: 12),
+          SwitchListTile.adaptive(
+            key: const Key('voice_server_legacy_query_token_fallback'),
+            contentPadding: EdgeInsets.zero,
+            value: _s.allowLegacyQueryTokenFallback,
+            title: Text(
+              s.voiceServerLegacyTokenFallback,
+              style: TextStyle(fontSize: 14, color: colors.textPrimary),
+            ),
+            subtitle: Text(
+              s.voiceServerLegacyTokenFallbackWarning,
+              style: TextStyle(fontSize: 11.5, color: colors.textSecondary),
+            ),
+            onChanged: (value) async {
+              if (!value) {
+                for (final engine in _serverTestEngines) {
+                  engine.revokeLegacyQueryTokenFallback();
+                }
+              }
+              await _update(_s.copyWith(allowLegacyQueryTokenFallback: value));
+              if (mounted) setState(() => _serverTestOk = null);
+            },
           ),
           const SizedBox(height: 12),
           Row(

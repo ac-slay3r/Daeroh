@@ -5047,6 +5047,8 @@
   "voiceSttTimedOut": "Server transcription timed out. Please retry.",
   "voiceCustomSaved": "Custom TTS configuration saved",
   "voiceServerPrivacyNote": "Microphone audio is sent to your server for transcription. Use it only on your private network (Tailscale/LAN).",
+  "voiceServerLegacyTokenFallback": "Allow legacy server token URL fallback",
+  "voiceServerLegacyTokenFallbackWarning": "Only for obsolete servers that reject modern authentication. It sends your token in the WebSocket URL, which may be retained in proxy, server, firewall, or debug logs. Update the server instead when possible.",
   "voiceHeavyRamWarning": "Uses a lot of memory; it may fail on modest phones.",
   "voiceExtracting": "Extracting…",
   "setupIntro": "Get your server ready in three steps: copy, run, and paste the link it returns. No technical typing.",
