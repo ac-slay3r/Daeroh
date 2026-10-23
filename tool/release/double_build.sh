@@ -7,7 +7,7 @@ set -Eeuo pipefail
 unset GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 unset GIT_DIR GIT_WORK_TREE
 
-readonly LOCK_SHA256="a5c01dcc94b535a9905eb18f4cd9b4daf0148e934e9751f71ff8072bdedda559"
+readonly LOCK_SHA256="14328be1a42a6839e16931c8953acacdc2b063ce17672521f6687cc1e2644717"
 readonly SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 fail() {

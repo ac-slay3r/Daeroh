@@ -34,7 +34,7 @@ jobs:
           [[ "$RELEASE_REF_TYPE" == "tag" ]]
           [[ "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]]
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
-          echo "a5c01dcc94b535a9905eb18f4cd9b4daf0148e934e9751f71ff8072bdedda559  pubspec.lock" \
+          echo "14328be1a42a6839e16931c8953acacdc2b063ce17672521f6687cc1e2644717  pubspec.lock" \
             | sha256sum --strict -c -
           checkout_commit="$(git rev-parse "$GITHUB_SHA^{commit}")"
           tag_commit="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
