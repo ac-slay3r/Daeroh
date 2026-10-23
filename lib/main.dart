@@ -230,7 +230,7 @@ void main() async {
   final prefs = await SharedPreferences.getInstance();
   final diagnostics = ReliabilityDiagnostics();
   ReliabilityDiagnostics.configure(diagnostics);
-  await diagnostics.startIfConsented(DiagnosticsConsentStore(prefs).enabled);
+  await DiagnosticsConsentStore(prefs).startReliabilityDiagnostics();
   final themeProfileStore = ThemeProfileStore(prefs);
   final initialThemeProfiles = await themeProfileStore.load();
   final cancelledTurnStore = CancelledTurnTombstoneStore.secure();

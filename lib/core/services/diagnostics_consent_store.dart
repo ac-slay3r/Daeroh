@@ -16,6 +16,19 @@ final class DiagnosticsConsentStore {
 
   bool get enabled => _prefs.getBool(preferenceKey) ?? false;
 
+  /// Restores diagnostics only when this build has a collector configured.
+  ///
+  /// Full and Play builds share app preferences. A prior opt-in must not make
+  /// a build with no diagnostics DSN fail during startup or retain a dormant
+  /// consent that could be reactivated by a later build.
+  Future<void> startReliabilityDiagnostics() async {
+    if (!ReliabilityDiagnostics.isAvailable && enabled) {
+      await setEnabled(false);
+      return;
+    }
+    await ReliabilityDiagnostics.updateConsent(enabled);
+  }
+
   /// Persists the user's choice before a transport can observe the new state.
   Future<void> setEnabled(bool value) async {
     final written = await _prefs.setBool(preferenceKey, value);
