@@ -2,9 +2,9 @@ name: Code Quality Checks
 
 on:
   pull_request:
-    branches: [main]
+    branches: [feat/daeroh-android-build]
   push:
-    branches: [main]
+    branches: [feat/daeroh-android-build, 'ship/**']
 
 permissions:
   contents: read
@@ -28,7 +28,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
-          flutter-version: '3.47.1'
+          flutter-version: '3.47.7'
           channel: 'stable'
 
       - name: Set up Java

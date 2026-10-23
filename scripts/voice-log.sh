@@ -16,7 +16,7 @@
 set -euo pipefail
 
 DEVICE="${HERMES_DEVICE:-}"
-PKG="${HERMES_PACKAGE:-dev.xpetalab.hermesconsole.qa}"
+PKG="${HERMES_PACKAGE:-cool.n0thing.daeroh.qa}"
 FILTER='\[VOICE|\[VOICE-PERF|FATAL EXCEPTION|AndroidRuntime'
 
 ADB=(adb)

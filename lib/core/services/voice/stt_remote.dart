@@ -161,6 +161,11 @@ class ServerSttEngine implements SttEngine {
   /// servidor. Default `false` = comportamiento actual intacto.
   final bool ignoreServerEndpoint;
 
+  /// Compatibility escape hatch for obsolete STT servers that reject the
+  /// authenticated first frame. Disabled by default because query parameters
+  /// are commonly retained in proxy and server logs.
+  final bool allowLegacyQueryTokenFallback;
+
   ServerSttEngine({
     required String baseUrl,
     this.token = '',
@@ -168,9 +173,10 @@ class ServerSttEngine implements SttEngine {
     this.onLevel,
     this.enableGhostGate = true,
     this.ignoreServerEndpoint = false,
+    this.allowLegacyQueryTokenFallback = false,
     ServerSttRecorder Function()? recorderFactory,
     Future<ServerSttSession> Function(Uri uri)? connector,
-  }) : baseUrl = TransportPrivacy.requireAllowed(baseUrl.trim()),
+  }) : baseUrl = requireSafeBaseUrl(baseUrl),
        _recorderFactory = recorderFactory ?? _PluginServerSttRecorder.new {
     _connector =
         connector ??
@@ -180,6 +186,22 @@ class ServerSttEngine implements SttEngine {
   }
 
   static const int _sampleRate = 16000;
+
+  /// STT credentials belong in the authenticated first frame, never in the
+  /// configured endpoint. The legacy URL form is built only after explicit
+  /// consent, from this token-free base URI.
+  static String requireSafeBaseUrl(String value) {
+    final allowed = TransportPrivacy.requireAllowed(value.trim());
+    final uri = Uri.parse(allowed);
+    if (uri.queryParameters.isNotEmpty) {
+      throw ArgumentError.value(
+        value,
+        'baseUrl',
+        'STT server URLs must not include query parameters.',
+      );
+    }
+    return allowed;
+  }
 
   // Recorder POR SESIÓN: el engine se reusa entre dictados (checkStt), pero
   // reusar el mismo AudioRecorder hacía que el 2º startStream fallara y el turno
@@ -202,6 +224,7 @@ class ServerSttEngine implements SttEngine {
   Future<void> _startupTail = Future<void>.value();
   Future<void> _stopTail = Future<void>.value();
   bool _disposed = false;
+  bool _legacyFallbackRevoked = false;
   Future<void>? _disposeFuture;
 
   // ── Tap de audio en el punto de captura (spec 025 F2) ────────────────────
@@ -322,9 +345,21 @@ class ServerSttEngine implements SttEngine {
     }
   }
 
+  bool get _legacyFallbackAllowed =>
+      allowLegacyQueryTokenFallback && !_legacyFallbackRevoked && !_disposed;
+
+  /// Immediately prevents a pending legacy retry from opening a token URI.
+  /// Disposal may be queued behind another engine, so policy revocation cannot
+  /// wait for [dispose].
+  void revokeLegacyQueryTokenFallback() {
+    _legacyFallbackRevoked = true;
+  }
+
   Future<_SttChannel> _connectLegacy(Duration readyTimeout) async {
-    final legacy = IOWebSocketChannel.connect(_legacyUri,
-        customClient: privateWebSocketHttpClient);
+    final legacy = IOWebSocketChannel.connect(
+      _legacyUri,
+      customClient: privateWebSocketHttpClient,
+    );
     await legacy.ready.timeout(readyTimeout);
     return (channel: legacy, stream: legacy.stream, firstMessage: null);
   }
@@ -343,11 +378,13 @@ class ServerSttEngine implements SttEngine {
   /// espera un primer evento con timeout corto; ese primer mensaje se
   /// devuelve en `firstMessage` para que el caller lo procese (nadie lo
   /// pierde). Si el socket se cierra/erroriza/no dice nada en ese plazo, se
-  /// reintenta UNA vez con el token en la query (comportamiento anterior a
-  /// este cambio) — fallback documentado para servidores viejos.
+  /// only explicitly opted-in legacy deployments retry once with the token in
+  /// the query. This is unsafe because URLs are commonly retained in logs.
   Future<_SttChannel> _connectWithAuth(Duration readyTimeout) async {
-    final ch = IOWebSocketChannel.connect(_uri,
-        customClient: privateWebSocketHttpClient);
+    final ch = IOWebSocketChannel.connect(
+      _uri,
+      customClient: privateWebSocketHttpClient,
+    );
     try {
       await ch.ready.timeout(readyTimeout);
     } catch (_) {
@@ -366,11 +403,13 @@ class ServerSttEngine implements SttEngine {
       first = await bcast.first.timeout(readyTimeout);
     } catch (_) {
       await _closeQuietly(ch);
-      return _connectLegacy(readyTimeout);
+      if (_legacyFallbackAllowed) return _connectLegacy(readyTimeout);
+      rethrow;
     }
     if (_isLegacyAuthRejection(first)) {
       await _closeQuietly(ch);
-      return _connectLegacy(readyTimeout);
+      if (_legacyFallbackAllowed) return _connectLegacy(readyTimeout);
+      throw StateError('STT server rejected authenticated first frame');
     }
     return (channel: ch, stream: bcast, firstMessage: first);
   }
@@ -545,9 +584,7 @@ class ServerSttEngine implements SttEngine {
       }
       if (!_isCurrent(operation)) return;
       if (baseUrl.trim().isEmpty) {
-        controller.addError(
-          Exception(_strings.voiceSttServerUrlMissing),
-        );
+        controller.addError(Exception(_strings.voiceSttServerUrlMissing));
         await controller.close();
         return;
       }
@@ -643,7 +680,9 @@ class ServerSttEngine implements SttEngine {
     } catch (_) {
       if (_isCurrent(operation)) {
         _failTurn(
-          _persistent ? _strings.voiceSttResumeFailed : _strings.voiceSttStartFailed,
+          _persistent
+              ? _strings.voiceSttResumeFailed
+              : _strings.voiceSttStartFailed,
         );
       }
     } finally {

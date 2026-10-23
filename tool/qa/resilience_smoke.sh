@@ -2,7 +2,7 @@
 
 set -Eeuo pipefail
 
-readonly QA_PACKAGE="dev.xpetalab.hermesconsole.qa"
+readonly QA_PACKAGE="cool.n0thing.daeroh.qa"
 readonly DEFAULT_SERIAL=""
 
 ADB_BIN="${ADB_BIN:-adb}"

@@ -1127,6 +1127,8 @@ class PrivatePlayLaneTest(unittest.TestCase):
             "print(values[sys.argv[2]])\n",
             encoding="utf-8",
         )
+        java = tools / "java"
+        java.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         jarsigner = tools / "jarsigner"
         jarsigner.write_text("#!/bin/sh\nprintf 'jar verified.\\n'\n", encoding="utf-8")
         keytool = tools / "keytool"
@@ -1137,7 +1139,7 @@ class PrivatePlayLaneTest(unittest.TestCase):
         keytool.write_text(
             f"#!/bin/sh\nprintf 'SHA256: {fingerprint}\\n'\n", encoding="utf-8"
         )
-        for tool in (apkanalyzer, jarsigner, keytool):
+        for tool in (apkanalyzer, java, jarsigner, keytool):
             tool.chmod(0o700)
         policy = source / "tool/release/release_contract.json"
         policy.parent.mkdir(parents=True)
@@ -2198,7 +2200,7 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertIn("v1.2.9", policy)
         self.assertIn("86edaa150fabd33d8184f5b958400cabadacb49632f7ec50ecbe49608058d159", policy)
         self.assertIn(
-            "a5c01dcc94b535a9905eb18f4cd9b4daf0148e934e9751f71ff8072bdedda559",
+            "14328be1a42a6839e16931c8953acacdc2b063ce17672521f6687cc1e2644717",
             policy,
         )
 
@@ -2222,7 +2224,7 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertIn("./tool/sbom/generate.sh", workflow)
         self.assertIn("git diff --exit-code -- sbom", workflow)
         self.assertIn(
-            "a5c01dcc94b535a9905eb18f4cd9b4daf0148e934e9751f71ff8072bdedda559",
+            "14328be1a42a6839e16931c8953acacdc2b063ce17672521f6687cc1e2644717",
             workflow,
         )
 
@@ -2622,7 +2624,7 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
         )
         self.assertEqual(
             policy["source"]["authoritativeLockSha256"],
-            "a5c01dcc94b535a9905eb18f4cd9b4daf0148e934e9751f71ff8072bdedda559",
+            "14328be1a42a6839e16931c8953acacdc2b063ce17672521f6687cc1e2644717",
         )
         self.assertEqual(policy["android"]["packageId"], "dev.xpetalab.hermesconsole")
         self.assertEqual(set(policy["channels"]), {"direct-public", "play-private"})
@@ -2719,7 +2721,7 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
         self.assertIn("git clone --no-local", source)
         self.assertIn("PUB_CACHE", source)
         self.assertIn("GRADLE_USER_HOME", source)
-        self.assertIn("a5c01dcc94b535a9905eb18f4cd9b4daf0148e934e9751f71ff8072bdedda559", source)
+        self.assertIn("14328be1a42a6839e16931c8953acacdc2b063ce17672521f6687cc1e2644717", source)
         self.assertIn("compare_rebuilds.py", source)
         self.assertIn("ANDROID_HOME", source)
         self.assertIn("ANDROID_SDK_ROOT", source)
@@ -2767,6 +2769,9 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
                 encoding="utf-8",
             )
             flutter.chmod(0o700)
+            java = tools / "java"
+            java.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            java.chmod(0o700)
             output = root / "double-output"
             result = subprocess.run(
                 [

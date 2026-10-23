@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:archive/archive.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/services/voice/stt_sherpa.dart';
 
@@ -70,6 +71,8 @@ Archive _completeArchive() {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   test('extrae en streaming solo los artefactos int8 requeridos', () {
     final root = Directory.systemTemp.createTempSync('stt-model-archive-');
     try {
@@ -201,6 +204,36 @@ void main() {
       expect(Directory('${root.path}/$_dirName').existsSync(), isFalse);
     } finally {
       root.deleteSync(recursive: true);
+    }
+  });
+
+  test('delete limpia modelo, staging, backup y descarga parcial', () async {
+    final support = Directory.systemTemp.createTempSync('stt-model-delete-');
+    final messenger = TestWidgetsFlutterBinding.instance.defaultBinaryMessenger;
+    const channel = MethodChannel('plugins.flutter.io/path_provider');
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'getApplicationSupportDirectory') return support.path;
+      return null;
+    });
+    try {
+      final model = kSherpaSttModels.first;
+      final base = Directory('${support.path}/stt_sherpa_models')
+        ..createSync(recursive: true);
+      final target = Directory('${base.path}/${model.dirName}')..createSync();
+      final stage = Directory('${target.path}.extracting')..createSync();
+      final previous = Directory('${target.path}.previous')..createSync();
+      final partial = File('${base.path}/${model.dirName}.tar.bz2.part')
+        ..writeAsStringSync('partial');
+
+      await SherpaSttModelManager().delete(model);
+
+      expect(target.existsSync(), isFalse);
+      expect(stage.existsSync(), isFalse);
+      expect(previous.existsSync(), isFalse);
+      expect(partial.existsSync(), isFalse);
+    } finally {
+      messenger.setMockMethodCallHandler(channel, null);
+      support.deleteSync(recursive: true);
     }
   });
 }

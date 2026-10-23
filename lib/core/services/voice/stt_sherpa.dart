@@ -147,10 +147,78 @@ class SherpaPrepProgress {
   const SherpaPrepProgress(this.phase, this.value);
 }
 
+final class _SharedSileroDownload {
+  _SharedSileroDownload(this.client) : attempt = _nextAttempt++;
+
+  static int _nextAttempt = 1;
+
+  final http.Client client;
+  final int attempt;
+  late final Future<void> future;
+  final Completer<void> _aborted = Completer<void>();
+  int _leases = 0;
+  bool _completed = false;
+
+  Future<void> get aborted => _aborted.future;
+  bool get isAborted => _aborted.isCompleted;
+
+  void acquire() => _leases++;
+
+  Future<void> release() async {
+    if (_leases == 0) return;
+    _leases--;
+    if (_leases == 0 && !_completed && !_aborted.isCompleted) {
+      _aborted.complete();
+      client.close();
+      try {
+        await future;
+      } catch (_) {
+        // Cada waiter ya recibe su propio resultado de cancelación.
+      }
+    }
+  }
+
+  void complete() => _completed = true;
+}
+
 /// Descarga y gestiona los modelos de STT y el VAD silero en almacenamiento
 /// privado de la app. La extracción del .tar.bz2 corre en un isolate.
 class SherpaSttModelManager {
+  static const int defaultMaxArchiveBytes = 1024 * 1024 * 1024;
+  static const int defaultMaxSileroBytes = 32 * 1024 * 1024;
+  static const Duration defaultConnectTimeout = Duration(seconds: 30);
+  static const Duration defaultReadTimeout = Duration(seconds: 30);
+  static const Duration defaultTotalTimeout = Duration(minutes: 10);
+  static const int _maxRedirects = 5;
+  static final Map<String, _SharedSileroDownload> _sileroDownloads = {};
+  static final Map<String, Future<void>> _sileroTerminating = {};
+
+  SherpaSttModelManager({
+    http.Client Function()? clientFactory,
+    this.maxArchiveBytes = defaultMaxArchiveBytes,
+    this.maxSileroBytes = defaultMaxSileroBytes,
+    this.connectTimeout = defaultConnectTimeout,
+    this.readTimeout = defaultReadTimeout,
+    this.totalTimeout = defaultTotalTimeout,
+  }) : _clientFactory = clientFactory ?? http.Client.new {
+    if (maxArchiveBytes <= 0 || maxSileroBytes <= 0) {
+      throw ArgumentError('Los límites de descarga deben ser positivos.');
+    }
+    if (connectTimeout <= Duration.zero ||
+        readTimeout <= Duration.zero ||
+        totalTimeout <= Duration.zero) {
+      throw ArgumentError('Los tiempos de descarga deben ser positivos.');
+    }
+  }
+
+  final http.Client Function() _clientFactory;
+  final int maxArchiveBytes;
+  final int maxSileroBytes;
+  final Duration connectTimeout;
+  final Duration readTimeout;
+  final Duration totalTimeout;
   final Map<String, http.Client> _activeDownloads = {};
+  final Set<String> _startingDownloads = {};
   final Set<String> _cancelledDownloads = {};
 
   void cancelDownload(SherpaSttModel m) {
@@ -194,18 +262,328 @@ class SherpaSttModelManager {
   Future<void> delete(SherpaSttModel m) async {
     final dir = await modelDir(m);
     if (dir.existsSync()) dir.deleteSync(recursive: true);
+    final stage = Directory('${dir.path}.extracting');
+    if (stage.existsSync()) stage.deleteSync(recursive: true);
+    final previous = Directory('${dir.path}.previous');
+    if (previous.existsSync()) previous.deleteSync(recursive: true);
+    final partial = File(
+      '${(await _baseDir()).path}/${m.dirName}.tar.bz2.part',
+    );
+    if (partial.existsSync()) partial.deleteSync();
     // El silero se queda: lo comparten todos los modelos.
   }
 
   /// Descarga el VAD silero si falta (es pequeño, ~2 MB). Sin progreso visible.
-  Future<void> _ensureSilero(http.Client client) async {
+  /// Cada modelo toma un lease: cancelar uno no corta otros; cancelar el último
+  /// sí aborta el único stream compartido.
+  Future<void> _ensureSilero({required bool Function() isCancelled}) async {
     final path = await sileroPath();
-    if (File(path).existsSync()) return;
-    final res = await client.get(Uri.parse(_sileroUrl));
-    if (res.statusCode != 200) {
-      throw Exception('VAD download failed (HTTP ${res.statusCode}).');
+    final target = File(path);
+    if (target.existsSync()) return;
+    final key = target.absolute.path;
+    var shared = _sileroDownloads[key];
+    final priorCleanup = _sileroTerminating[key];
+    if (shared == null) {
+      shared = _SharedSileroDownload(_clientFactory());
+      _sileroDownloads[key] = shared;
+      shared.future =
+          _downloadSilero(
+            target,
+            shared,
+            priorCleanup: priorCleanup,
+          ).whenComplete(() => shared!.complete()).whenComplete(() {
+            if (identical(_sileroDownloads[key], shared)) {
+              _sileroDownloads.remove(key);
+            }
+          });
+      // Even if every caller cancels, observe job errors until cleanup finishes.
+      unawaited(shared.future.catchError((_) {}));
     }
-    await File(path).writeAsBytes(res.bodyBytes, flush: true);
+    shared.acquire();
+    try {
+      while (true) {
+        if (isCancelled()) throw const ModelDownloadCancelled();
+        await Future.any<void>([
+          shared.future,
+          Future<void>.delayed(const Duration(milliseconds: 10)),
+        ]);
+        if (shared._completed) {
+          await shared.future;
+          return;
+        }
+      }
+    } finally {
+      final released = shared.release();
+      if (shared.isAborted && identical(_sileroDownloads[key], shared)) {
+        _sileroDownloads.remove(key);
+        _sileroTerminating[key] = shared.future;
+        unawaited(
+          shared.future
+              .whenComplete(() {
+                if (identical(_sileroTerminating[key], shared!.future)) {
+                  _sileroTerminating.remove(key);
+                }
+              })
+              .catchError((_) {}),
+        );
+      }
+      await released;
+    }
+  }
+
+  Future<void> _downloadSilero(
+    File target,
+    _SharedSileroDownload shared, {
+    Future<void>? priorCleanup,
+  }) async {
+    final temporary = File('${target.path}.part.${shared.attempt}');
+    try {
+      await _downloadToFile(
+        shared.client,
+        Uri.parse(_sileroUrl),
+        temporary,
+        maxBytes: maxSileroBytes,
+        cancellation: shared.aborted,
+      );
+      if (!target.existsSync()) {
+        if (shared._aborted.isCompleted) {
+          throw const ModelDownloadCancelled();
+        }
+        if (priorCleanup != null) {
+          try {
+            await priorCleanup;
+          } catch (_) {
+            // El job anterior cancelado/error ya limpió su staging.
+          }
+        }
+        if (shared.isAborted) {
+          throw const ModelDownloadCancelled();
+        }
+        await temporary.rename(target.path);
+        if (shared.isAborted) {
+          if (target.existsSync()) await target.delete();
+          throw const ModelDownloadCancelled();
+        }
+      }
+    } finally {
+      shared.client.close();
+      if (temporary.existsSync()) {
+        try {
+          await temporary.delete();
+        } catch (_) {
+          // El fallo de red original sigue siendo el útil.
+        }
+      }
+    }
+  }
+
+  Future<void> _downloadToFile(
+    http.Client client,
+    Uri source,
+    File destination, {
+    required int maxBytes,
+    bool Function()? isCancelled,
+    Future<void>? cancellation,
+    void Function(int received, int? total)? onProgress,
+  }) async {
+    _requireSafeDownloadUrl(source);
+    await destination.parent.create(recursive: true);
+    if (destination.existsSync()) await destination.delete();
+    final deadline = DateTime.now().add(totalTimeout);
+    IOSink? sink;
+    try {
+      final response = await _requestFollowingRedirects(
+        client,
+        source,
+        deadline: deadline,
+        cancellation: cancellation,
+      );
+      if (response.statusCode != HttpStatus.ok) {
+        await _consume(
+          response.stream,
+          deadline: deadline,
+          onChunk: (_) {},
+          cancellation: cancellation,
+        );
+        throw FormatException(
+          'La descarga STT falló (HTTP ${response.statusCode}).',
+        );
+      }
+      final declared = response.contentLength;
+      if (declared != null && declared > maxBytes) {
+        throw const FormatException(
+          'El modelo STT supera el límite de descarga.',
+        );
+      }
+      var received = 0;
+      sink = destination.openWrite();
+      await _consume(
+        response.stream,
+        deadline: deadline,
+        onChunk: (chunk) {
+          if (isCancelled?.call() ?? false) {
+            throw const ModelDownloadCancelled();
+          }
+          received += chunk.length;
+          if (received > maxBytes) {
+            throw const FormatException(
+              'El modelo STT supera el límite de descarga.',
+            );
+          }
+          sink!.add(chunk);
+          onProgress?.call(received, declared);
+        },
+        cancellation: cancellation,
+      );
+      await sink.close();
+      sink = null;
+      if (received == 0) {
+        throw const FormatException('La descarga STT está vacía.');
+      }
+      if (declared != null && received != declared) {
+        throw const FormatException('La descarga STT está truncada.');
+      }
+    } catch (_) {
+      if (destination.existsSync()) {
+        try {
+          await destination.delete();
+        } catch (_) {}
+      }
+      rethrow;
+    } finally {
+      if (sink != null) {
+        try {
+          await sink.close();
+        } catch (_) {}
+      }
+    }
+  }
+
+  Future<http.StreamedResponse> _requestFollowingRedirects(
+    http.Client client,
+    Uri initial, {
+    required DateTime deadline,
+    Future<void>? cancellation,
+  }) async {
+    var current = initial;
+    for (var redirects = 0; ; redirects++) {
+      _requireSafeDownloadUrl(current);
+      final request = http.Request('GET', current)
+        ..followRedirects = false
+        ..maxRedirects = 0;
+      final response = await client
+          .send(request)
+          .timeout(_boundedTimeout(connectTimeout, deadline));
+      if (!_isRedirect(response.statusCode)) return response;
+      try {
+        if (redirects >= _maxRedirects) {
+          throw const FormatException(
+            'Demasiadas redirecciones en descarga STT.',
+          );
+        }
+        final location = response.headers['location'];
+        if (location == null || location.trim().isEmpty) {
+          throw const FormatException('La redirección STT no tiene destino.');
+        }
+        current = current.resolve(location.trim());
+        _requireSafeDownloadUrl(current);
+      } finally {
+        await _consume(
+          response.stream,
+          deadline: deadline,
+          onChunk: (_) {},
+          cancellation: cancellation,
+        );
+      }
+    }
+  }
+
+  void _requireSafeDownloadUrl(Uri uri) {
+    if (uri.scheme != 'https' || uri.userInfo.isNotEmpty || uri.host.isEmpty) {
+      throw ArgumentError.value(
+        uri,
+        'source',
+        'La descarga STT requiere HTTPS.',
+      );
+    }
+  }
+
+  bool _isRedirect(int status) =>
+      status == HttpStatus.movedPermanently ||
+      status == HttpStatus.found ||
+      status == HttpStatus.seeOther ||
+      status == HttpStatus.temporaryRedirect ||
+      status == HttpStatus.permanentRedirect;
+
+  Future<void> _consume(
+    Stream<List<int>> stream, {
+    required DateTime deadline,
+    required void Function(List<int> chunk) onChunk,
+    Future<void>? cancellation,
+  }) async {
+    final completion = Completer<void>();
+    Timer? idleTimer;
+    Timer? totalTimer;
+    late final StreamSubscription<List<int>> subscription;
+
+    void fail(Object error, [StackTrace? stackTrace]) {
+      if (!completion.isCompleted) completion.completeError(error, stackTrace);
+    }
+
+    void armIdleTimer() {
+      idleTimer?.cancel();
+      final timeout = _boundedTimeout(readTimeout, deadline);
+      idleTimer = Timer(timeout, () {
+        fail(TimeoutException('La descarga STT se detuvo.', timeout));
+      });
+    }
+
+    final total = _remaining(deadline);
+    totalTimer = Timer(total, () {
+      fail(TimeoutException('La descarga STT superó su plazo.', total));
+    });
+    subscription = stream.listen(
+      (chunk) {
+        if (completion.isCompleted) return;
+        try {
+          onChunk(chunk);
+          armIdleTimer();
+        } catch (error, stackTrace) {
+          fail(error, stackTrace);
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) => fail(error, stackTrace),
+      onDone: () {
+        if (!completion.isCompleted) completion.complete();
+      },
+      cancelOnError: false,
+    );
+    cancellation?.then(
+      (_) => fail(const ModelDownloadCancelled()),
+      onError: (Object error, StackTrace stackTrace) =>
+          fail(const ModelDownloadCancelled()),
+    );
+    armIdleTimer();
+    try {
+      await completion.future;
+    } finally {
+      idleTimer?.cancel();
+      totalTimer.cancel();
+      await subscription.cancel();
+    }
+  }
+
+  Duration _boundedTimeout(Duration requested, DateTime deadline) {
+    final remaining = _remaining(deadline);
+    return requested < remaining ? requested : remaining;
+  }
+
+  Duration _remaining(DateTime deadline) {
+    final remaining = deadline.difference(DateTime.now());
+    if (remaining <= Duration.zero) {
+      throw TimeoutException('La descarga STT superó su plazo.');
+    }
+    return remaining;
   }
 
   /// Descarga (con progreso, a disco) y extrae el modelo, y asegura el VAD.
@@ -214,95 +592,119 @@ class SherpaSttModelManager {
     SherpaSttModel m, {
     void Function(SherpaPrepProgress)? onProgress,
   }) async {
-    if (await isReady(m)) {
-      onProgress?.call(const SherpaPrepProgress(SherpaPrepPhase.done, 1));
-      return;
+    if (_activeDownloads.containsKey(m.id) || !_startingDownloads.add(m.id)) {
+      throw StateError('La descarga de este modelo ya está en curso.');
     }
-    final base = await _baseDir();
-    final client = http.Client();
-    _activeDownloads[m.id] = client;
-
     try {
-      // VAD primero (rápido); así un fallo de red se ve antes de bajar cientos
-      // de MB y también queda cubierto por Cancelar.
-      await _ensureSilero(client);
+      _cancelledDownloads.remove(m.id);
+      if (await isReady(m)) {
+        onProgress?.call(const SherpaPrepProgress(SherpaPrepPhase.done, 1));
+        return;
+      }
       if (_cancelledDownloads.contains(m.id)) {
         throw const ModelDownloadCancelled();
       }
+      final client = _clientFactory();
+      _activeDownloads[m.id] = client;
 
-      // ¿Hace falta bajar el modelo, o solo faltaba el VAD?
-      final modelPresent =
-          File(await encoderPath(m)).existsSync() &&
-          File(await decoderPath(m)).existsSync() &&
-          File(await tokensPath(m)).existsSync() &&
-          (!m.isTransducer || File(await joinerPath(m)).existsSync());
-      if (!modelPresent) {
-        final tmp = File('${base.path}/${m.dirName}.tar.bz2.part');
-        try {
-          final req = http.Request('GET', Uri.parse(m.url));
-          final res = await client.send(req);
-          if (res.statusCode != 200) {
-            throw Exception('Model download failed (HTTP ${res.statusCode}).');
-          }
-          final total = res.contentLength ?? (m.sizeMb * 1024 * 1024);
-          var received = 0;
-          final sink = tmp.openWrite();
+      try {
+        final base = await _baseDir();
+        // VAD primero (rápido); así un fallo de red se ve antes de bajar cientos
+        // de MB y también queda cubierto por Cancelar.
+        await _ensureSilero(
+          isCancelled: () => _cancelledDownloads.contains(m.id),
+        );
+        if (_cancelledDownloads.contains(m.id)) {
+          throw const ModelDownloadCancelled();
+        }
+
+        // ¿Hace falta bajar el modelo, o solo faltaba el VAD?
+        final modelPresent =
+            File(await encoderPath(m)).existsSync() &&
+            File(await decoderPath(m)).existsSync() &&
+            File(await tokensPath(m)).existsSync() &&
+            (!m.isTransducer || File(await joinerPath(m)).existsSync());
+        if (!modelPresent) {
+          final tmp = File('${base.path}/${m.dirName}.tar.bz2.part');
           try {
-            await for (final chunk in res.stream) {
-              sink.add(chunk);
-              received += chunk.length;
-              onProgress?.call(
-                SherpaPrepProgress(
-                  SherpaPrepPhase.downloading,
-                  total > 0 ? received / total : 0,
-                ),
+            await _downloadToFile(
+              client,
+              Uri.parse(m.url),
+              tmp,
+              maxBytes: maxArchiveBytes,
+              isCancelled: () => _cancelledDownloads.contains(m.id),
+              onProgress: (received, declared) {
+                final total = declared ?? (m.sizeMb * 1024 * 1024);
+                onProgress?.call(
+                  SherpaPrepProgress(
+                    SherpaPrepPhase.downloading,
+                    total > 0 ? received / total : 0,
+                  ),
+                );
+              },
+            );
+
+            if (_cancelledDownloads.contains(m.id)) {
+              throw const ModelDownloadCancelled();
+            }
+            onProgress?.call(
+              const SherpaPrepProgress(SherpaPrepPhase.extracting, -1),
+            );
+            if (_cancelledDownloads.contains(m.id)) {
+              throw const ModelDownloadCancelled();
+            }
+            final requiredFiles = <String>[
+              m.tokens,
+              m.encoder,
+              m.decoder,
+              if (m.isTransducer) m.joiner,
+            ];
+            final stage = Directory('${base.path}/${m.dirName}.extracting');
+            try {
+              await _extractSherpaModelArchiveCancellable(
+                tmp.path,
+                stage.path,
+                dirName: m.dirName,
+                requiredFiles: requiredFiles,
+                isCancelled: () => _cancelledDownloads.contains(m.id),
               );
+              if (_cancelledDownloads.contains(m.id)) {
+                throw const ModelDownloadCancelled();
+              }
+              // Sin awaits entre el último chequeo y el rename: cancelar antes
+              // descarta staging; publicar primero gana de forma atómica.
+              _replaceSherpaDirectory(
+                stage,
+                Directory('${base.path}/${m.dirName}'),
+              );
+            } on ModelDownloadCancelled {
+              if (stage.existsSync()) stage.deleteSync(recursive: true);
+              rethrow;
             }
           } finally {
-            await sink.close();
+            if (tmp.existsSync()) tmp.deleteSync();
           }
-
-          if (_cancelledDownloads.contains(m.id)) {
-            throw const ModelDownloadCancelled();
-          }
-          onProgress?.call(
-            const SherpaPrepProgress(SherpaPrepPhase.extracting, -1),
-          );
-          final requiredFiles = <String>[
-            m.tokens,
-            m.encoder,
-            m.decoder,
-            if (m.isTransducer) m.joiner,
-          ];
-          await Isolate.run(
-            () => extractSherpaModelArchive(
-              tmp.path,
-              base.path,
-              dirName: m.dirName,
-              requiredFiles: requiredFiles,
-            ),
-          );
-        } finally {
-          if (tmp.existsSync()) tmp.deleteSync();
         }
+      } catch (e) {
+        if (_cancelledDownloads.contains(m.id)) {
+          throw const ModelDownloadCancelled();
+        }
+        rethrow;
+      } finally {
+        client.close();
+        _activeDownloads.remove(m.id);
+        _cancelledDownloads.remove(m.id);
       }
-    } catch (e) {
-      if (_cancelledDownloads.contains(m.id)) {
-        throw const ModelDownloadCancelled();
-      }
-      rethrow;
-    } finally {
-      client.close();
-      _activeDownloads.remove(m.id);
-      _cancelledDownloads.remove(m.id);
-    }
 
-    if (!await isReady(m)) {
-      throw Exception(
-        'Model downloaded but files are missing after extraction.',
-      );
+      if (!await isReady(m)) {
+        throw Exception(
+          'Model downloaded but files are missing after extraction.',
+        );
+      }
+      onProgress?.call(const SherpaPrepProgress(SherpaPrepPhase.done, 1));
+    } finally {
+      _startingDownloads.remove(m.id);
     }
-    onProgress?.call(const SherpaPrepProgress(SherpaPrepPhase.done, 1));
   }
 }
 
@@ -312,11 +714,30 @@ class SherpaSttModelManager {
 /// anterior mantenía a la vez esos bytes y los ~640 MB comprimidos y Android
 /// podía matar el proceso sin entregar una excepción a Flutter.
 ///
-/// Top-level para [Isolate.run]. También lo reutilizan modelos Sherpa pequeños
-/// que comparten este contrato de extracción mediante allowlist.
+/// Wrapper síncrono para las pruebas de archivo. La ruta de descarga extrae a
+/// staging en un isolate y solo publica desde el isolate principal.
 void extractSherpaModelArchive(
   String tarBz2Path,
   String destRoot, {
+  required String dirName,
+  required List<String> requiredFiles,
+}) {
+  final root = Directory(destRoot);
+  final stage = Directory('${root.path}/$dirName.extracting');
+  extractSherpaModelArchiveToStage(
+    tarBz2Path,
+    stage.path,
+    dirName: dirName,
+    requiredFiles: requiredFiles,
+  );
+  _replaceSherpaDirectory(stage, Directory('${root.path}/$dirName'));
+}
+
+/// Extrae solo a [stagePath]. Nunca publica ni toca un modelo previamente
+/// instalado, por lo que un isolate cancelado no puede exponer un modelo parcial.
+void extractSherpaModelArchiveToStage(
+  String tarBz2Path,
+  String stagePath, {
   required String dirName,
   required List<String> requiredFiles,
 }) {
@@ -329,32 +750,121 @@ void extractSherpaModelArchive(
     throw const FormatException('Catálogo local del modelo STT inválido.');
   }
 
-  final root = Directory(destRoot);
-  root.createSync(recursive: true);
-  final stage = Directory('${root.path}/$dirName.extracting');
-  final target = Directory('${root.path}/$dirName');
+  final stage = Directory(stagePath);
   if (stage.existsSync()) stage.deleteSync(recursive: true);
   stage.createSync(recursive: true);
-
   final allowed = <String, String>{
     for (final name in requiredFiles) '$dirName/$name': name,
   };
   final input = InputFileStream(tarBz2Path);
   final output = _SelectedModelTarSink(stage, allowed);
-  var installed = false;
+  var completed = false;
   try {
     final decoded = BZip2Decoder().decodeStream(input, output, verify: true);
     if (!decoded) {
       throw const FormatException('El archivo BZip2 del modelo está dañado.');
     }
     output.complete();
-    if (target.existsSync()) target.deleteSync(recursive: true);
-    stage.renameSync(target.path);
-    installed = true;
+    completed = true;
   } finally {
     input.closeSync();
     output.closeSync();
-    if (!installed && stage.existsSync()) stage.deleteSync(recursive: true);
+    if (!completed && stage.existsSync()) stage.deleteSync(recursive: true);
+  }
+}
+
+void _extractSherpaModelArchiveIsolate(List<Object> message) {
+  final resultPort = message[4] as SendPort;
+  try {
+    extractSherpaModelArchiveToStage(
+      message[0] as String,
+      message[1] as String,
+      dirName: message[2] as String,
+      requiredFiles: (message[3] as List<Object?>).cast<String>(),
+    );
+    resultPort.send(null);
+  } catch (error, stackTrace) {
+    resultPort.send(<String>[error.toString(), stackTrace.toString()]);
+  }
+}
+
+Future<void> _extractSherpaModelArchiveCancellable(
+  String tarBz2Path,
+  String stagePath, {
+  required String dirName,
+  required List<String> requiredFiles,
+  required bool Function() isCancelled,
+}) async {
+  final resultPort = ReceivePort();
+  final exitPort = ReceivePort();
+  final result = Completer<Object?>();
+  final exited = Completer<void>();
+  final resultSubscription = resultPort.listen((Object? message) {
+    if (!result.isCompleted) result.complete(message);
+  });
+  final exitSubscription = exitPort.listen((_) {
+    if (!exited.isCompleted) exited.complete();
+  });
+  try {
+    final isolate = await Isolate.spawn<List<Object>>(
+      _extractSherpaModelArchiveIsolate,
+      <Object>[
+        tarBz2Path,
+        stagePath,
+        dirName,
+        List<Object?>.from(requiredFiles),
+        resultPort.sendPort,
+      ],
+      onExit: exitPort.sendPort,
+      onError: resultPort.sendPort,
+      errorsAreFatal: true,
+    );
+    while (!result.isCompleted) {
+      if (isCancelled()) {
+        isolate.kill(priority: Isolate.immediate);
+        await exited.future.timeout(const Duration(seconds: 5));
+        throw const ModelDownloadCancelled();
+      }
+      await Future.any<void>([
+        result.future.then<void>((_) {}),
+        Future<void>.delayed(const Duration(milliseconds: 10)),
+      ]);
+    }
+    final message = await result.future;
+    if (message is List<Object?>) {
+      throw FormatException(
+        message.firstOrNull?.toString() ?? 'Extracción STT falló.',
+      );
+    }
+  } finally {
+    await resultSubscription.cancel();
+    await exitSubscription.cancel();
+    resultPort.close();
+    exitPort.close();
+  }
+}
+
+void _replaceSherpaDirectory(Directory stage, Directory target) {
+  final previous = Directory('${target.path}.previous');
+  if (previous.existsSync()) previous.deleteSync(recursive: true);
+  if (!target.existsSync()) {
+    stage.renameSync(target.path);
+    return;
+  }
+
+  target.renameSync(previous.path);
+  try {
+    stage.renameSync(target.path);
+  } catch (_) {
+    if (!target.existsSync() && previous.existsSync()) {
+      previous.renameSync(target.path);
+    }
+    rethrow;
+  }
+  try {
+    previous.deleteSync(recursive: true);
+  } on FileSystemException {
+    // La instalación nueva terminó; el próximo reemplazo limpia el backup.
   }
 }
 

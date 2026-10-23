@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/services.dart';
@@ -11,6 +11,7 @@ import '../../l10n/app_localizations.dart';
 import '../../main.dart';
 import '../services/bridge_manager.dart';
 import '../services/connection_manager.dart';
+import '../services/custom_model_discovery.dart';
 import '../design/modal.dart' show HermesModelGroup, showHermesModelPicker;
 import '../theme/app_theme.dart';
 import '../utils/api_error.dart';
@@ -973,10 +974,10 @@ class _ModelsScreenState extends State<ModelsScreen> {
       context: context,
       title: s.mdlDisconnectProviderTitle(provider.name),
       message: (provider.keyEnv.isNotEmpty && !isOAuth)
-                  ? s.mdlDisconnectApiKeyBody(provider.keyEnv) +
-                        (isActive ? s.mdlDisconnectActiveWarningModel : '')
-                  : s.mdlDisconnectOAuthBody(provider.name) +
-                        (isActive ? s.mdlDisconnectActiveWarning : ''),
+          ? s.mdlDisconnectApiKeyBody(provider.keyEnv) +
+                (isActive ? s.mdlDisconnectActiveWarningModel : '')
+          : s.mdlDisconnectOAuthBody(provider.name) +
+                (isActive ? s.mdlDisconnectActiveWarning : ''),
       actions: [
         HermesDialogAction(
           label: s.commonCancel,
@@ -2027,42 +2028,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
     if (!mounted) return;
     setState(() => _liveLoading.add(slug));
     try {
-      List<String> models = [];
-      // Intenta OpenAI-compatible primero, luego /api/tags (Ollama nativo).
-      final r1 = await http
-          .get(Uri.parse('$base/v1/models'))
-          .timeout(const Duration(seconds: 6));
-      if (r1.statusCode == 200) {
-        final data = jsonDecode(r1.body);
-        if (data is Map) {
-          final list = data['data'];
-          if (list is List) {
-            models = list
-                .whereType<Map>()
-                .map((m) => (m['id'] ?? '').toString().trim())
-                .where((id) => id.isNotEmpty)
-                .toList();
-          }
-        }
-      }
-      if (models.isEmpty) {
-        final r2 = await http
-            .get(Uri.parse('$base/api/tags'))
-            .timeout(const Duration(seconds: 6));
-        if (r2.statusCode == 200) {
-          final data = jsonDecode(r2.body);
-          if (data is Map) {
-            final list = data['models'];
-            if (list is List) {
-              models = list
-                  .whereType<Map>()
-                  .map((m) => (m['name'] ?? '').toString().trim())
-                  .where((id) => id.isNotEmpty)
-                  .toList();
-            }
-          }
-        }
-      }
+      final models = await discoverCustomProviderModels(base);
       if (mounted && models.isNotEmpty) {
         setState(() => _liveModels[slug] = models);
       }

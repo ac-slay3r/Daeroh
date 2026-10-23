@@ -6095,6 +6095,8 @@
   "voiceSttTimedOut": "Se agotó el tiempo de espera para la transcripción del servidor. Inténtalo de nuevo.",
   "voiceCustomSaved": "Configuración TTS personalizada guardada",
   "voiceServerPrivacyNote": "El audio del micrófono se envía a tu servidor para transcribirlo. Úsalo solo en tu red privada (Tailscale/LAN).",
+  "voiceServerLegacyTokenFallback": "Permitir fallback heredado con token en URL",
+  "voiceServerLegacyTokenFallbackWarning": "Solo para servidores antiguos que rechazan la autenticación moderna. Envía tu token en la URL WebSocket, que puede quedar guardada en logs de proxy, servidor, firewall o depuración. Actualiza el servidor cuando sea posible.",
   "voiceHeavyRamWarning": "Usa mucha memoria; en móviles modestos puede fallar.",
   "voiceExtracting": "Extrayendo…",
   "setupIntro": "Deja tu servidor listo en tres pasos: copia, ejecuta y pega el enlace que te devuelve. Sin teclear datos técnicos.",

@@ -114,15 +114,27 @@ void main() {
       final verifier = _read('tool/qa/verify_qa_profile_network_policy.sh');
 
       expect(verifier, contains('archive_entries='));
-      expect(verifier, contains(r'unzip -Z1 "$apk" >"$archive_entries"'));
+      expect(
+        verifier,
+        contains(r'list_archive_entries "$apk" >"$archive_entries"'),
+      );
       expect(verifier, isNot(contains(r'unzip -Z1 "$apk" | grep')));
     });
 
     test('la limpieza normal cancela el trap antes de perder el scope', () {
       final verifier = _read('tool/qa/verify_qa_profile_network_policy.sh');
 
-      expect(verifier, contains(r'rm -rf -- "$scratch"'));
+      expect(verifier, contains('  cleanup\n  trap - EXIT'));
       expect(verifier, contains('trap - EXIT'));
+    });
+
+    test('el verificador resuelve unzip y limpia sin depender de un local', () {
+      final verifier = _read('tool/qa/verify_qa_profile_network_policy.sh');
+
+      expect(verifier, contains('list_archive_entries()'));
+      expect(verifier, contains('zipfile.ZipFile'));
+      expect(verifier, contains('SCRATCH_DIR'));
+      expect(verifier, contains('cleanup()'));
     });
   });
 }

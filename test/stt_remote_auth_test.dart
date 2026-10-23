@@ -86,6 +86,24 @@ void main() {
     );
   });
 
+  test('rechaza token preconfigurado en la URL del servidor STT', () {
+    expect(
+      () => ServerSttEngine(
+        baseUrl: 'ws://127.0.0.1:9123?token=unsafe-configured-token',
+      ),
+      throwsArgumentError,
+    );
+  });
+
+  test('rechaza credenciales configuradas como parámetros URL STT', () {
+    expect(
+      () => ServerSttEngine(
+        baseUrl: 'ws://127.0.0.1:9123?access_token=unsafe-configured-token',
+      ),
+      throwsArgumentError,
+    );
+  });
+
   test('auth moderno recibe ready sin exponer el token en la URL', () async {
     final authFrames = <Map<String, dynamic>>[];
     final uris = <Uri>[];
@@ -107,7 +125,7 @@ void main() {
     expect(authFrames.single, {'type': 'auth', 'token': 'secret-token'});
   });
 
-  test('error de auth inicial reintenta una vez con token legacy', () async {
+  test('el fallback query-token legacy está desactivado por defecto', () async {
     final uris = <Uri>[];
     final server = await _WsTestServer.start((connection, uri, socket) {
       uris.add(uri);
@@ -121,20 +139,85 @@ void main() {
             }),
           );
         });
-      } else {
-        socket.add(jsonEncode({'type': 'ready'}));
       }
     });
     addTearDown(server.close);
     final engine = ServerSttEngine(baseUrl: server.url, token: 'legacy-token');
     addTearDown(engine.dispose);
 
-    expect(await engine.ping(timeout: const Duration(seconds: 1)), isTrue);
+    expect(await engine.ping(timeout: const Duration(seconds: 1)), isFalse);
 
-    expect(server.connections, 2);
+    expect(server.connections, 1);
     expect(uris.first.queryParameters, isNot(contains('token')));
-    expect(uris.last.queryParameters['token'], 'legacy-token');
   });
+
+  test(
+    'el fallback query-token legacy requiere una autorización explícita',
+    () async {
+      final uris = <Uri>[];
+      final server = await _WsTestServer.start((connection, uri, socket) {
+        uris.add(uri);
+        if (connection == 1) {
+          scheduleMicrotask(() {
+            socket.add(
+              jsonEncode({'type': 'error', 'code': 'auth_message_unsupported'}),
+            );
+          });
+        } else {
+          socket.add(jsonEncode({'type': 'ready'}));
+        }
+      });
+      addTearDown(server.close);
+      final engine = ServerSttEngine(
+        baseUrl: server.url,
+        token: 'legacy-token',
+        allowLegacyQueryTokenFallback: true,
+      );
+      addTearDown(engine.dispose);
+
+      expect(await engine.ping(timeout: const Duration(seconds: 1)), isTrue);
+      expect(server.connections, 2);
+      expect(uris.first.queryParameters, isNot(contains('token')));
+      expect(uris.last.queryParameters['token'], 'legacy-token');
+    },
+  );
+
+  test(
+    'revocar fallback legacy cancela el retry pendiente antes de abrir una URL con token',
+    () async {
+      final authReceived = Completer<void>();
+      final releaseAuthRejection = Completer<void>();
+      final uris = <Uri>[];
+      final server = await _WsTestServer.start((connection, uri, socket) {
+        uris.add(uri);
+        if (connection == 1) {
+          socket.listen((_) async {
+            authReceived.complete();
+            await releaseAuthRejection.future;
+            socket.add(
+              jsonEncode({'type': 'error', 'code': 'auth_message_unsupported'}),
+            );
+          });
+        }
+      });
+      addTearDown(server.close);
+      final engine = ServerSttEngine(
+        baseUrl: server.url,
+        token: 'legacy-token',
+        allowLegacyQueryTokenFallback: true,
+      );
+
+      final ping = engine.ping(timeout: const Duration(seconds: 1));
+      await authReceived.future;
+      engine.revokeLegacyQueryTokenFallback();
+      releaseAuthRejection.complete();
+
+      expect(await ping, isFalse);
+      await engine.dispose();
+      expect(server.connections, 1);
+      expect(uris.single.queryParameters, isNot(contains('token')));
+    },
+  );
 
   test('el fallback legacy no vuelve a reintentar si también falla', () async {
     final server = await _WsTestServer.start((connection, _, socket) {
@@ -152,7 +235,11 @@ void main() {
       }
     });
     addTearDown(server.close);
-    final engine = ServerSttEngine(baseUrl: server.url, token: 'legacy-token');
+    final engine = ServerSttEngine(
+      baseUrl: server.url,
+      token: 'legacy-token',
+      allowLegacyQueryTokenFallback: true,
+    );
     addTearDown(engine.dispose);
 
     expect(await engine.ping(timeout: const Duration(seconds: 1)), isFalse);

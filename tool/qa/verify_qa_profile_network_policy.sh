@@ -2,9 +2,10 @@
 
 set -euo pipefail
 
-readonly EXPECTED_PACKAGE="dev.xpetalab.hermesconsole.qa"
+readonly EXPECTED_PACKAGE="cool.n0thing.daeroh.qa"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SCRATCH_DIR=""
 
 usage() {
   cat <<'EOF'
@@ -20,6 +21,23 @@ EOF
 fail() {
   printf 'qaProfile network policy: FAIL: %s\n' "$*" >&2
   exit 1
+}
+
+cleanup() {
+  [[ -z "$SCRATCH_DIR" ]] || rm -rf -- "$SCRATCH_DIR"
+}
+
+list_archive_entries() {
+  local archive="$1"
+
+  python3 - "$archive" <<'PY'
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1]) as apk:
+    for name in apk.namelist():
+        print(name)
+PY
 }
 
 resolve_tool() {
@@ -60,19 +78,19 @@ main() {
   local apk="$1"
   [[ -f "$apk" ]] || fail "APK does not exist: $apk"
 
-  local apkanalyzer aapt2 scratch archive_entries manifest_tree resource_table
+  local apkanalyzer aapt2 archive_entries manifest_tree resource_table
   local xmltree
   local application_id network_config_id forbidden_permission
   local -a network_config_ids policy_entries resource_matches
   apkanalyzer="$(resolve_tool apkanalyzer)"
   aapt2="$(resolve_tool aapt2)"
-  scratch="$(mktemp -d "${TMPDIR:-/tmp}/hermes-qaprofile-policy.XXXXXX")"
-  chmod 700 "$scratch"
-  trap 'rm -rf -- "$scratch"' EXIT
-  archive_entries="$scratch/archive-entries.txt"
-  manifest_tree="$scratch/manifest-tree.txt"
-  resource_table="$scratch/resources.txt"
-  xmltree="$scratch/network-security.txt"
+  SCRATCH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hermes-qaprofile-policy.XXXXXX")"
+  chmod 700 "$SCRATCH_DIR"
+  trap cleanup EXIT
+  archive_entries="$SCRATCH_DIR/archive-entries.txt"
+  manifest_tree="$SCRATCH_DIR/manifest-tree.txt"
+  resource_table="$SCRATCH_DIR/resources.txt"
+  xmltree="$SCRATCH_DIR/network-security.txt"
 
   application_id="$("$apkanalyzer" manifest application-id "$apk")"
   [[ "$application_id" == "$EXPECTED_PACKAGE" ]] ||
@@ -102,7 +120,7 @@ main() {
   [[ ${#resource_matches[@]} -eq 1 ]] ||
     fail "manifest networkSecurityConfig must resolve exactly once to release policy"
 
-  unzip -Z1 "$apk" >"$archive_entries"
+  list_archive_entries "$apk" >"$archive_entries"
   mapfile -t policy_entries < <(grep -Fx \
     'res/xml/network_security_config.xml' "$archive_entries" || true)
   [[ ${#policy_entries[@]} -eq 1 ]] ||
@@ -114,8 +132,9 @@ main() {
   grep -q 'A: src="system"' "$xmltree" ||
     fail "packaged policy does not retain system trust anchors"
 
-  rm -rf -- "$scratch"
+  cleanup
   trap - EXIT
+  SCRATCH_DIR=""
 
   printf 'qaProfile network policy: PASS\n'
   printf 'package=%s\n' "$EXPECTED_PACKAGE"

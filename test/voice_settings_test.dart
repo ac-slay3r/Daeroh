@@ -18,6 +18,7 @@ void main() {
       expect(settings.autoSpeak, isFalse);
       expect(settings.bargeInEnabled, isFalse);
       expect(settings.serverSttUrl, isEmpty);
+      expect(settings.allowLegacyQueryTokenFallback, isFalse);
       expect(settings.kokoroTtsUrl, isEmpty);
       expect(settings.openAiTtsUrl, isEmpty);
       expect(settings.customTtsUrl, isEmpty);
@@ -79,6 +80,42 @@ void main() {
       );
       expect(loaded.elevenVoiceId, 'voiceX');
     });
+
+    test(
+      'el fallback query-token legacy requiere consentimiento explícito',
+      () async {
+        SharedPreferences.setMockInitialValues({
+          'voice_server_stt_url': 'ws://192.168.1.20:9123',
+        });
+        final prefs = await SharedPreferences.getInstance();
+        expect(
+          VoiceSettings.load(prefs).allowLegacyQueryTokenFallback,
+          isFalse,
+        );
+
+        await const VoiceSettings(
+          allowLegacyQueryTokenFallback: true,
+        ).save(prefs);
+        expect(VoiceSettings.load(prefs).allowLegacyQueryTokenFallback, isTrue);
+      },
+    );
+
+    test(
+      'una URL STT con token heredado se borra antes de volver a guardarse',
+      () async {
+        const unsafe = 'ws://192.168.1.20:9123?token=old-token';
+        SharedPreferences.setMockInitialValues({'voice_server_stt_url': unsafe});
+        final prefs = await SharedPreferences.getInstance();
+
+        final loaded = VoiceSettings.load(prefs);
+        expect(loaded.serverSttUrl, isEmpty);
+
+        await loaded
+            .copyWith(allowLegacyQueryTokenFallback: true)
+            .save(prefs);
+        expect(prefs.getString('voice_server_stt_url'), isEmpty);
+      },
+    );
 
     test(
       'dictado Hermes y servidor STT personalizado no se confunden',

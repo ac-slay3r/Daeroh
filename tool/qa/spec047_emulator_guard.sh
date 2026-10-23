@@ -2,10 +2,10 @@
 
 set -Eeuo pipefail
 
-readonly EXPECTED_AVD="pixel_hermes_review_api36"
-readonly EXPECTED_SDK="36"
-readonly QA_PACKAGE="dev.xpetalab.hermesconsole.qa"
-readonly DEFAULT_SERIAL="emulator-5556"
+readonly EXPECTED_AVD="Daeroh_API37_x86_64"
+readonly EXPECTED_SDK="37"
+readonly QA_PACKAGE="cool.n0thing.daeroh.qa"
+readonly DEFAULT_SERIAL="emulator-5554"
 readonly DEFAULT_APK="build/app/outputs/flutter-apk/app-qa-debug.apk"
 
 ADB_BIN="${ADB_BIN:-adb}"

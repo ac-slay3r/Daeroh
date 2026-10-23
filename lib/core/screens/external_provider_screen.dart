@@ -23,6 +23,7 @@ import '../services/bridge_manager.dart';
 import '../services/connection_manager.dart';
 import '../theme/app_theme.dart';
 import '../utils/api_error.dart';
+import '../utils/private_http_client.dart';
 import '../utils/transport_privacy.dart';
 import '../widgets/hermes_app_bar.dart';
 import '../widgets/hermes_notice.dart';
@@ -307,27 +308,32 @@ class _ExternalProviderScreenState extends State<ExternalProviderScreen> {
     String base,
     Map<String, String> headers,
   ) async {
-    final res = await http
-        .get(Uri.parse('$base/models'), headers: headers)
-        .timeout(const Duration(seconds: 8));
-    if (res.statusCode == 200) {
-      final models = _parseOpenAiModels(res.body);
-      if (models.isNotEmpty) return models;
-    }
-    // Fallback Ollama: /api/tags (modelo descargados).
-    if (_type == ExternalProviderType.ollama) {
-      final root = base.endsWith('/v1')
-          ? base.substring(0, base.length - 3)
-          : base;
-      final r = await http
-          .get(Uri.parse('$root/api/tags'), headers: headers)
+    final client = PrivateHttpClient(http.Client());
+    try {
+      final res = await client
+          .get(Uri.parse('$base/models'), headers: headers)
           .timeout(const Duration(seconds: 8));
-      if (r.statusCode == 200) return _parseOllamaTags(r.body);
+      if (res.statusCode == 200) {
+        final models = _parseOpenAiModels(res.body);
+        if (models.isNotEmpty) return models;
+      }
+      // Fallback Ollama: /api/tags (modelo descargados).
+      if (_type == ExternalProviderType.ollama) {
+        final root = base.endsWith('/v1')
+            ? base.substring(0, base.length - 3)
+            : base;
+        final r = await client
+            .get(Uri.parse('$root/api/tags'), headers: headers)
+            .timeout(const Duration(seconds: 8));
+        if (r.statusCode == 200) return _parseOllamaTags(r.body);
+      }
+      if (res.statusCode != 200) {
+        throw Exception('HTTP ${res.statusCode}');
+      }
+      return const [];
+    } finally {
+      client.close();
     }
-    if (res.statusCode != 200) {
-      throw Exception('HTTP ${res.statusCode}');
-    }
-    return const [];
   }
 
   static List<String> _parseOpenAiModels(String body) {
