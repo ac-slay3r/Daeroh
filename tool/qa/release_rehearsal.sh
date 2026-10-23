@@ -5,7 +5,7 @@ set -Eeuo pipefail
 readonly ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 readonly ANDROID_DIR="$ROOT/android"
 readonly KEY_PROPERTIES="$ROOT/key.properties"
-readonly EXPECTED_PACKAGE="dev.xpetalab.hermesconsole"
+readonly EXPECTED_PACKAGE="cool.n0thing.daeroh"
 readonly AAB_REL="build/app/outputs/bundle/playRelease/app-play-release.aab"
 
 usage() {
