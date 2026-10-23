@@ -3,8 +3,8 @@
 ## Principios
 
 1. **Privacidad por defecto**: sin backend, tracking ni analytics de XPeta Lab;
-   servicios externos, integraciones de IA y métricas de SDK divulgados en
-   Privacidad/Data Safety
+   el diagnóstico de fiabilidad self-hosted solo existe con DSN de build,
+   consentimiento explícito y divulgación en Privacidad/Data Safety
 2. **Seguridad por defecto**: HTTPS + Tailscale, nunca HTTP público
 3. **Mínimos privilegios**: solo los permisos Android estrictamente necesarios
 4. **Sin secretos en código**: API keys, tokens y contraseñas nunca en el repo
@@ -324,7 +324,13 @@ Esto puede ser logueado por proxies, firewalls y herramientas de debug.
 ### No añadir sin auditoría previa
 
 - No añadir SDKs de analytics (Firebase Analytics, Mixpanel, etc.)
-- No añadir SDKs de crash reporting que envíen a terceros (Crashlytics, Sentry cloud)
+- No añadir SDKs de crash reporting que envíen a terceros (Crashlytics, Sentry cloud).
+  La excepción actual es `sentry` hacia GlitchTip autoalojado: solo eventos
+  allowlist (`flutter`/`platform` + hash de stack), sin texto de excepción,
+  breadcrumbs, PII, adjuntos, request data ni contexto de dispositivo. El DSN
+  por `--dart-define` acepta solo public key + project ID (sin secret key), y
+  el cliente impone `TransportPrivacy`, conexión directa sin proxy, sin
+  redirects y cancelación de conexiones al retirar el opt-in.
 - No añadir SDKs de publicidad
 
 ---

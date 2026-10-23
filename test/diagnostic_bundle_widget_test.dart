@@ -166,7 +166,9 @@ void main() {
         theme: AppTheme.fromId('dark'),
         localizationsDelegates: Strings.localizationsDelegates,
         supportedLocales: Strings.supportedLocales,
-        home: Scaffold(body: DiagnosticsConsentTile(consent: consent)),
+        home: Scaffold(
+          body: DiagnosticsConsentTile(consent: consent, isAvailable: true),
+        ),
       ),
     );
 
