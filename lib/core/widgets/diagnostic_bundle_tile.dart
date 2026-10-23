@@ -10,6 +10,7 @@ import '../config/flavor.dart';
 import '../services/connection_manager.dart';
 import '../services/diagnostic_bundle_service.dart';
 import '../services/diagnostics_consent_store.dart';
+import '../services/reliability_diagnostics.dart';
 import '../services/turn_outbox_store.dart';
 import '../theme/app_theme.dart';
 import 'hermes_notice.dart';
@@ -171,9 +172,15 @@ class DiagnosticBundleController {
 /// disabled by default and may never include prompt, message, attachment,
 /// credential, endpoint, or identifier content.
 class DiagnosticsConsentTile extends StatefulWidget {
-  const DiagnosticsConsentTile({super.key, required this.consent});
+  const DiagnosticsConsentTile({
+    super.key,
+    required this.consent,
+    this.isAvailable,
+  });
 
   final DiagnosticsConsentStore consent;
+  @visibleForTesting
+  final bool? isAvailable;
 
   @override
   State<DiagnosticsConsentTile> createState() => _DiagnosticsConsentTileState();
@@ -200,6 +207,9 @@ class _DiagnosticsConsentTileState extends State<DiagnosticsConsentTile> {
 
   @override
   Widget build(BuildContext context) {
+    if (!(widget.isAvailable ?? ReliabilityDiagnostics.isAvailable)) {
+      return const SizedBox.shrink();
+    }
     final strings = Strings.of(context);
     return Material(
       type: MaterialType.transparency,

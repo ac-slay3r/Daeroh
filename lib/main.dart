@@ -41,11 +41,13 @@ import 'core/services/approval_policy.dart';
 import 'core/services/bridge_manager.dart';
 import 'core/services/chat_draft_store.dart';
 import 'core/services/connection_manager.dart';
+import 'core/services/diagnostics_consent_store.dart';
 import 'core/services/font_size_service.dart';
 import 'core/services/home_widget_publisher.dart';
 import 'core/services/notifications/background_listener.dart';
 import 'core/services/notifications/notification_service.dart';
 import 'core/services/performance_trace.dart';
+import 'core/services/reliability_diagnostics.dart';
 import 'core/bots/data/gateway_socket_meter.dart';
 import 'core/services/shared_gateway_pool.dart';
 import 'core/services/new_session_launch_coordinator.dart';
@@ -226,6 +228,9 @@ void main() async {
     FlutterForegroundTask.initCommunicationPort();
   }
   final prefs = await SharedPreferences.getInstance();
+  final diagnostics = ReliabilityDiagnostics();
+  ReliabilityDiagnostics.configure(diagnostics);
+  await diagnostics.startIfConsented(DiagnosticsConsentStore(prefs).enabled);
   final themeProfileStore = ThemeProfileStore(prefs);
   final initialThemeProfiles = await themeProfileStore.load();
   final cancelledTurnStore = CancelledTurnTombstoneStore.secure();

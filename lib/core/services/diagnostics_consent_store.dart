@@ -1,5 +1,7 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'reliability_diagnostics.dart';
+
 /// Explicit, device-local consent for sending sanitized reliability telemetry.
 ///
 /// The default is fail-closed: no telemetry transport may send data until the
@@ -19,6 +21,14 @@ final class DiagnosticsConsentStore {
     final written = await _prefs.setBool(preferenceKey, value);
     if (!written) {
       throw StateError('Could not persist diagnostics consent');
+    }
+    try {
+      await ReliabilityDiagnostics.updateConsent(value);
+    } catch (_) {
+      // A build without a collector must remain fail-closed rather than leave
+      // an opt-in visible that cannot send to the promised destination.
+      await _prefs.setBool(preferenceKey, false);
+      rethrow;
     }
   }
 }
