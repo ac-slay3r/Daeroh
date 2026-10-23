@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [feat/daeroh-android-build]
   push:
-    branches: [feat/daeroh-android-build]
+    branches: [feat/daeroh-android-build, 'ship/**']
 
 permissions:
   contents: read
