@@ -3400,18 +3400,12 @@ class _VoiceSettingsScreenState extends State<VoiceSettingsScreen> {
             ),
           ),
           const SizedBox(height: 12),
-          SwitchListTile.adaptive(
-            key: const Key('voice_server_legacy_query_token_fallback'),
+          HermesSwitchTile(
+            controlKey: const Key('voice_server_legacy_query_token_fallback'),
             contentPadding: EdgeInsets.zero,
+            title: s.voiceServerLegacyTokenFallback,
+            subtitle: s.voiceServerLegacyTokenFallbackWarning,
             value: _s.allowLegacyQueryTokenFallback,
-            title: Text(
-              s.voiceServerLegacyTokenFallback,
-              style: TextStyle(fontSize: 14, color: colors.textPrimary),
-            ),
-            subtitle: Text(
-              s.voiceServerLegacyTokenFallbackWarning,
-              style: TextStyle(fontSize: 11.5, color: colors.textSecondary),
-            ),
             onChanged: (value) async {
               if (!value) {
                 for (final engine in _serverTestEngines) {
