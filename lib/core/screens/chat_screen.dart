@@ -1986,9 +1986,15 @@ class _ChatScreenState extends State<ChatScreen>
     _loadPrefs();
     _loadActiveModel();
     _profileReady = _loadActiveProfile();
+    // The local-write lifecycle and the ActiveChat binding MUST share one
+    // owner. Unstamped sessions (new `mob-*` chats from Home/drawer) inherit
+    // the connection's active profile; resolving them as `default` here made
+    // every outbox save on a named profile a rejected cross-scope write.
     _localConversationLifecycle = LocalConversationCleanupFence.beginLifecycle(
       connectionId: widget.connection.id,
-      profile: Session.profileOwner(widget.session.profile),
+      profile: _resolvedSessionOwner(
+        context.findAncestorStateOfType<HermesAppState>(),
+      ),
       sessionId: widget.session.id,
       sessionAliases: {_draftRecoverySessionId, ..._draftRecoveryAliases},
     );
@@ -2114,6 +2120,12 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   String get _recoveryProfile => _localConversationLifecycle.profile;
+
+  /// Single source of truth for this screen's conversation owner.
+  String _resolvedSessionOwner(HermesAppState? app) => Session.profileOwner(
+    widget.session.profile,
+    fallback: app?.connManager.activeProfileFor(widget.connection.id),
+  );
 
   bool get _isBotChatSurface => const {
     'mobile-bot',
@@ -4064,10 +4076,7 @@ class _ChatScreenState extends State<ChatScreen>
       _chatBound = true;
       _chatService = app.activeChats;
       _botChatStore = MissionBotChatStore(app.connManager.prefs);
-      final resolvedSessionProfile = Session.profileOwner(
-        widget.session.profile,
-        fallback: app.connManager.activeProfileFor(widget.connection.id),
-      );
+      final resolvedSessionProfile = _resolvedSessionOwner(app);
       _chat = _chatService.attach(
         connection: widget.connection,
         sessionId: widget.session.id,

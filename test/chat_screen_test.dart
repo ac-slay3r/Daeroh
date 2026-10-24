@@ -2380,7 +2380,12 @@ void main() {
         sessionId: targetSession.id,
         logicalSessionId: targetSession.logicalId,
         sessionTitle: targetSession.displayTitle,
-        sessionProfile: targetSession.profile,
+        // Mirror ChatScreen's owner resolution so the fixture's runtime is
+        // the same ActiveChat the screen binds (unstamped → active profile).
+        sessionProfile: Session.profileOwner(
+          targetSession.profile,
+          fallback: initialActiveProfile,
+        ),
         initialStoredSessionId: initialStoredSessionId,
         api: api ?? _safeApi(),
         desktopGateway: desktopGateway,
@@ -15646,12 +15651,18 @@ void main() {
         final ts = now / 1000;
         final transcript = <Map<String, dynamic>>[
           {'id': 10, 'role': 'user', 'content': 'antes', 'timestamp': ts - 60},
-          {'id': 11, 'role': 'assistant', 'content': 'ok', 'timestamp': ts - 59},
+          {
+            'id': 11,
+            'role': 'assistant',
+            'content': 'ok',
+            'timestamp': ts - 59,
+          },
           {'id': 12, 'role': 'user', 'content': prompt, 'timestamp': ts + 1},
         ];
         // `turn.status` queda pendiente: la restauración está a mitad.
         final statusGate = Completer<DesktopTurnStatus>();
-        final gateway = _RecoverableSubmissionGateway()..statusGate = statusGate;
+        final gateway = _RecoverableSubmissionGateway()
+          ..statusGate = statusGate;
         final chat = await pumpChat(
           tester,
           connection: connection,
@@ -15678,7 +15689,11 @@ void main() {
             clientTurnId: 'client-restore-race',
           ),
         );
-        for (var frame = 0; frame < 60 && gateway.submissions.isEmpty; frame++) {
+        for (
+          var frame = 0;
+          frame < 60 && gateway.submissions.isEmpty;
+          frame++
+        ) {
           await tester.pump(const Duration(milliseconds: 20));
         }
 
@@ -15690,11 +15705,9 @@ void main() {
           )).where((turn) => !turn.queued),
           isEmpty,
         );
-        expect(
-          gateway.submissions,
-          ['encolado tras la carrera'],
-          reason: 'la cola restaurada se reanuda tras liquidar el turno',
-        );
+        expect(gateway.submissions, [
+          'encolado tras la carrera',
+        ], reason: 'la cola restaurada se reanuda tras liquidar el turno');
         gateway.emitComplete();
         await tester.pump(const Duration(milliseconds: 500));
         expect(tester.takeException(), isNull);
@@ -15728,7 +15741,12 @@ void main() {
         final ts = now / 1000;
         final transcript = <Map<String, dynamic>>[
           {'id': 10, 'role': 'user', 'content': 'antes', 'timestamp': ts - 60},
-          {'id': 11, 'role': 'assistant', 'content': 'ok', 'timestamp': ts - 59},
+          {
+            'id': 11,
+            'role': 'assistant',
+            'content': 'ok',
+            'timestamp': ts - 59,
+          },
         ];
         var loads = 0;
         var clock = now;
@@ -16288,6 +16306,52 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  for (final activeProfile in const <String?>[null, 'android']) {
+    testWidgets(
+      'un chat nuevo sin sello puede enviar (perfil: ${activeProfile ?? 'default'})',
+      (tester) async {
+        // Regression: Home/drawer create `mob-*` sessions without `profile`.
+        // The cleanup lifecycle was opened under `default` while the outbox
+        // turn was stamped with the active named profile, so every send was
+        // rejected as a cross-scope write ("couldn't be stored securely").
+        final connection = _remoteConn('conn-new-chat-${activeProfile ?? 'd'}');
+        final gateway = _SubmissionGateway();
+        final session = Session(
+          id: 'mob-1-new-chat-${activeProfile ?? 'd'}',
+          title: 'Nuevo chat',
+          model: 'hermes-agent',
+          source: 'mobile',
+          messageCount: 0,
+          isActive: true,
+          preview: '',
+          startedAt: 0,
+        );
+
+        await pumpChat(
+          tester,
+          connection: connection,
+          session: session,
+          desktopGateway: gateway,
+          initialActiveProfile: activeProfile,
+        );
+        await tester.pump(const Duration(milliseconds: 400));
+
+        await tester.enterText(find.byType(TextField).last, 'hola');
+        await tester.pump();
+        await tester.tap(find.byKey(const ValueKey('send')));
+        for (var frame = 0; frame < 40; frame++) {
+          await tester.pump(const Duration(milliseconds: 25));
+        }
+
+        expect(find.byType(HermesNoticeCard), findsNothing);
+        expect(gateway.submissions, hasLength(1));
+        gateway.emitComplete();
+        await tester.pump(const Duration(seconds: 2));
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 
   testWidgets(
     'una sesión legacy resuelve el perfil activo antes del primer attach',
