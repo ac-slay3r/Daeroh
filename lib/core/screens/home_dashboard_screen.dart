@@ -26,6 +26,7 @@ import '../services/platform/android_apps.dart';
 import '../services/local_transcript_store.dart';
 import '../services/session_archive.dart';
 import '../services/session_deletion.dart';
+import '../services/session_library_diagnostics.dart';
 import '../services/turn_outbox_store.dart';
 import '../services/tui_gateway_client.dart';
 import '../services/shared_gateway_pool.dart';
@@ -113,6 +114,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
   bool _checking = false;
   List<Session> _recentSessions = [];
   _HomeHistoryState _historyState = _HomeHistoryState.current;
+  String? _sessionLibraryStatus;
   SessionArchive? _archive;
   final Map<String, ({double activityAt, String? user, String? assistant})>
   _turnPreviews = {};
@@ -937,6 +939,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
     bool ok = false;
     var historyState = _HomeHistoryState.current;
+    String? sessionLibraryStatus;
     List<Session> sessions = [];
     List<ChatDraftEntry> drafts = [];
     // Los borradores viven en el Keystore. Un fallo puntual al desbloquearlo no
@@ -965,7 +968,10 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
           apps: const AndroidApps(),
         ).isAgentRunning();
       } else {
-        ok = await client.healthCheck();
+        ok = await client.healthCheck(
+          profile: ownerProfile,
+          verifySessionAccess: false,
+        );
       }
     } catch (e) {
       debugPrint('[home-dashboard] health check failed: $e');
@@ -996,10 +1002,14 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         sessions = await client.getSessions(profile: ownerProfile);
         sessions.sort((a, b) => b.lastActivityAt.compareTo(a.lastActivityAt));
       }
-    } catch (e) {
+    } on Object catch (error) {
       // Session history is auxiliary to the agent transport. Do not turn a
       // successful health probe into a false offline state because it fails.
-      debugPrint('[home-dashboard] session library unavailable: $e');
+      final diagnostic = SessionLibraryDiagnostic.fromError(error);
+      debugPrint(
+        '[home-dashboard] session library unavailable: ${diagnostic.label}',
+      );
+      sessionLibraryStatus = diagnostic.label;
       historyState = _HomeHistoryState.unavailable;
     } finally {
       client.close();
@@ -1067,6 +1077,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
       _checking = false;
       _archive = archive;
       _historyState = historyState;
+      _sessionLibraryStatus = sessionLibraryStatus;
       _recentSessions = recentSessions;
     });
     await _refreshRemoteActivity(conn, ownerProfile);
@@ -1919,6 +1930,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
                   _HomeHistoryNotice(
                     colors: colors,
                     deviceCache: _historyState == _HomeHistoryState.deviceCache,
+                    sessionLibraryStatus: _sessionLibraryStatus,
                   ),
               ];
               // El compositor y los avisos de estado viven fuera del área que
@@ -2118,8 +2130,13 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
 class _HomeHistoryNotice extends StatelessWidget {
   final HermesThemeColors colors;
   final bool deviceCache;
+  final String? sessionLibraryStatus;
 
-  const _HomeHistoryNotice({required this.colors, required this.deviceCache});
+  const _HomeHistoryNotice({
+    required this.colors,
+    required this.deviceCache,
+    this.sessionLibraryStatus,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -2146,8 +2163,14 @@ class _HomeHistoryNotice extends StatelessWidget {
               Expanded(
                 child: Text(
                   deviceCache
-                      ? s.homeDeviceHistoryNotice
-                      : s.homeSessionLibraryUnavailable,
+                      ? sessionLibraryStatus == null
+                            ? s.homeDeviceHistoryNotice
+                            : s.homeDeviceHistoryServerUnavailable(
+                                sessionLibraryStatus!,
+                              )
+                      : s.homeSessionLibraryUnavailable(
+                          sessionLibraryStatus ?? 'unknown',
+                        ),
                   key: const ValueKey('home-history-notice'),
                   style: TextStyle(fontSize: 12.5, color: colors.textSecondary),
                 ),

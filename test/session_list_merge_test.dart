@@ -47,7 +47,7 @@ class _SessionListApiClient extends ApiClient {
   int sessionReads = 0;
 
   @override
-  Future<bool> healthCheck() async => healthy;
+  Future<bool> healthCheck({String? profile, bool verifySessionAccess = true}) async => healthy;
 
   @override
   Future<List<Session>> getSessions({
