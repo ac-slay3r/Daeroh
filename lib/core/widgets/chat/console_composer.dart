@@ -319,8 +319,9 @@ class ConsoleComposer extends StatelessWidget {
         // (campo de hasta cuatro líneas + fila de acciones + SafeArea) puede
         // quedar más alto que el viewport restante y provocar un RenderFlex
         // overflow.
+        final imeVisible = MediaQuery.viewInsetsOf(imeContext).bottom > 0;
         final compactIme =
-            MediaQuery.viewInsetsOf(imeContext).bottom > 0 &&
+            imeVisible &&
             MediaQuery.orientationOf(imeContext) == Orientation.landscape;
         return Container(
           key: const ValueKey('chat-composer-host'),
@@ -442,7 +443,7 @@ class ConsoleComposer extends StatelessWidget {
                     ),
                   ),
                 ),
-                ?footer,
+                if (!imeVisible) ?footer,
               ],
             ),
           ),

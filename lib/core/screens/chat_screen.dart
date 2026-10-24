@@ -13977,6 +13977,7 @@ class _ChatScreenState extends State<ChatScreen>
     return _MessageBubble(
       content: displayContent,
       isUser: role == 'user',
+      assistantRole: role == 'assistant' && !isStreaming && !isPipeline,
       verbose: _devDiagnostics,
       metadata: metadataMsg,
       linkCache: _linkCache,
@@ -14080,6 +14081,7 @@ class _ChatScreenState extends State<ChatScreen>
     return _MessageBubble(
       content: projection.visibleMarkdown,
       isUser: false,
+      assistantRole: !frame.isStreaming,
       verbose: _devDiagnostics,
       metadata: frame.metadata,
       linkCache: _linkCache,
@@ -15480,6 +15482,7 @@ class _StableStreamingMarkdownState extends State<_StableStreamingMarkdown> {
 class _MessageBubble extends StatelessWidget {
   final String content;
   final bool isUser;
+  final bool assistantRole;
   final bool verbose;
   final Map<String, dynamic> metadata;
   final Map<String, _LinkPreviewData?> linkCache;
@@ -15512,6 +15515,7 @@ class _MessageBubble extends StatelessWidget {
   const _MessageBubble({
     required this.content,
     required this.isUser,
+    this.assistantRole = false,
     required this.linkCache,
     required this.fetchLinkPreview,
     required this.firstUrl,
@@ -15543,7 +15547,7 @@ class _MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return isUser
+    final message = isUser
         ? _UserMessage(
             content: content,
             verbose: verbose,
@@ -15580,6 +15584,14 @@ class _MessageBubble extends StatelessWidget {
             compact: compact,
             performanceProbe: performanceProbe,
           );
+    if (!assistantRole) return message;
+    // Keep completed assistant responses separate from prompt/error nodes.
+    return Semantics(
+      container: true,
+      explicitChildNodes: true,
+      label: 'Assistant response',
+      child: message,
+    );
   }
 }
 

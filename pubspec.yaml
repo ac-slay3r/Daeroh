@@ -1,7 +1,7 @@
 name: hermes_android
 description: "Daeroh — a private Android client for self-hosted Hermes Agent, based on Hermes Console."
 publish_to: 'none'
-version: 0.1.11+2012
+version: 0.1.12+2013
 
 environment:
   sdk: ^3.12.0

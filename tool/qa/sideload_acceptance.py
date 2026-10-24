@@ -9,7 +9,8 @@ installed-app path works end to end:
   launch     cold start reaches Home with "agent online"
   history    Home lists server conversations without a library error
   send       a new chat sends a probe and receives the assistant's reply
-  crashes    no crash-buffer entries for the package
+  recovery   that chat and reply survive a cold restart
+  crashes    crash-buffer query succeeds and contains no package entries
 
 Run through the toolchain wrapper so adb/aapt/apksigner are on PATH:
 
@@ -53,6 +54,7 @@ class Node:
     cls: str
     bounds: tuple[int, int, int, int]
     editable: bool
+    assistant: bool = False
 
     @property
     def center(self) -> tuple[int, int]:
@@ -62,18 +64,25 @@ class Node:
 
 def parse_ui(xml_text: str) -> list[Node]:
     nodes: list[Node] = []
-    for n in ET.fromstring(xml_text).iter("node"):
+    def visit(n: ET.Element, assistant: bool = False) -> None:
+        if n.tag != "node":
+            for child in n:
+                visit(child, assistant)
+            return
+        assistant = assistant or n.attrib.get("content-desc") == "Assistant response"
         nums = [int(x) for x in re.findall(r"\d+", n.attrib.get("bounds", ""))]
-        if len(nums) != 4:
-            continue
-        cls = n.attrib.get("class", "")
-        editable = cls.endswith("EditText")
-        # Text-field values may be secrets; never keep them.
-        label = "" if editable else (
-            n.attrib.get("text") or n.attrib.get("content-desc") or ""
-        )
-        a, b, c, d = nums
-        nodes.append(Node(label, cls, (a, b, c, d), editable))
+        if len(nums) == 4:
+            cls = n.attrib.get("class", "")
+            editable = cls.endswith("EditText")
+            # Text-field values may be secrets; never keep them.
+            label = "" if editable else (
+                n.attrib.get("text") or n.attrib.get("content-desc") or ""
+            )
+            a, b, c, d = nums
+            nodes.append(Node(label, cls, (a, b, c, d), editable, assistant))
+        for child in n:
+            visit(child, assistant)
+    visit(ET.fromstring(xml_text))
     return nodes
 
 
@@ -89,9 +98,17 @@ def home_state(nodes: list[Node]) -> dict:
     }
 
 
+def find_probe_conversation(nodes: list[Node], token: str) -> Node | None:
+    """Find the persisted server-library row for the exact probe conversation."""
+    return next((n for n in nodes if not n.editable and
+                 n.text.startswith("Chat:") and token in n.text), None)
+
+
 def has_reply(nodes: list[Node], token: str, prompt: str) -> bool:
-    """A reply is a node containing the token that is not the prompt itself."""
-    return any(token in n.text and prompt not in n.text for n in nodes)
+    """Require the exact answer inside the assistant-role accessibility group."""
+    return any(n.assistant and not n.editable and
+               not n.cls.endswith('Button') and n.text.strip() == token
+               for n in nodes)
 
 
 def parse_badging(text: str) -> dict:
@@ -106,8 +123,15 @@ def parse_badging(text: str) -> dict:
 
 
 def parse_signer(text: str) -> str | None:
-    m = re.search(r"Signer #1 certificate SHA-256 digest: ([0-9a-f]+)", text)
-    return m.group(1) if m else None
+    m = re.search(r"^Signer #1 certificate SHA-256 digest: ([0-9a-fA-F]{64})$", text, re.M)
+    return m.group(1).lower() if m else None
+
+
+def baseline_upgrade_order(baseline: int | None, installed: int | None,
+                           candidate: int | None) -> bool:
+    """Allow repeated candidate acceptance, but never install a newer APK over it."""
+    return (baseline is not None and installed is not None and candidate is not None
+            and baseline < candidate and baseline <= installed <= candidate)
 
 
 def adb_text(value: str) -> str:
@@ -177,7 +201,8 @@ class Device:
         return None
 
     def screenshot(self, path: str) -> None:
-        with open(path, "wb") as fh:
+        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600), "wb") as fh:
+            os.fchmod(fh.fileno(), 0o600)
             subprocess.run(self.base + ["exec-out", "screencap", "-p"], stdout=fh,
                            timeout=30, check=False)
 
@@ -216,31 +241,36 @@ def accept(args: argparse.Namespace, tmp: str) -> Gate:
         return gate
     cand = parse_badging(tool("aapt", "dump", "badging", args.candidate))
     abi = dev.sh("getprop ro.product.cpu.abi").strip()
+    before = dev.installed_version()
+    installed_signer = dev.installed_signer() if before is not None else None
+    candidate_signer = parse_signer(tool("apksigner", "verify", "--print-certs", args.candidate))
+    gate.check("candidate package", cand["package"] == PACKAGE)
+    gate.check("candidate ABI matches device", abi in cand["abis"], abi)
+    gate.check("existing configured install present", before is not None,
+               "acceptance updates in place; configure the emulator first")
+    gate.check("valid signer continuity", bool(installed_signer) and
+               installed_signer == candidate_signer)
+    base: dict = {}
+    base_signer: str | None = None
     if args.baseline:
         # Roll back to the previous release in place (data kept) so the same
         # candidate can be accepted repeatedly, e.g. pre- and post-merge.
         base = parse_badging(tool("aapt", "dump", "badging", args.baseline))
-        out = dev.run("install", "-r", "-d", args.baseline, timeout=300, check=False)
-        if not gate.check("baseline restored in place",
-                          "Success" in out
-                          and dev.installed_version() == base["version_code"],
-                          f"versionCode {base['version_code']}"):
-            return gate
-    before = dev.installed_version()
-    gate.check("candidate package", cand["package"] == PACKAGE)
-    gate.check("candidate ABI matches device", abi in cand["abis"], abi)
-    if not gate.check("existing configured install present", before is not None,
-                      "acceptance updates in place; configure the emulator first"):
-        return gate
-    gate.check("versionCode strictly higher", (cand["version_code"] or 0) > (before or 0),
-               f"{before} -> {cand['version_code']}")
-    gate.check("same signing lineage",
-               dev.installed_signer() == parse_signer(
-                   tool("apksigner", "verify", "--print-certs", args.candidate)))
+        base_signer = parse_signer(tool("apksigner", "verify", "--print-certs", args.baseline))
+        gate.check("baseline package", base["package"] == PACKAGE)
+        gate.check("baseline ABI matches device", abi in base["abis"], abi)
+        gate.check("baseline version before candidate",
+                   baseline_upgrade_order(base["version_code"], before,
+                                          cand["version_code"]))
+        gate.check("baseline signer continuity", bool(installed_signer) and
+                   installed_signer == base_signer == candidate_signer)
+    else:
+        gate.check("versionCode strictly higher", before is not None and
+                   cand["version_code"] is not None and cand["version_code"] > before)
     if not gate.passed:
         return gate
 
-    # update in place with an app-private sentinel
+    # Plant before *any* install; rollback must preserve the configured data too.
     uid = re.search(r"uid:(\d+)", dev.sh(f"cmd package list packages -U {PACKAGE}"))
     dev.run("root", check=False)
     dev.run("wait-for-device")
@@ -248,15 +278,29 @@ def accept(args: argparse.Namespace, tmp: str) -> Gate:
     sentinel = f"{DATA_DIR}/acceptance-sentinel"
     dev.sh(f"mkdir -p {DATA_DIR} && printf {nonce} > {sentinel}"
            + (f" && chown {uid.group(1)}:{uid.group(1)} {sentinel}" if uid else ""))
+    if args.baseline:
+        out = dev.run("install", "-r", "-d", args.baseline, timeout=300, check=False)
+        if not gate.check("baseline restored in place",
+                          "Success" in out
+                          and dev.installed_version() == base["version_code"],
+                          f"versionCode {base['version_code']}"):
+            return gate
+        gate.check("baseline data preserved", dev.sh(f"cat {sentinel}", check=False).strip() == nonce)
+        gate.check("baseline installed signer", dev.installed_signer() == base_signer)
+        if not gate.passed:
+            return gate
+
+    # update in place with an app-private sentinel
     dev.run("logcat", "-b", "all", "-c", check=False)
     out = dev.run("install", "-r", args.candidate, timeout=300, check=False)
     gate.check("install -r over existing", "Success" in out)
     gate.check("installed versionCode", dev.installed_version() == cand["version_code"])
+    gate.check("installed candidate signer", dev.installed_signer() == candidate_signer)
     gate.check("app-private data preserved",
                dev.sh(f"cat {sentinel}", check=False).strip() == nonce)
-    dev.sh(f"rm -f {sentinel}", check=False)
     if not gate.passed:
         return gate
+    dev.sh(f"rm -f {sentinel}", check=False)
 
     # cold launch → Home
     dev.sh(f"am force-stop {PACKAGE}")
@@ -308,10 +352,25 @@ def accept(args: argparse.Namespace, tmp: str) -> Gate:
     dev.sh(f"am force-stop {PACKAGE}")
     dev.sh(f"monkey -p {PACKAGE} -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1",
            check=False)
-    gate.check("cold restart reaches Home",
-               dev.wait_for(lambda n: home_state(n)["agent_online"], args.home_timeout)
-               is not None)
-    crashes = dev.run("logcat", "-d", "-b", "crash", check=False).count(PACKAGE)
+    restarted = dev.wait_for(lambda n: home_state(n)["agent_online"],
+                             args.home_timeout)
+    gate.check("cold restart reaches Home", restarted is not None)
+    if not gate.passed:
+        return gate
+    persisted = dev.wait_for(lambda n: find_probe_conversation(n, token) is not None,
+                             args.home_timeout)
+    gate.check("probe chat survives cold restart", persisted is not None)
+    if not gate.passed:
+        return gate
+    assert persisted is not None
+    row = find_probe_conversation(persisted, token)
+    assert row is not None
+    dev.tap(row)
+    gate.check("probe reply survives cold restart",
+               dev.wait_for(lambda n: has_reply(n, token, prompt),
+                            args.home_timeout) is not None)
+    # A failed logcat command must fail the gate, never masquerade as zero crashes.
+    crashes = dev.run("logcat", "-d", "-b", "crash").count(PACKAGE)
     gate.check("no crash-buffer entries", crashes == 0, f"{crashes} entries")
     return gate
 
@@ -336,7 +395,10 @@ def main(argv: list[str] | None = None) -> int:
             gate.check("acceptance run", False, str(exc))
         if args.artifacts:
             os.makedirs(args.artifacts, exist_ok=True)
-            with open(os.path.join(args.artifacts, "acceptance.json"), "w") as fh:
+            os.chmod(args.artifacts, 0o700)
+            summary_path = os.path.join(args.artifacts, "acceptance.json")
+            with os.fdopen(os.open(summary_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600), "w") as fh:
+                os.fchmod(fh.fileno(), 0o600)
                 json.dump({"passed": gate.passed,
                            "checks": [{"name": n, "ok": ok, "detail": d}
                                       for n, ok, d in gate.results]}, fh, indent=2)

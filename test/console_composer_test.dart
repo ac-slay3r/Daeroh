@@ -103,6 +103,29 @@ void main() {
     expect(field.maxLines, 4);
   });
 
+  testWidgets('IME oculta footer informativo sin ocultar controles', (tester) async {
+    await tester.pumpWidget(
+      _host(
+        MediaQuery(
+          data: const MediaQueryData(
+            size: Size(800, 360),
+            viewInsets: EdgeInsets.only(bottom: 240),
+          ),
+          child: ConsoleComposer(
+            controller: controller,
+            focusNode: focusNode,
+            onSend: (_, _) {},
+            footer: const SizedBox(key: ValueKey('composer-footer')),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byKey(const ValueKey('composer-footer')), findsNothing);
+    expect(find.byKey(const ValueKey('composer-input-row')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('stop sustituye a enviar y llama a onStop', (tester) async {
     var stopped = 0;
     await tester.pumpWidget(

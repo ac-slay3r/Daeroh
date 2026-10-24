@@ -124,7 +124,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
       _mgr ??= context.findAncestorStateOfType<HermesAppState>()!.bridgeManager;
 
   bool get _fallbackAvailable =>
-      _bridge.connected && _bridge.caps.writableTargets.isNotEmpty;
+      _bridge.connected && _bridge.caps.canEditGlobalFallback(_profile);
 
   @override
   void initState() {
@@ -1248,8 +1248,13 @@ class _ModelsScreenState extends State<ModelsScreen> {
   }
 
   Future<void> _setFallback(List<Map<String, String>> providers) async {
+    // Recheck after any dialog: a profile/scope change must not write global config.
+    if (!_fallbackAvailable) return;
     final client = await _bridgeMgr.clientFor(widget.connection.id);
-    if (client == null) return;
+    if (client == null || !_fallbackAvailable) {
+      client?.close();
+      return;
+    }
     setState(() => _setting = true);
     try {
       await client.setFallback(providers);

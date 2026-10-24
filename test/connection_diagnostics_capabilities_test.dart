@@ -31,6 +31,7 @@ Future<({CapabilityMatrix matrix, List<http.Request> requests})> _run(
   int status,
   String body, {
   List<(int, String)>? responses,
+  bool dashboardSkills = false,
 }) async {
   final requests = <http.Request>[];
   final diagnostics = ConnectionDiagnostics(
@@ -51,7 +52,13 @@ Future<({CapabilityMatrix matrix, List<http.Request> requests})> _run(
   );
   final matrix = diagnostics.buildMatrix(
     gateway,
-    const [],
+    dashboardSkills
+        ? const [
+            ProbeResult(name: 'status', status: ProbeStatus.ok),
+            ProbeResult(name: 'auth', status: ProbeStatus.ok),
+            ProbeResult(name: 'skills', status: ProbeStatus.ok),
+          ]
+        : const [],
     version,
     serverCaps: serverCaps,
   );
@@ -61,6 +68,48 @@ Future<({CapabilityMatrix matrix, List<http.Request> requests})> _run(
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test(
+    'authenticated Dashboard skills beats a false Gateway toggle flag',
+    () async {
+      final result = await _run(200, _caps(toggle: false));
+      final both = await _run(200, _caps(toggle: false), dashboardSkills: true);
+      expect(result.matrix.skillsToggle, CapState.no);
+      expect(both.matrix.skillsToggle, CapState.yes);
+    },
+  );
+
+  test(
+    'named Dashboard profile scopes only skills; default stays unscoped',
+    () async {
+      for (final profile in ['ops-2_alpha', 'default', '']) {
+        final requests = <http.Request>[];
+        final diagnostics = ConnectionDiagnostics(
+          httpClient: MockClient((request) async {
+            requests.add(request);
+            return http.Response('{}', 200);
+          }),
+        );
+        await diagnostics.probeDashboard(
+          _connection.copyWith(dashboardAuthMode: AuthMode.sessionToken),
+          const DashboardSecrets(sessionToken: 'session'),
+          profile: profile,
+        );
+        diagnostics.close();
+        final skills = requests.singleWhere((r) => r.url.path == '/api/skills');
+        expect(
+          skills.url.queryParameters['profile'],
+          profile == 'ops-2_alpha' ? profile : null,
+        );
+        expect(
+          requests
+              .where((r) => r.url.path != '/api/skills')
+              .every((r) => r.url.query.isEmpty),
+          isTrue,
+        );
+      }
+    },
+  );
 
   test(
     'profile-scoped gateway diagnostics never probe unscoped routes',

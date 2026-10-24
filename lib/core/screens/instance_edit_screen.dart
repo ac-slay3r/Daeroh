@@ -492,6 +492,13 @@ class _InstanceEditScreenState extends State<InstanceEditScreen> {
   /// romper: procede directo, sin diálogo.
   Future<void> _confirmAndAutoConfigureDashboard() async {
     if (!mounted) return;
+    if (!BridgeClient.dashboardPasswordRotationAvailable) {
+      HermesNotice.of(context).showSnackBar(
+        SnackBar(content: Text(Strings.of(context).ieDashRotationUnavailable)),
+        kind: HermesNoticeKind.warning,
+      );
+      return;
+    }
     if (widget.initial != null) {
       final ok = await showHermesDialog<bool>(
         context: context,
@@ -520,6 +527,14 @@ class _InstanceEditScreenState extends State<InstanceEditScreen> {
   /// pantalla de alta y, al volver, precarga usuario/contraseña en modo
   /// Basic Auth para que al guardar la app entre por cookie automáticamente.
   Future<void> _setupDashboardViaBridge() async {
+    if (!mounted) return;
+    if (!BridgeClient.dashboardPasswordRotationAvailable) {
+      HermesNotice.of(context).showSnackBar(
+        SnackBar(content: Text(Strings.of(context).ieDashRotationUnavailable)),
+        kind: HermesNoticeKind.warning,
+      );
+      return;
+    }
     await _bridgeConfigLoad;
     if (!mounted) return;
     final bridgeUrl = _effectiveBridgeUrlFromForm();
@@ -575,6 +590,7 @@ class _InstanceEditScreenState extends State<InstanceEditScreen> {
   /// spinner.
   /// Devuelve true si lo dejó configurado.
   Future<bool> _autoConfigureDashboard({bool silent = false}) async {
+    if (!BridgeClient.dashboardPasswordRotationAvailable) return false;
     await _bridgeConfigLoad;
     if (!mounted) return false;
     final bridgeUrl = _effectiveBridgeUrlFromForm();
@@ -945,7 +961,11 @@ class _InstanceEditScreenState extends State<InstanceEditScreen> {
         gwCaps = serverCaps;
       }
       if (dashboard) {
-        dashResults = await _diag!.probeDashboard(conn, secrets);
+        dashResults = await _diag!.probeDashboard(
+          conn,
+          secrets,
+          profile: activeProfile,
+        );
       }
       if (bridge) {
         bridgeResults = await _diag!.probeBridge(
@@ -1414,18 +1434,15 @@ class _InstanceEditScreenState extends State<InstanceEditScreen> {
                   keyboardType: TextInputType.url,
                 ),
               ),
-              // Camino recomendado: un toque, sin teclear nada. Provisiona el
-              // bridge, fija una contraseña nueva y la deja cargada (visible).
-              // Era un FilledButton a media pantalla que competía con
-              // "guardar instancia" por el papel de acción principal; como
-              // fila de acento dentro del grupo sigue siendo lo primero que se
-              // ve del Dashboard sin robarle el foco al guardado.
+              // Bridge password rotation is disabled until it can prove the
+              // effective server authority and recover safely from failures.
               _GroupActionRow(
                 icon: Icons.auto_fix_high_outlined,
                 title: s.ieAutoconfigDash,
                 busy: _autoDashBusy,
                 onTap: _autoDashBusy ? null : _confirmAndAutoConfigureDashboard,
               ),
+              _nestedNote(s.ieDashRotationUnavailable),
               // Usuario/contraseña a mano es el camino de excepción: quien usa
               // la autoconfiguración no necesita verlos, y se abren solos
               // cuando hay algo que mirar (contraseña recién generada).

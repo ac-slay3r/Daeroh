@@ -508,8 +508,9 @@ class ConnectionDiagnostics {
 
   Future<List<ProbeResult>> probeDashboard(
     SavedConnection conn,
-    DashboardSecrets secrets,
-  ) async {
+    DashboardSecrets secrets, {
+    String profile = '',
+  }) async {
     final base = TransportPrivacy.requireAllowed(conn.effectiveDashboardUrl);
     final results = <ProbeResult>[];
 
@@ -563,8 +564,17 @@ class ConnectionDiagnostics {
       ('config', '/api/config'),
       ('logs', '/api/logs'),
     ]) {
+      final scopedPath =
+          name == 'skills' && profile.isNotEmpty && profile != 'default'
+          ? '$path?profile=${Uri.encodeQueryComponent(profile)}'
+          : path;
       results.add(
-        await _probe(name, 'GET', Uri.parse('$base$path'), headers: headers),
+        await _probe(
+          name,
+          'GET',
+          Uri.parse('$base$scopedPath'),
+          headers: headers,
+        ),
       );
     }
 
@@ -585,7 +595,7 @@ class ConnectionDiagnostics {
       conn,
       profile: profile,
     );
-    final dash = await probeDashboard(conn, secrets);
+    final dash = await probeDashboard(conn, secrets, profile: profile);
     final bridge = await probeBridge(
       conn,
       bridgeUrl: bridgeUrl,
@@ -770,7 +780,12 @@ class ConnectionDiagnostics {
                 fromProbe(find(dash, 'skills')) == CapState.yes
             ? CapState.yes
             : CapState.unknown,
-        serverCaps?.feature('skills_toggle'),
+        // Gateway capabilities describe its own router. An authenticated
+        // Dashboard skills read confirms the separate Dashboard toggle route.
+        dashboardAuthValid == CapState.yes &&
+                fromProbe(find(dash, 'skills')) == CapState.yes
+            ? true
+            : serverCaps?.feature('skills_toggle'),
       ),
       // Installation is a separate Mobile Bridge capability. The Gateway
       // skills_toggle declaration says nothing about install support.
