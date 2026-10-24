@@ -383,11 +383,13 @@ class ConnectionDiagnostics {
   /// public and unscoped; authenticated endpoints are prefixed only when a
   /// named profile owns the connection.
   static Uri _gatewayUri(String base, String path, String profile) {
-    final owner = profile.trim();
-    final scopedPath = owner.isEmpty
-        ? path
-        : '/p/${Uri.encodeComponent(owner)}$path';
-    return Uri.parse('$base$scopedPath');
+    // Same routing contract as ApiClient: '' and 'default' stay unprefixed,
+    // invalid names fail closed instead of being probed.
+    final scoped = ApiClient.profileEndpoint(
+      path.startsWith('/') ? path.substring(1) : path,
+      profile: profile,
+    );
+    return Uri.parse('$base/$scoped');
   }
 
   Future<(List<ProbeResult>, String?, ServerCapabilities?)> probeGateway(

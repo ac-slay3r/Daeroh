@@ -65,25 +65,44 @@ void main() {
   test(
     'profile-scoped gateway diagnostics never probe unscoped routes',
     () async {
-      final requests = <http.Request>[];
-      final diagnostics = ConnectionDiagnostics(
-        httpClient: MockClient((request) async {
-          requests.add(request);
-          if (request.url.path == '/health') {
-            return http.Response('{"version":"0.20.4"}', 200);
-          }
-          return http.Response('{}', 200);
-        }),
-      );
+      for (final (profile, prefix) in const [
+        ('android', '/p/android'),
+        ('', ''),
+        ('default', ''),
+      ]) {
+        final requests = <http.Request>[];
+        final diagnostics = ConnectionDiagnostics(
+          httpClient: MockClient((request) async {
+            requests.add(request);
+            if (request.url.path == '/health') {
+              return http.Response('{"version":"0.20.4"}', 200);
+            }
+            return http.Response('{}', 200);
+          }),
+        );
 
-      await diagnostics.probeGateway(_connection, profile: 'android');
-      diagnostics.close();
+        await diagnostics.probeGateway(_connection, profile: profile);
+        diagnostics.close();
 
-      final paths = requests.map((request) => request.url.path).toList();
-      expect(paths, contains('/p/android/api/sessions'));
-      expect(paths, contains('/p/android/v1/capabilities'));
-      expect(paths, isNot(contains('/api/sessions')));
-      expect(paths, isNot(contains('/v1/capabilities')));
+        final paths = requests.map((request) => request.url.path).toSet();
+        expect(paths, contains('/health'), reason: 'health stays public');
+        for (final route in const [
+          '/api/sessions',
+          '/v1/models',
+          '/v1/capabilities',
+          '/v1/skills',
+          '/v1/toolsets',
+          '/v1/plugins',
+        ]) {
+          expect(paths, contains('$prefix$route'), reason: 'profile=$profile');
+        }
+        if (prefix.isNotEmpty) {
+          expect(
+            paths.where((p) => p != '/health'),
+            everyElement(startsWith(prefix)),
+          );
+        }
+      }
     },
   );
 

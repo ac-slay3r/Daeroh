@@ -361,7 +361,9 @@ class _SessionListScreenState extends State<SessionListScreen>
     if (!mounted) return;
     final generation = _health.beginProbe();
     setState(() {});
-    final ok = await _client.healthCheck();
+    final ok = await _client.healthCheck(
+      profile: widget.connManager.activeProfileFor(widget.connection.id),
+    );
     if (!mounted || !_health.recordResult(generation, healthy: ok)) return;
     setState(() {});
     if (ok) {
