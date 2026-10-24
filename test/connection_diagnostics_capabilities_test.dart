@@ -233,6 +233,35 @@ void main() {
     },
   );
 
+  test(
+    'a declared plugins_api flag wins over the inventory without probing',
+    () async {
+      for (final declared in [true, false]) {
+        final body = jsonEncode({
+          'object': 'hermes.api_server.capabilities',
+          'features': {'plugins_api': declared},
+          'endpoints': {
+            'skills': {'method': 'GET', 'path': '/v1/skills'},
+          },
+        });
+        final result = await _run(200, body);
+        expect(
+          result.requests
+              .map((r) => r.url.path)
+              .where((p) => p.contains('plugins')),
+          isEmpty,
+          reason: 'plugins_api=$declared',
+        );
+        expect(
+          result.matrix.pluginsSupported,
+          declared ? CapState.yes : CapState.no,
+          reason: 'plugins_api=$declared',
+        );
+        expect(result.matrix.isServerSourced('pluginsSupported'), isTrue);
+      }
+    },
+  );
+
   test('plugin metadata is restricted to safe GET', () async {
     const valid = '/v9/server-declared/plugins';
     final accepted = await _run(
