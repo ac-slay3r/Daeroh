@@ -171,6 +171,68 @@ void main() {
     },
   );
 
+  test(
+    'an endpoint inventory without plugins is authoritative: no probe, no failure',
+    () async {
+      // Shape of a real hermes-agent 0.22 document: endpoints are enumerated,
+      // plugins is absent, and plugins_api is not declared either way.
+      final body = jsonEncode({
+        'object': 'hermes.api_server.capabilities',
+        'features': {'skills_api': true},
+        'endpoints': {
+          'skills': {'method': 'GET', 'path': '/v1/skills'},
+          'toolsets': {'method': 'GET', 'path': '/v1/toolsets'},
+        },
+      });
+      for (final (profile, prefix) in const [
+        ('', ''),
+        ('android', '/p/android'),
+      ]) {
+        final requests = <http.Request>[];
+        final diagnostics = ConnectionDiagnostics(
+          httpClient: MockClient((request) async {
+            requests.add(request);
+            if (request.url.path == '/health') {
+              return http.Response('{"version":"0.22.5"}', 200);
+            }
+            if (request.url.path == '$prefix/v1/capabilities') {
+              return http.Response(body, 200);
+            }
+            if (request.url.path.endsWith('/plugins')) {
+              return http.Response('{}', 404);
+            }
+            return http.Response('{}', 200);
+          }),
+        );
+        final (gateway, version, serverCaps) = await diagnostics.probeGateway(
+          _connection,
+          profile: profile,
+        );
+        final matrix = diagnostics.buildMatrix(
+          gateway,
+          const [],
+          version,
+          serverCaps: serverCaps,
+        );
+        diagnostics.close();
+
+        expect(
+          requests.map((r) => r.url.path).where((p) => p.contains('plugins')),
+          isEmpty,
+          reason: 'profile=$profile: undeclared plugins must not be probed',
+        );
+        expect(gateway.map((r) => r.name), isNot(contains('plugins')));
+        expect(
+          gateway.where((r) => r.name != 'health').map((r) => r.status),
+          everyElement(ProbeStatus.ok),
+          reason: 'a healthy server must not show a failing check',
+        );
+        expect(matrix.pluginsSupported, CapState.no);
+        expect(matrix.isServerSourced('pluginsSupported'), isTrue);
+      }
+    },
+  );
+
   test('plugin metadata is restricted to safe GET', () async {
     const valid = '/v9/server-declared/plugins';
     final accepted = await _run(

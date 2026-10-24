@@ -175,6 +175,9 @@ class ServerCapabilities {
 
   bool hasEndpoint(String key) => endpoints.containsKey(key);
 
+  /// True when the server enumerates its endpoints, making absence meaningful.
+  bool get declaresEndpointInventory => endpoints.isNotEmpty;
+
   /// Returns a server-declared read endpoint only when it remains on [base].
   /// Invalid or mutating metadata is ignored rather than probed speculatively.
   Uri? safeGetEndpoint(String key, Uri base) {
@@ -478,6 +481,10 @@ class ConnectionDiagnostics {
     // 5b. Skills toggle is never probed: authenticated capabilities is
     // authoritative and diagnostics must not issue mutating requests. Plugins
     // may be verified with GET, honoring valid same-origin endpoint metadata.
+    // A document that enumerates endpoints but omits plugins declares that the
+    // server has no plugins API: probing it would only turn an expected 404
+    // into a false "needs review". Only servers without an endpoint inventory
+    // keep the legacy probe.
     final baseUri = Uri.parse(base);
     final hasDeclaredPlugins = serverCaps?.hasEndpoint('plugins') == true;
     final declaredPlugins = hasDeclaredPlugins
@@ -487,6 +494,8 @@ class ConnectionDiagnostics {
         ? declaredPlugins == null
               ? null
               : _gatewayUri(base, declaredPlugins.path, profile)
+        : serverCaps?.declaresEndpointInventory == true
+        ? null
         : _gatewayUri(base, '/v1/plugins', profile);
     if (pluginsUri != null) {
       results.add(await _probe('plugins', 'GET', pluginsUri, headers: auth));
@@ -785,7 +794,11 @@ class ConnectionDiagnostics {
       pluginsSupported: srv(
         'pluginsSupported',
         fromProbe(find(gw, 'plugins')),
-        serverCaps?.feature('plugins_api'),
+        serverCaps?.feature('plugins_api') ??
+            (serverCaps?.declaresEndpointInventory == true &&
+                    !serverCaps!.hasEndpoint('plugins')
+                ? false
+                : null),
       ),
       gatewayVersion: version,
       serverModel: serverCaps?.model,
