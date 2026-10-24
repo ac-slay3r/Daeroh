@@ -62,6 +62,50 @@ Future<({CapabilityMatrix matrix, List<http.Request> requests})> _run(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test(
+    'profile-scoped gateway diagnostics never probe unscoped routes',
+    () async {
+      for (final (profile, prefix) in const [
+        ('android', '/p/android'),
+        ('', ''),
+        ('default', ''),
+      ]) {
+        final requests = <http.Request>[];
+        final diagnostics = ConnectionDiagnostics(
+          httpClient: MockClient((request) async {
+            requests.add(request);
+            if (request.url.path == '/health') {
+              return http.Response('{"version":"0.20.4"}', 200);
+            }
+            return http.Response('{}', 200);
+          }),
+        );
+
+        await diagnostics.probeGateway(_connection, profile: profile);
+        diagnostics.close();
+
+        final paths = requests.map((request) => request.url.path).toSet();
+        expect(paths, contains('/health'), reason: 'health stays public');
+        for (final route in const [
+          '/api/sessions',
+          '/v1/models',
+          '/v1/capabilities',
+          '/v1/skills',
+          '/v1/toolsets',
+          '/v1/plugins',
+        ]) {
+          expect(paths, contains('$prefix$route'), reason: 'profile=$profile');
+        }
+        if (prefix.isNotEmpty) {
+          expect(
+            paths.where((p) => p != '/health'),
+            everyElement(startsWith(prefix)),
+          );
+        }
+      }
+    },
+  );
+
   test('declared capabilities are authoritative', () async {
     for (final declared in [true, false]) {
       final result = await _run(

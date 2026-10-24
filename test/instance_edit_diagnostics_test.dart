@@ -22,6 +22,7 @@ class _FakeDiagnostics extends ConnectionDiagnostics {
     Strings s,
     SavedConnection conn,
     DashboardSecrets secrets, {
+    String profile = '',
     String? bridgeUrl,
     String? bridgeToken,
   }) async {

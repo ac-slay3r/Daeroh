@@ -885,6 +885,9 @@ class _InstanceEditScreenState extends State<InstanceEditScreen> {
           (_dashUserCtrl.text.trim().isNotEmpty &&
               _dashUserCtrl.text.trim() != (storedSecrets?.username ?? ''));
       _diag ??= ConnectionDiagnostics();
+      final activeProfile = widget.initial == null
+          ? ''
+          : widget.connManager.activeProfileFor(widget.initial!.id);
 
       // "Todo" (las tres): usa run() que además calcula matriz y sugerencias
       // a partir del conjunto completo.
@@ -893,6 +896,7 @@ class _InstanceEditScreenState extends State<InstanceEditScreen> {
           s,
           conn,
           secrets,
+          profile: activeProfile,
           bridgeUrl: _effectiveBridgeUrlFromForm(),
           bridgeToken: _effectiveBridgeTokenFromForm,
         );
@@ -933,7 +937,10 @@ class _InstanceEditScreenState extends State<InstanceEditScreen> {
       List<ProbeResult>? dashResults;
       List<ProbeResult>? bridgeResults;
       if (gateway) {
-        final (results, _, serverCaps) = await _diag!.probeGateway(conn);
+        final (results, _, serverCaps) = await _diag!.probeGateway(
+          conn,
+          profile: activeProfile,
+        );
         gwResults = results;
         gwCaps = serverCaps;
       }
