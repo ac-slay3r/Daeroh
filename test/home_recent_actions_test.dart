@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/screens/chat_screen.dart';
 import 'package:hermes_android/core/screens/home_dashboard_screen.dart';
 import 'package:hermes_android/core/screens/session_list_screen.dart';
+import 'package:hermes_android/core/models/core_read.dart';
 import 'package:hermes_android/core/services/active_chat_service.dart';
 import 'package:hermes_android/core/services/app_lock.dart';
 import 'package:hermes_android/core/services/approval_policy.dart';
@@ -40,7 +41,7 @@ class _RecentHomeClient extends ApiClient {
   final Session session;
 
   @override
-  Future<bool> healthCheck() async => true;
+  Future<bool> healthCheck({String? profile, bool verifySessionAccess = true}) async => true;
 
   @override
   Future<List<Session>> getSessions({
@@ -64,7 +65,7 @@ class _ProfileRowsHomeClient extends ApiClient {
   String? requestedProfile;
 
   @override
-  Future<bool> healthCheck() async => true;
+  Future<bool> healthCheck({String? profile, bool verifySessionAccess = true}) async => true;
 
   @override
   Future<List<Session>> getSessions({
@@ -91,7 +92,7 @@ class _MutableRecentHomeClient extends ApiClient {
   int sessionReads = 0;
 
   @override
-  Future<bool> healthCheck() async => true;
+  Future<bool> healthCheck({String? profile, bool verifySessionAccess = true}) async => true;
 
   @override
   Future<List<Session>> getSessions({
@@ -117,7 +118,7 @@ class _DeferredRecentHomeClient extends ApiClient {
   final List<Completer<List<Session>>> sessionLoads = [];
 
   @override
-  Future<bool> healthCheck() async => true;
+  Future<bool> healthCheck({String? profile, bool verifySessionAccess = true}) async => true;
 
   @override
   Future<List<Session>> getSessions({
@@ -142,13 +143,15 @@ class _UnavailableRecentHomeClient extends ApiClient {
       );
 
   @override
-  Future<bool> healthCheck() async => true;
+  Future<bool> healthCheck({String? profile, bool verifySessionAccess = true}) async => true;
 
   @override
   Future<List<Session>> getSessions({
     bool includeChildren = false,
     String? profile,
-  }) => Future<List<Session>>.error(StateError('session library unavailable'));
+  }) => Future<List<Session>>.error(
+    const CoreReadException(CoreReadErrorKind.auth, statusCode: 401),
+  );
 
   @override
   void close() {}
@@ -163,7 +166,7 @@ class _OfflineRecentHomeClient extends ApiClient {
       );
 
   @override
-  Future<bool> healthCheck() async => false;
+  Future<bool> healthCheck({String? profile, bool verifySessionAccess = true}) async => false;
 
   @override
   void close() {}
@@ -313,7 +316,7 @@ void main() {
 
       expect(find.text('agent online · QA'), findsOneWidget);
       expect(
-        find.text('Chat is connected. Conversations could not be refreshed.'),
+        find.text('Chat is connected. Conversations could not be refreshed (HTTP 401).'),
         findsOneWidget,
       );
       expect(find.byKey(const ValueKey('home-offline-retry')), findsNothing);

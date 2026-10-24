@@ -1645,7 +1645,10 @@ class ApiClient {
 
   // ── Health check ─────────────────────────────────────────────────────
 
-  Future<bool> healthCheck() async {
+  Future<bool> healthCheck({
+    String? profile,
+    bool verifySessionAccess = true,
+  }) async {
     try {
       final health = await _http
           .get(Uri.parse('$baseUrl/health'), headers: _headers)
@@ -1653,11 +1656,20 @@ class ApiClient {
       if (health.statusCode == 401 || health.statusCode == 403) return false;
       if (health.statusCode != 200) return false;
 
-      // /health may be intentionally public on some deployments. Confirm that
-      // the saved API key can also reach an authenticated endpoint before the
-      // add/update connection dialogs accept it as valid.
+      // /health may be intentionally public on some deployments. Connection
+      // setup confirms its saved key here; Home deliberately skips this probe
+      // so a session-library permission failure remains distinct from agent
+      // transport health.
+      if (!verifySessionAccess) return true;
+      final owner = validateCronProfile(profile);
+      final sessionEndpoint = profileEndpoint('api/sessions', profile: owner);
       final sessions = await _http
-          .get(Uri.parse('$baseUrl/api/sessions'), headers: _headers)
+          .get(
+            Uri.parse(
+              '$baseUrl/$sessionEndpoint',
+            ).replace(queryParameters: const {'limit': '0'}),
+            headers: _headers,
+          )
           .timeout(const Duration(seconds: 10));
       return sessions.statusCode == 200;
     } catch (e) {

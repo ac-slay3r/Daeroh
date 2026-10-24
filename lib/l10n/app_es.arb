@@ -64,8 +64,17 @@
   "@homeStatusAgentConsole": {
     "description": "Etiqueta de marca cuando no hay instancia activa (sin traducir)."
   },
-  "homeSessionLibraryUnavailable": "El chat está conectado. No se pudieron actualizar las conversaciones.",
+  "homeSessionLibraryUnavailable": "El chat está conectado. No se pudieron actualizar las conversaciones ({status}).",
+  "@homeSessionLibraryUnavailable": {
+    "description": "El acceso a la biblioteca de conversaciones del servidor falló; status es una categoría permitida sin cuerpo de respuesta.",
+    "placeholders": {"status": {"type": "String"}}
+  },
   "homeDeviceHistoryNotice": "Mostrando chats guardados en este dispositivo. Pueden no coincidir con el servidor.",
+  "homeDeviceHistoryServerUnavailable": "Mostrando chats guardados en este dispositivo. Puede que no coincidan con el servidor. Biblioteca de conversaciones del servidor no disponible ({status}).",
+  "@homeDeviceHistoryServerUnavailable": {
+    "description": "Caché de transcripciones solo de este dispositivo con diagnóstico permitido de la biblioteca del servidor.",
+    "placeholders": {"status": {"type": "String"}}
+  },
   "homeHelpPrompt": "¿Qué hacemos hoy?",
   "@homeHelpPrompt": {
     "description": "Saludo principal del home, estilo asistente."

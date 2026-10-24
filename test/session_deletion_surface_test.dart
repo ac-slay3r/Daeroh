@@ -28,7 +28,7 @@ class _OfflineLineageApiClient extends ApiClient {
   int lineageRequests = 0;
 
   @override
-  Future<bool> healthCheck() async => true;
+  Future<bool> healthCheck({String? profile, bool verifySessionAccess = true}) async => true;
 
   @override
   Future<List<Session>> getSessions({

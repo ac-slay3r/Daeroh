@@ -13,8 +13,17 @@
   "homeStatusOnline": "agent online · {label}",
   "homeStatusOffline": "offline · {label}",
   "homeStatusAgentConsole": "agent console",
-  "homeSessionLibraryUnavailable": "Chat is connected. Conversations could not be refreshed.",
+  "homeSessionLibraryUnavailable": "Chat is connected. Conversations could not be refreshed ({status}).",
+  "@homeSessionLibraryUnavailable": {
+    "description": "Server session-library access failed; status is an allowlisted body-free diagnostic category.",
+    "placeholders": {"status": {"type": "String"}}
+  },
   "homeDeviceHistoryNotice": "Showing chats saved on this device. They may not match the server.",
+  "homeDeviceHistoryServerUnavailable": "Showing chats saved on this device. They may not match the server. Server session library unavailable ({status}).",
+  "@homeDeviceHistoryServerUnavailable": {
+    "description": "Device-only transcript cache with an allowlisted server session-library diagnostic.",
+    "placeholders": {"status": {"type": "String"}}
+  },
   "homeHelpPrompt": "What are we doing today?",
   "homeChatsSection": "Conversations",
   "homeRecentToday": "Today",
