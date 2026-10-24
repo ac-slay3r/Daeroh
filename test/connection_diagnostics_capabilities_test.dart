@@ -62,6 +62,31 @@ Future<({CapabilityMatrix matrix, List<http.Request> requests})> _run(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test(
+    'profile-scoped gateway diagnostics never probe unscoped routes',
+    () async {
+      final requests = <http.Request>[];
+      final diagnostics = ConnectionDiagnostics(
+        httpClient: MockClient((request) async {
+          requests.add(request);
+          if (request.url.path == '/health') {
+            return http.Response('{"version":"0.20.4"}', 200);
+          }
+          return http.Response('{}', 200);
+        }),
+      );
+
+      await diagnostics.probeGateway(_connection, profile: 'android');
+      diagnostics.close();
+
+      final paths = requests.map((request) => request.url.path).toList();
+      expect(paths, contains('/p/android/api/sessions'));
+      expect(paths, contains('/p/android/v1/capabilities'));
+      expect(paths, isNot(contains('/api/sessions')));
+      expect(paths, isNot(contains('/v1/capabilities')));
+    },
+  );
+
   test('declared capabilities are authoritative', () async {
     for (final declared in [true, false]) {
       final result = await _run(

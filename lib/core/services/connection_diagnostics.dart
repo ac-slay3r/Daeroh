@@ -378,9 +378,22 @@ class ConnectionDiagnostics {
 
   // ── Gateway (8642) ────────────────────────────────────────────────────
 
+  /// Profile-scoped Gateway credentials must never be tested against unscoped
+  /// routes: the Gateway deliberately fails those requests closed. Health stays
+  /// public and unscoped; authenticated endpoints are prefixed only when a
+  /// named profile owns the connection.
+  static Uri _gatewayUri(String base, String path, String profile) {
+    final owner = profile.trim();
+    final scopedPath = owner.isEmpty
+        ? path
+        : '/p/${Uri.encodeComponent(owner)}$path';
+    return Uri.parse('$base$scopedPath');
+  }
+
   Future<(List<ProbeResult>, String?, ServerCapabilities?)> probeGateway(
-    SavedConnection conn,
-  ) async {
+    SavedConnection conn, {
+    String profile = '',
+  }) async {
     final base = TransportPrivacy.requireAllowed(conn.gatewayUrl);
     final auth = {'Authorization': 'Bearer ${conn.apiKey}'};
     final results = <ProbeResult>[];
@@ -410,7 +423,7 @@ class ConnectionDiagnostics {
       await _probe(
         'sessions',
         'GET',
-        Uri.parse('$base/api/sessions'),
+        _gatewayUri(base, '/api/sessions', profile),
         headers: conn.apiKey.isEmpty ? null : auth,
       ),
     );
@@ -420,7 +433,7 @@ class ConnectionDiagnostics {
       await _probe(
         'models',
         'GET',
-        Uri.parse('$base/v1/models'),
+        _gatewayUri(base, '/v1/models', profile),
         headers: auth,
       ),
     );
@@ -428,7 +441,7 @@ class ConnectionDiagnostics {
     // 4. /v1/capabilities — fuente principal de la matriz cuando responde.
     //    Contrato: object hermes.api_server.capabilities con features{} y
     //    endpoints{} (api_server.py del upstream).
-    final capsUri = Uri.parse('$base/v1/capabilities');
+    final capsUri = _gatewayUri(base, '/v1/capabilities', profile);
     final capsProbe = await _probe(
       'capabilities',
       'GET',
@@ -447,7 +460,7 @@ class ConnectionDiagnostics {
       await _probe(
         'skills (gateway)',
         'GET',
-        Uri.parse('$base/v1/skills'),
+        _gatewayUri(base, '/v1/skills', profile),
         headers: auth,
       ),
     );
@@ -455,7 +468,7 @@ class ConnectionDiagnostics {
       await _probe(
         'toolsets',
         'GET',
-        Uri.parse('$base/v1/toolsets'),
+        _gatewayUri(base, '/v1/toolsets', profile),
         headers: auth,
       ),
     );
@@ -464,9 +477,15 @@ class ConnectionDiagnostics {
     // authoritative and diagnostics must not issue mutating requests. Plugins
     // may be verified with GET, honoring valid same-origin endpoint metadata.
     final baseUri = Uri.parse(base);
-    final pluginsUri = serverCaps?.hasEndpoint('plugins') ?? false
+    final hasDeclaredPlugins = serverCaps?.hasEndpoint('plugins') == true;
+    final declaredPlugins = hasDeclaredPlugins
         ? serverCaps!.safeGetEndpoint('plugins', baseUri)
-        : baseUri.resolve('/v1/plugins');
+        : null;
+    final Uri? pluginsUri = hasDeclaredPlugins
+        ? declaredPlugins == null
+              ? null
+              : _gatewayUri(base, declaredPlugins.path, profile)
+        : _gatewayUri(base, '/v1/plugins', profile);
     if (pluginsUri != null) {
       results.add(await _probe('plugins', 'GET', pluginsUri, headers: auth));
     }
@@ -547,10 +566,14 @@ class ConnectionDiagnostics {
     Strings s,
     SavedConnection conn,
     DashboardSecrets secrets, {
+    String profile = '',
     String? bridgeUrl,
     String? bridgeToken,
   }) async {
-    final (gw, version, serverCaps) = await probeGateway(conn);
+    final (gw, version, serverCaps) = await probeGateway(
+      conn,
+      profile: profile,
+    );
     final dash = await probeDashboard(conn, secrets);
     final bridge = await probeBridge(
       conn,
