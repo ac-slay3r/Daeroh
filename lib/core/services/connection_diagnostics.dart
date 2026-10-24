@@ -763,7 +763,13 @@ class ConnectionDiagnostics {
       ),
       skillsToggle: srv(
         'skillsToggle',
-        CapState.unknown,
+        // The Dashboard's skills router serves list and per-profile toggle
+        // together, so a signed-in skills read implies the toggle (same
+        // inference as cron R/W). Diagnostics still never issue the write.
+        dashboardAuthValid == CapState.yes &&
+                fromProbe(find(dash, 'skills')) == CapState.yes
+            ? CapState.yes
+            : CapState.unknown,
         serverCaps?.feature('skills_toggle'),
       ),
       // Installation is a separate Mobile Bridge capability. The Gateway

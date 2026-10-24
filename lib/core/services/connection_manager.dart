@@ -4169,6 +4169,22 @@ class DashboardClient {
     return data.whereType<Map<String, dynamic>>().toList();
   }
 
+  /// PUT /api/skills/toggle — enable/disable a skill in [profile]'s own
+  /// config. Named profiles are sent in both the query and the body (the
+  /// server accepts either) so a dropped parameter can never fall back to the
+  /// default profile's global config. Default/empty stay unscoped.
+  Future<Map<String, dynamic>> setSkillEnabled(
+    String name,
+    bool enabled, {
+    String? profile,
+  }) {
+    final scoped = _profileQuery(profile).isNotEmpty;
+    return apiPut(
+      'skills/toggle${_profileQuery(profile)}',
+      body: {'name': name, 'enabled': enabled, if (scoped) 'profile': profile},
+    );
+  }
+
   /// GET /api/logs — tail del log elegido con filtros server-side.
   /// Contrato (web_server.py): file ∈ {agent,errors,gateway,gui,desktop},
   /// lines ≤ 500, level/search opcionales. Devuelve {file, lines: [String]}.
