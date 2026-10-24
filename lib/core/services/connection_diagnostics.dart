@@ -175,6 +175,9 @@ class ServerCapabilities {
 
   bool hasEndpoint(String key) => endpoints.containsKey(key);
 
+  /// True when the server enumerates its endpoints, making absence meaningful.
+  bool get declaresEndpointInventory => endpoints.isNotEmpty;
+
   /// Returns a server-declared read endpoint only when it remains on [base].
   /// Invalid or mutating metadata is ignored rather than probed speculatively.
   Uri? safeGetEndpoint(String key, Uri base) {
@@ -478,6 +481,10 @@ class ConnectionDiagnostics {
     // 5b. Skills toggle is never probed: authenticated capabilities is
     // authoritative and diagnostics must not issue mutating requests. Plugins
     // may be verified with GET, honoring valid same-origin endpoint metadata.
+    // A document that enumerates endpoints but omits plugins declares that the
+    // server has no plugins API: probing it would only turn an expected 404
+    // into a false "needs review". Only servers without an endpoint inventory
+    // keep the legacy probe.
     final baseUri = Uri.parse(base);
     final hasDeclaredPlugins = serverCaps?.hasEndpoint('plugins') == true;
     final declaredPlugins = hasDeclaredPlugins
@@ -487,6 +494,8 @@ class ConnectionDiagnostics {
         ? declaredPlugins == null
               ? null
               : _gatewayUri(base, declaredPlugins.path, profile)
+        : serverCaps?.declaresEndpointInventory == true
+        ? null
         : _gatewayUri(base, '/v1/plugins', profile);
     if (pluginsUri != null) {
       results.add(await _probe('plugins', 'GET', pluginsUri, headers: auth));
@@ -499,8 +508,9 @@ class ConnectionDiagnostics {
 
   Future<List<ProbeResult>> probeDashboard(
     SavedConnection conn,
-    DashboardSecrets secrets,
-  ) async {
+    DashboardSecrets secrets, {
+    String profile = '',
+  }) async {
     final base = TransportPrivacy.requireAllowed(conn.effectiveDashboardUrl);
     final results = <ProbeResult>[];
 
@@ -554,8 +564,17 @@ class ConnectionDiagnostics {
       ('config', '/api/config'),
       ('logs', '/api/logs'),
     ]) {
+      final scopedPath =
+          name == 'skills' && profile.isNotEmpty && profile != 'default'
+          ? '$path?profile=${Uri.encodeQueryComponent(profile)}'
+          : path;
       results.add(
-        await _probe(name, 'GET', Uri.parse('$base$path'), headers: headers),
+        await _probe(
+          name,
+          'GET',
+          Uri.parse('$base$scopedPath'),
+          headers: headers,
+        ),
       );
     }
 
@@ -576,7 +595,7 @@ class ConnectionDiagnostics {
       conn,
       profile: profile,
     );
-    final dash = await probeDashboard(conn, secrets);
+    final dash = await probeDashboard(conn, secrets, profile: profile);
     final bridge = await probeBridge(
       conn,
       bridgeUrl: bridgeUrl,
@@ -754,8 +773,19 @@ class ConnectionDiagnostics {
       ),
       skillsToggle: srv(
         'skillsToggle',
-        CapState.unknown,
-        serverCaps?.feature('skills_toggle'),
+        // The Dashboard's skills router serves list and per-profile toggle
+        // together, so a signed-in skills read implies the toggle (same
+        // inference as cron R/W). Diagnostics still never issue the write.
+        dashboardAuthValid == CapState.yes &&
+                fromProbe(find(dash, 'skills')) == CapState.yes
+            ? CapState.yes
+            : CapState.unknown,
+        // Gateway capabilities describe its own router. An authenticated
+        // Dashboard skills read confirms the separate Dashboard toggle route.
+        dashboardAuthValid == CapState.yes &&
+                fromProbe(find(dash, 'skills')) == CapState.yes
+            ? true
+            : serverCaps?.feature('skills_toggle'),
       ),
       // Installation is a separate Mobile Bridge capability. The Gateway
       // skills_toggle declaration says nothing about install support.
@@ -785,7 +815,11 @@ class ConnectionDiagnostics {
       pluginsSupported: srv(
         'pluginsSupported',
         fromProbe(find(gw, 'plugins')),
-        serverCaps?.feature('plugins_api'),
+        serverCaps?.feature('plugins_api') ??
+            (serverCaps?.declaresEndpointInventory == true &&
+                    !serverCaps!.hasEndpoint('plugins')
+                ? false
+                : null),
       ),
       gatewayVersion: version,
       serverModel: serverCaps?.model,
