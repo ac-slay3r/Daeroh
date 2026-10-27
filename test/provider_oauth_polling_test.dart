@@ -286,4 +286,57 @@ void main() {
     expect(f.calls, 1);
     expect(f.completions, 0);
   });
+  testWidgets(
+    'route pop retires an in-flight callback before reverse disposal',
+    (t) async {
+      final f = Fixture();
+      final first = Completer<Map<String, dynamic>>();
+      await f.open(t, poll: () => first.future);
+      await f.seconds(t, 3);
+      expect(f.calls, 1);
+      f.nav.currentState!.pop(false);
+      await t.pump(const Duration(milliseconds: 1));
+      final sentinel = f.nav.currentState!.push<bool>(
+        MaterialPageRoute(
+          builder: (_) => const Scaffold(body: Text('sentinel')),
+        ),
+      );
+      var sentinelPopped = false;
+      sentinel.then((_) => sentinelPopped = true);
+      await t.pump(const Duration(milliseconds: 1));
+      first.complete({'status': 'approved'});
+      await t.pump();
+      expect(sentinelPopped, isFalse);
+      await t.pump(const Duration(milliseconds: 500));
+      expect(find.text('sentinel'), findsOneWidget);
+    },
+  );
+  testWidgets(
+    'latest resume consumes obsolete in-flight recheck intent',
+    (t) async {
+      final f = Fixture();
+      final first = Completer<Map<String, dynamic>>();
+      var n = 0;
+      await f.open(
+        t,
+        poll: () {
+          n++;
+          return n == 1 ? first.future : Future.value({'status': 'pending'});
+        },
+      );
+      await f.seconds(t, 3);
+      t.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      t.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await t.pump(const Duration(milliseconds: 1));
+      expect(f.calls, 1);
+      t.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      first.complete({'status': 'pending'});
+      await t.pump();
+      expect(f.calls, 1);
+      t.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await t.pump(const Duration(milliseconds: 1));
+      await t.pump(const Duration(milliseconds: 1));
+      expect(f.calls, 2);
+    },
+  );
 }

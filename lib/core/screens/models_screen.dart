@@ -2507,6 +2507,7 @@ class _OAuthLoginScreenState extends State<_OAuthLoginScreen>
   bool _routeCurrent = false;
   bool _schedulerStarted = false;
   bool _expired = false;
+  bool _retired = false;
   bool _completed = false;
   bool _resumeRecheckPending = false;
   bool _routeSubscribed = false;
@@ -2576,7 +2577,28 @@ class _OAuthLoginScreenState extends State<_OAuthLoginScreen>
   @override
   void didPopNext() => _setRouteCurrent(true);
 
-  bool get _canPoll => _appForeground && _routeCurrent;
+  @override
+  void didPop() => _retire();
+
+  bool get _canPoll =>
+      !_retired &&
+      _appForeground &&
+      _routeCurrent &&
+      ModalRoute.of(context)?.isCurrent == true;
+
+  void _retire() {
+    if (_retired) return;
+    _retired = true;
+    _appForeground = false;
+    _routeCurrent = false;
+    _resumeRecheckPending = false;
+    _nextMinimumDelay = null;
+    _generation++;
+    _timer?.cancel();
+    _timer = null;
+    _countdown?.cancel();
+    _expiryTimer?.cancel();
+  }
 
   void _setAppForeground(bool foreground) {
     if (_appForeground == foreground || !mounted) return;
@@ -2598,7 +2620,11 @@ class _OAuthLoginScreenState extends State<_OAuthLoginScreen>
     _generation++;
     _timer?.cancel();
     _timer = null;
-    if (available && _schedulerStarted && !_completed && _error == null) {
+    if (!available) {
+      _resumeRecheckPending = false;
+      return;
+    }
+    if (_schedulerStarted && !_completed && _error == null) {
       if (_refreshExpiry()) return;
       if (_polling) {
         _resumeRecheckPending = true;
@@ -2610,12 +2636,7 @@ class _OAuthLoginScreenState extends State<_OAuthLoginScreen>
 
   @override
   void dispose() {
-    _appForeground = false;
-    _routeCurrent = false;
-    _generation++;
-    _timer?.cancel();
-    _countdown?.cancel();
-    _expiryTimer?.cancel();
+    _retire();
     if (_routeSubscribed) hermesRouteObserver.unsubscribe(this);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -2648,7 +2669,7 @@ class _OAuthLoginScreenState extends State<_OAuthLoginScreen>
   }
 
   void _expire() {
-    if (!mounted || _completed || _error != null) return;
+    if (!mounted || _retired || _completed || _error != null) return;
     _expired = true;
     _generation++;
     _timer?.cancel();
@@ -2658,6 +2679,7 @@ class _OAuthLoginScreenState extends State<_OAuthLoginScreen>
   }
 
   bool _refreshExpiry() {
+    if (_retired) return true;
     if (_expired || !DateTime.now().isBefore(_expiresAt)) {
       _expire();
       return true;
@@ -2724,7 +2746,9 @@ class _OAuthLoginScreenState extends State<_OAuthLoginScreen>
     } finally {
       if (mounted) {
         setState(() => _polling = false);
-        if (_resumeRecheckPending &&
+        final resumeRecheckPending = _resumeRecheckPending;
+        _resumeRecheckPending = false;
+        if (resumeRecheckPending &&
             _canPoll &&
             !_completed &&
             _error == null &&
