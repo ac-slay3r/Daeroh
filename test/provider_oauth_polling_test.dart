@@ -311,32 +311,83 @@ void main() {
       expect(find.text('sentinel'), findsOneWidget);
     },
   );
-  testWidgets(
-    'latest resume consumes obsolete in-flight recheck intent',
-    (t) async {
-      final f = Fixture();
-      final first = Completer<Map<String, dynamic>>();
-      var n = 0;
-      await f.open(
-        t,
-        poll: () {
-          n++;
-          return n == 1 ? first.future : Future.value({'status': 'pending'});
-        },
-      );
-      await f.seconds(t, 3);
-      t.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
-      t.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-      await t.pump(const Duration(milliseconds: 1));
-      expect(f.calls, 1);
-      t.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
-      first.complete({'status': 'pending'});
-      await t.pump();
-      expect(f.calls, 1);
-      t.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-      await t.pump(const Duration(milliseconds: 1));
-      await t.pump(const Duration(milliseconds: 1));
-      expect(f.calls, 2);
-    },
-  );
+  testWidgets('latest resume consumes obsolete in-flight recheck intent', (
+    t,
+  ) async {
+    final f = Fixture();
+    final first = Completer<Map<String, dynamic>>();
+    var n = 0;
+    await f.open(
+      t,
+      poll: () {
+        n++;
+        return n == 1 ? first.future : Future.value({'status': 'pending'});
+      },
+    );
+    await f.seconds(t, 3);
+    t.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    t.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await t.pump(const Duration(milliseconds: 1));
+    expect(f.calls, 1);
+    t.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    first.complete({'status': 'pending'});
+    await t.pump();
+    expect(f.calls, 1);
+    t.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await t.pump(const Duration(milliseconds: 1));
+    await t.pump(const Duration(milliseconds: 1));
+    expect(f.calls, 2);
+  });
+  testWidgets('dismissed popup resumes a timer consumed while hidden', (
+    t,
+  ) async {
+    final f = Fixture();
+    await f.open(t);
+    showDialog<void>(
+      context: f.nav.currentContext!,
+      builder: (_) => const AlertDialog(title: Text('popup')),
+    );
+    await t.pump();
+    await f.seconds(t, 10);
+    expect(f.calls, 0, reason: 'no poll may run behind a popup route');
+    f.nav.currentState!.pop();
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 400));
+    expect(
+      ModalRoute.of(
+        t.element(find.byType(ProviderOAuthLoginScreen)),
+      )!.isCurrent,
+      isTrue,
+    );
+    await f.seconds(t, 25);
+    expect(f.calls, greaterThan(0));
+    expect(f.launches, 1);
+  });
+  testWidgets('dismissed popup rechecks after an in-flight result was hidden', (
+    t,
+  ) async {
+    final f = Fixture();
+    final first = Completer<Map<String, dynamic>>();
+    var n = 0;
+    await f.open(
+      t,
+      poll: () =>
+          ++n == 1 ? first.future : Future.value({'status': 'approved'}),
+    );
+    await f.seconds(t, 3);
+    showDialog<void>(
+      context: f.nav.currentContext!,
+      builder: (_) => const AlertDialog(title: Text('popup')),
+    );
+    await t.pump();
+    first.complete({'status': 'approved'});
+    await t.pump();
+    expect(f.completions, 0);
+    f.nav.currentState!.pop();
+    await t.pump();
+    await f.seconds(t, 25);
+    expect(f.calls, 2);
+    expect(f.result, isTrue);
+    expect(f.completions, 1);
+  });
 }

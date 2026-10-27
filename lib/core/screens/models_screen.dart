@@ -2557,13 +2557,12 @@ class _OAuthLoginScreenState extends State<_OAuthLoginScreen>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (_routeSubscribed) return;
     final route = ModalRoute.of(context);
-    if (route is PageRoute<dynamic>) {
+    if (!_routeSubscribed && route is PageRoute<dynamic>) {
       hermesRouteObserver.subscribe(this, route);
       _routeSubscribed = true;
-      _setRouteCurrent(route.isCurrent);
     }
+    _setRouteCurrent(route?.isCurrent == true);
   }
 
   @override
