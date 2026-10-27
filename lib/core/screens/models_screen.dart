@@ -1169,7 +1169,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
     final ok = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         fullscreenDialog: true,
-        builder: (_) => _OAuthLoginScreen(
+        builder: (_) => ProviderOAuthLoginScreen(
           providerName: provider.name,
           providerSlug: oauthProviderId,
           url: url,
@@ -2475,66 +2475,161 @@ class _OAuthLoginScreen extends StatefulWidget {
     required this.code,
     required this.poll,
     this.expiresIn = 0,
+    super.key,
   });
 
   @override
   State<_OAuthLoginScreen> createState() => _OAuthLoginScreenState();
 }
 
-class _OAuthLoginScreenState extends State<_OAuthLoginScreen> {
+class _OAuthLoginScreenState extends State<_OAuthLoginScreen>
+    with WidgetsBindingObserver, RouteAware {
+  static const _fallbackExpiry = Duration(minutes: 5);
+  static const _defaultDelays = [
+    Duration(seconds: 3),
+    Duration(seconds: 3),
+    Duration(seconds: 5),
+    Duration(seconds: 8),
+    Duration(seconds: 12),
+    Duration(seconds: 20),
+  ];
+
   Timer? _timer;
   Timer? _countdown;
   String? _error;
   int _remaining = 0;
+  int _pollIndex = 0;
+  int _generation = 0;
   bool _opened = false;
+  bool _polling = false;
+  bool _visible = true;
+  bool _completed = false;
+  bool _resumeRecheckPending = false;
+  bool _routeSubscribed = false;
+  Duration? _nextMinimumDelay;
+
+  ProviderOAuthLoginScreen? get _provider => widget is ProviderOAuthLoginScreen
+      ? widget as ProviderOAuthLoginScreen
+      : null;
+
+  List<Duration> get _pollDelays => _provider?.pollDelays ?? _defaultDelays;
+
+  Future<bool> Function(Uri uri)? get _launchBrowser =>
+      _provider?.launchBrowser;
 
   @override
   void initState() {
     super.initState();
-    _remaining = widget.expiresIn;
-    // Copia el código y abre el navegador automáticamente (un toque menos).
+    _remaining = widget.expiresIn > 0
+        ? widget.expiresIn
+        : _fallbackExpiry.inSeconds;
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
       if (widget.code.isNotEmpty) {
         await Clipboard.setData(ClipboardData(text: widget.code));
       }
-      await _open();
+      if (mounted) await _open();
     });
-    _timer = Timer.periodic(const Duration(seconds: 3), (_) => _poll());
-    if (_remaining > 0) {
-      _countdown = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (!mounted) return;
-        setState(() => _remaining = (_remaining - 1).clamp(0, 1 << 30));
-        if (_remaining == 0) {
-          _timer?.cancel();
-          _countdown?.cancel();
-          setState(() => _error = Strings.of(context).mdlCodeExpired);
-        }
-      });
+    _scheduleNextPoll();
+    _countdown = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted || !_visible || _completed) return;
+      setState(() => _remaining = (_remaining - 1).clamp(0, 1 << 30));
+      if (_remaining == 0) _expire();
+    });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_routeSubscribed) return;
+    final route = ModalRoute.of(context);
+    if (route is PageRoute<dynamic>) {
+      hermesRouteObserver.subscribe(this, route);
+      _routeSubscribed = true;
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _setVisible(state == AppLifecycleState.resumed);
+  }
+
+  @override
+  void didPushNext() => _setVisible(false);
+
+  @override
+  void didPopNext() => _setVisible(true);
+
+  void _setVisible(bool visible) {
+    if (_visible == visible || !mounted) return;
+    _visible = visible;
+    _generation++;
+    _timer?.cancel();
+    _timer = null;
+    if (visible && !_completed && _error == null) {
+      if (_polling) {
+        _resumeRecheckPending = true;
+      } else {
+        _scheduleNextPoll(immediate: true);
+      }
     }
   }
 
   @override
   void dispose() {
+    _visible = false;
+    _generation++;
     _timer?.cancel();
     _countdown?.cancel();
+    if (_routeSubscribed) hermesRouteObserver.unsubscribe(this);
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
+  void _scheduleNextPoll({bool immediate = false, Duration? minimumDelay}) {
+    _timer?.cancel();
+    _timer = null;
+    if (!mounted || !_visible || _completed || _error != null || _polling) {
+      return;
+    }
+    if (_pollIndex >= _pollDelays.length && !immediate) return;
+    final configured = immediate ? Duration.zero : _pollDelays[_pollIndex++];
+    final delay = minimumDelay != null && configured < minimumDelay
+        ? minimumDelay
+        : configured;
+    _timer = Timer(delay, () {
+      _timer = null;
+      unawaited(_poll());
+    });
+  }
+
+  void _expire() {
+    if (!mounted || _completed || _error != null) return;
+    _generation++;
+    _timer?.cancel();
+    _countdown?.cancel();
+    setState(() => _error = Strings.of(context).mdlCodeExpired);
+  }
+
   Future<void> _poll() async {
+    if (!mounted || !_visible || _completed || _error != null || _polling) {
+      return;
+    }
+    final generation = _generation;
+    setState(() => _polling = true);
     try {
       final res = await widget.poll();
+      if (!mounted || !_visible || _completed || generation != _generation) {
+        return;
+      }
       final status = (res['status'] ?? 'pending').toString();
       final normalized = status.toLowerCase();
-      if (kDebugMode) {
-        debugPrint(
-          'OAuth poll ${widget.providerSlug}: status=$status keys=${res.keys.toList()}',
-        );
-      }
-      if (!mounted) return;
       if (!_isPendingStatus(normalized)) {
         _timer?.cancel();
         _countdown?.cancel();
         if (_isSuccessStatus(normalized)) {
+          _completed = true;
           Navigator.of(context).pop(true);
         } else {
           setState(() {
@@ -2547,10 +2642,34 @@ class _OAuthLoginScreenState extends State<_OAuthLoginScreen> {
                     .toString();
           });
         }
+      } else if (normalized == 'slow_down') {
+        _nextMinimumDelay = const Duration(seconds: 5);
+      } else {
+        _nextMinimumDelay = Duration.zero;
       }
-    } catch (e) {
-      if (kDebugMode) debugPrint('OAuth poll ${widget.providerSlug} error: $e');
-      // Reintenta en el siguiente tick.
+    } catch (_) {
+      if (mounted && _visible && !_completed && generation == _generation) {
+        _nextMinimumDelay = const Duration(seconds: 5);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _polling = false);
+        if (_resumeRecheckPending &&
+            _visible &&
+            !_completed &&
+            _error == null) {
+          _resumeRecheckPending = false;
+          _scheduleNextPoll(immediate: true);
+        } else if (_visible &&
+            !_completed &&
+            _error == null &&
+            generation == _generation &&
+            _nextMinimumDelay != null) {
+          final delay = _nextMinimumDelay!;
+          _nextMinimumDelay = null;
+          _scheduleNextPoll(minimumDelay: delay);
+        }
+      }
     }
   }
 
@@ -2584,10 +2703,12 @@ class _OAuthLoginScreenState extends State<_OAuthLoginScreen> {
     final uri = Uri.tryParse(widget.url);
     if (uri != null) {
       try {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-        if (mounted) setState(() => _opened = true);
-      } catch (e) {
-        debugPrint('[models] excepción silenciada (se ignora sin más): $e');
+        final opened = _launchBrowser != null
+            ? await _launchBrowser!(uri)
+            : await launchUrl(uri, mode: LaunchMode.externalApplication);
+        if (mounted && opened) setState(() => _opened = true);
+      } catch (_) {
+        // Browser launch is best-effort; do not log OAuth URL or state.
       }
     }
   }
@@ -2737,6 +2858,23 @@ class _ProviderKeyScreen extends StatefulWidget {
 
   @override
   State<_ProviderKeyScreen> createState() => _ProviderKeyScreenState();
+}
+
+class ProviderOAuthLoginScreen extends _OAuthLoginScreen {
+  const ProviderOAuthLoginScreen({
+    required super.providerName,
+    required super.providerSlug,
+    required super.url,
+    super.code = '',
+    required super.poll,
+    super.expiresIn = 0,
+    this.launchBrowser,
+    this.pollDelays,
+    super.key,
+  });
+
+  final Future<bool> Function(Uri uri)? launchBrowser;
+  final List<Duration>? pollDelays;
 }
 
 class _ProviderKeyScreenState extends State<_ProviderKeyScreen> {
