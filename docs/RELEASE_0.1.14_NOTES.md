@@ -7,8 +7,9 @@ be 6016 for arm64-v8a and 8016 for x86_64, strictly above the known 6015 and
 8015 internal candidates; built APK metadata remains a downstream measurement.
 
 - Provider OAuth polling is bounded and single-flight, pauses when its surface
-  is no longer foreground/current, uses elapsed expiry, and closes its route
-  safely when the flow finishes or expires.
+  is no longer foreground/current, and uses elapsed expiry. Expiry stops polling
+  and displays the expired UI; safe route closure/navigation applies on user exit
+  or successful flow completion.
 - No server or credential change is included.
 - No live third-party provider login, device, or phone proof is included yet.
 
