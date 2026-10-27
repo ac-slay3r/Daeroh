@@ -2496,17 +2496,22 @@ class _OAuthLoginScreenState extends State<_OAuthLoginScreen>
 
   Timer? _timer;
   Timer? _countdown;
+  Timer? _expiryTimer;
   String? _error;
   int _remaining = 0;
   int _pollIndex = 0;
   int _generation = 0;
   bool _opened = false;
   bool _polling = false;
-  bool _visible = true;
+  bool _appForeground = false;
+  bool _routeCurrent = false;
+  bool _schedulerStarted = false;
+  bool _expired = false;
   bool _completed = false;
   bool _resumeRecheckPending = false;
   bool _routeSubscribed = false;
   Duration? _nextMinimumDelay;
+  late final DateTime _expiresAt;
 
   ProviderOAuthLoginScreen? get _provider => widget is ProviderOAuthLoginScreen
       ? widget as ProviderOAuthLoginScreen
@@ -2520,9 +2525,15 @@ class _OAuthLoginScreenState extends State<_OAuthLoginScreen>
   @override
   void initState() {
     super.initState();
-    _remaining = widget.expiresIn > 0
-        ? widget.expiresIn
-        : _fallbackExpiry.inSeconds;
+    final expiry = Duration(
+      seconds: widget.expiresIn > 0
+          ? widget.expiresIn
+          : _fallbackExpiry.inSeconds,
+    );
+    _expiresAt = DateTime.now().add(expiry);
+    _remaining = expiry.inSeconds;
+    _appForeground =
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
@@ -2531,11 +2542,14 @@ class _OAuthLoginScreenState extends State<_OAuthLoginScreen>
       }
       if (mounted) await _open();
     });
-    _scheduleNextPoll();
+    _expiryTimer = Timer(expiry, _expire);
     _countdown = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted || !_visible || _completed) return;
-      setState(() => _remaining = (_remaining - 1).clamp(0, 1 << 30));
-      if (_remaining == 0) _expire();
+      _refreshExpiry();
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _schedulerStarted = true;
+      _scheduleNextPoll();
     });
   }
 
@@ -2547,27 +2561,45 @@ class _OAuthLoginScreenState extends State<_OAuthLoginScreen>
     if (route is PageRoute<dynamic>) {
       hermesRouteObserver.subscribe(this, route);
       _routeSubscribed = true;
+      _setRouteCurrent(route.isCurrent);
     }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    _setVisible(state == AppLifecycleState.resumed);
+    _setAppForeground(state == AppLifecycleState.resumed);
   }
 
   @override
-  void didPushNext() => _setVisible(false);
+  void didPushNext() => _setRouteCurrent(false);
 
   @override
-  void didPopNext() => _setVisible(true);
+  void didPopNext() => _setRouteCurrent(true);
 
-  void _setVisible(bool visible) {
-    if (_visible == visible || !mounted) return;
-    _visible = visible;
+  bool get _canPoll => _appForeground && _routeCurrent;
+
+  void _setAppForeground(bool foreground) {
+    if (_appForeground == foreground || !mounted) return;
+    final wasAvailable = _canPoll;
+    _appForeground = foreground;
+    _updatePollingAvailability(wasAvailable);
+  }
+
+  void _setRouteCurrent(bool current) {
+    if (_routeCurrent == current || !mounted) return;
+    final wasAvailable = _canPoll;
+    _routeCurrent = current;
+    _updatePollingAvailability(wasAvailable);
+  }
+
+  void _updatePollingAvailability(bool wasAvailable) {
+    final available = _canPoll;
+    if (available == wasAvailable) return;
     _generation++;
     _timer?.cancel();
     _timer = null;
-    if (visible && !_completed && _error == null) {
+    if (available && _schedulerStarted && !_completed && _error == null) {
+      if (_refreshExpiry()) return;
       if (_polling) {
         _resumeRecheckPending = true;
       } else {
@@ -2578,10 +2610,12 @@ class _OAuthLoginScreenState extends State<_OAuthLoginScreen>
 
   @override
   void dispose() {
-    _visible = false;
+    _appForeground = false;
+    _routeCurrent = false;
     _generation++;
     _timer?.cancel();
     _countdown?.cancel();
+    _expiryTimer?.cancel();
     if (_routeSubscribed) hermesRouteObserver.unsubscribe(this);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -2590,11 +2624,20 @@ class _OAuthLoginScreenState extends State<_OAuthLoginScreen>
   void _scheduleNextPoll({bool immediate = false, Duration? minimumDelay}) {
     _timer?.cancel();
     _timer = null;
-    if (!mounted || !_visible || _completed || _error != null || _polling) {
+    if (!mounted ||
+        !_canPoll ||
+        _completed ||
+        _error != null ||
+        _polling ||
+        _refreshExpiry()) {
       return;
     }
-    if (_pollIndex >= _pollDelays.length && !immediate) return;
-    final configured = immediate ? Duration.zero : _pollDelays[_pollIndex++];
+    final delays = _pollDelays;
+    final configured = immediate
+        ? Duration.zero
+        : delays.isEmpty
+        ? const Duration(seconds: 5)
+        : delays[_pollIndex < delays.length ? _pollIndex++ : delays.length - 1];
     final delay = minimumDelay != null && configured < minimumDelay
         ? minimumDelay
         : configured;
@@ -2606,21 +2649,44 @@ class _OAuthLoginScreenState extends State<_OAuthLoginScreen>
 
   void _expire() {
     if (!mounted || _completed || _error != null) return;
+    _expired = true;
     _generation++;
     _timer?.cancel();
     _countdown?.cancel();
+    _expiryTimer?.cancel();
     setState(() => _error = Strings.of(context).mdlCodeExpired);
   }
 
+  bool _refreshExpiry() {
+    if (_expired || !DateTime.now().isBefore(_expiresAt)) {
+      _expire();
+      return true;
+    }
+    final remaining = _expiresAt.difference(DateTime.now()).inSeconds;
+    if (mounted && remaining != _remaining) {
+      setState(() => _remaining = remaining.clamp(0, 1 << 30));
+    }
+    return false;
+  }
+
   Future<void> _poll() async {
-    if (!mounted || !_visible || _completed || _error != null || _polling) {
+    if (!mounted ||
+        !_canPoll ||
+        _completed ||
+        _error != null ||
+        _polling ||
+        _refreshExpiry()) {
       return;
     }
     final generation = _generation;
     setState(() => _polling = true);
     try {
       final res = await widget.poll();
-      if (!mounted || !_visible || _completed || generation != _generation) {
+      if (!mounted ||
+          _refreshExpiry() ||
+          !_canPoll ||
+          _completed ||
+          generation != _generation) {
         return;
       }
       final status = (res['status'] ?? 'pending').toString();
@@ -2648,22 +2714,28 @@ class _OAuthLoginScreenState extends State<_OAuthLoginScreen>
         _nextMinimumDelay = Duration.zero;
       }
     } catch (_) {
-      if (mounted && _visible && !_completed && generation == _generation) {
+      if (mounted &&
+          !_refreshExpiry() &&
+          _canPoll &&
+          !_completed &&
+          generation == _generation) {
         _nextMinimumDelay = const Duration(seconds: 5);
       }
     } finally {
       if (mounted) {
         setState(() => _polling = false);
         if (_resumeRecheckPending &&
-            _visible &&
+            _canPoll &&
             !_completed &&
-            _error == null) {
+            _error == null &&
+            !_refreshExpiry()) {
           _resumeRecheckPending = false;
           _scheduleNextPoll(immediate: true);
-        } else if (_visible &&
+        } else if (_canPoll &&
             !_completed &&
             _error == null &&
             generation == _generation &&
+            !_refreshExpiry() &&
             _nextMinimumDelay != null) {
           final delay = _nextMinimumDelay!;
           _nextMinimumDelay = null;
