@@ -2723,16 +2723,18 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
         self.assertIn("GRADLE_USER_HOME", source)
         # Two independent checkouts must not present different absolute paths
         # to Dart AOT or native compilers. Reset all build-visible state before B.
+        # Flutter/Gradle/native tools can also preserve temporary-file paths.
         canonical_paths = {
             "source": "clone", "pub-cache": "pub_cache",
-            "home": "home", "gradle": "gradle_home",
+            "home": "home", "gradle": "gradle_home", "tmp": "tmp",
         }
         for path, variable in canonical_paths.items():
             self.assertIn(f'local {variable}="$WORK/{path}"', source)
             self.assertNotIn(f'$WORK/{path}-$replica', source)
-        reset = 'rm -rf -- "$clone" "$home" "$pub_cache" "$gradle_home"'
+        reset = 'rm -rf -- "$clone" "$home" "$pub_cache" "$gradle_home" "$tmp"'
         self.assertIn(reset, source)
         self.assertLess(source.index(reset), source.index('git clone --no-local'))
+        self.assertEqual(source.count('TMPDIR="$tmp"'), 4)
         self.assertIn('build_replica a\nbuild_replica b', source)
         self.assertIn("14328be1a42a6839e16931c8953acacdc2b063ce17672521f6687cc1e2644717", source)
         self.assertIn("compare_rebuilds.py", source)
