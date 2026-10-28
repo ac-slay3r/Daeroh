@@ -23,7 +23,7 @@ void main() {
             dictationTooltip: 'Dictar',
             voiceTooltip: 'Conversación de voz',
             sendTooltip: 'Enviar',
-            onAttachmentSelected: (_) {},
+            onAttachmentSelected: (source, draftText) {},
             onDictationPressed: () {},
             onVoicePressed: () {},
             onSubmitted: (value) => submitted = value,
@@ -62,7 +62,7 @@ void main() {
             dictationTooltip: 'Dictar',
             voiceTooltip: 'Conversación de voz',
             sendTooltip: 'Enviar',
-            onAttachmentSelected: (_) {},
+            onAttachmentSelected: (source, draftText) {},
             onDictationPressed: () {},
             onVoicePressed: () {},
             onSubmitted: (value) {
@@ -120,7 +120,7 @@ void main() {
             dictationTooltip: 'Dictar',
             voiceTooltip: 'Conversación de voz',
             sendTooltip: 'Enviar',
-            onAttachmentSelected: (_) {},
+            onAttachmentSelected: (source, draftText) {},
             onDictationPressed: () {},
             onVoicePressed: () {},
             onSubmitted: submitted.add,
@@ -169,7 +169,7 @@ void main() {
             dictationTooltip: 'Dictar',
             voiceTooltip: 'Conversación de voz',
             sendTooltip: 'Enviar',
-            onAttachmentSelected: (_) {},
+            onAttachmentSelected: (source, draftText) {},
             onDictationPressed: () {},
             onVoicePressed: () {},
             onSubmitted: (_) {},
@@ -214,6 +214,7 @@ void main() {
     tester,
   ) async {
     final selected = <AttachmentSourceChoice>[];
+    final selectedDrafts = <String>[];
     await tester.pumpWidget(
       MaterialApp(
         locale: const Locale('es'),
@@ -227,7 +228,10 @@ void main() {
             dictationTooltip: 'Dictar',
             voiceTooltip: 'Conversación de voz',
             sendTooltip: 'Enviar',
-            onAttachmentSelected: selected.add,
+            onAttachmentSelected: (source, text) {
+              selected.add(source);
+              selectedDrafts.add(text);
+            },
             onDictationPressed: () {},
             onVoicePressed: () {},
             onSubmitted: (_) {},
@@ -238,12 +242,15 @@ void main() {
 
     final attach = find.byKey(const ValueKey('home-prompt-attach'));
     expect(tester.getSize(attach), const Size(48, 48));
+    await tester.enterText(find.byType(TextField), '  conservar exactamente  ');
+    await tester.pump();
     await tester.tap(attach);
     await tester.pumpAndSettle();
     expect(find.byType(MenuItemButton), findsNWidgets(3));
     await tester.tap(find.text('Galería'));
     await tester.pumpAndSettle();
     expect(selected, [AttachmentSourceChoice.photos]);
+    expect(selectedDrafts, ['  conservar exactamente  ']);
   });
 
   testWidgets('el estado disabled impide editar y enviar', (tester) async {
@@ -262,7 +269,7 @@ void main() {
             voiceTooltip: 'Conversación de voz',
             sendTooltip: 'Enviar',
             enabled: false,
-            onAttachmentSelected: (_) => calls++,
+            onAttachmentSelected: (source, draftText) => calls++,
             onDictationPressed: () => calls++,
             onVoicePressed: () => calls++,
             onSubmitted: (_) => calls++,
@@ -307,7 +314,7 @@ void main() {
             dictationTooltip: 'Dictar',
             voiceTooltip: 'Conversación de voz',
             sendTooltip: 'Enviar',
-            onAttachmentSelected: (_) {},
+            onAttachmentSelected: (source, draftText) {},
             onDictationPressed: () {},
             onVoicePressed: () {},
             onSubmitted: (_) {},
@@ -365,7 +372,7 @@ void main() {
               dictationTooltip: 'Dictar',
               voiceTooltip: 'Conversación de voz',
               sendTooltip: 'Enviar',
-              onAttachmentSelected: (_) {},
+              onAttachmentSelected: (source, draftText) {},
               onDictationPressed: () {},
               onVoicePressed: () {},
               onSubmitted: (_) {},

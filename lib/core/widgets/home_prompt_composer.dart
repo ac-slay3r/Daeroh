@@ -31,7 +31,8 @@ class HomePromptComposer extends StatefulWidget {
   final String dictationTooltip;
   final String voiceTooltip;
   final String sendTooltip;
-  final ValueChanged<AttachmentSourceChoice> onAttachmentSelected;
+  final void Function(AttachmentSourceChoice source, String draftText)
+  onAttachmentSelected;
   final VoidCallback onDictationPressed;
   final VoidCallback onVoicePressed;
   final ValueChanged<String> onSubmitted;
@@ -141,7 +142,8 @@ class _HomePromptComposerState extends State<HomePromptComposer> {
           AttachmentSourceMenuButton(
             key: const ValueKey('home-prompt-attach'),
             semanticLabel: widget.attachmentTooltip,
-            onSelected: widget.onAttachmentSelected,
+            onSelected: (source) =>
+                widget.onAttachmentSelected(source, _controller.text),
             enabled: widget.enabled,
           ),
           Expanded(

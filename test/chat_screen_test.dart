@@ -103,6 +103,7 @@ import 'package:hermes_android/core/services/voice/stt_remote.dart';
 import 'package:hermes_android/core/services/voice/conversation/native_voice.dart';
 import 'package:hermes_android/core/services/voice/voice_phase.dart';
 import 'package:hermes_android/core/widgets/attachment_card.dart';
+import 'package:hermes_android/core/widgets/attachment_source_sheet.dart';
 import 'package:hermes_android/core/widgets/attachment_history_preview.dart';
 import 'package:hermes_android/core/widgets/chat_event_cards.dart';
 import 'package:hermes_android/core/widgets/compaction_dock.dart';
@@ -2297,6 +2298,9 @@ void main() {
     Session? session,
     bool messagesLoaded = true,
     String? initialPrompt,
+    AttachmentSourceChoice? initialAttachmentSource,
+    String? initialAttachmentDraftText,
+    VoidCallback? onInitialAttachmentDraftRetained,
     bool initialVoiceMode = false,
     bool requestComposerFocus = false,
     bool? legacyConversationEnabled,
@@ -2465,6 +2469,9 @@ void main() {
           connection: targetConnection,
           session: targetSession,
           initialPrompt: initialPrompt,
+          initialAttachmentSource: initialAttachmentSource,
+          initialAttachmentDraftText: initialAttachmentDraftText,
+          onInitialAttachmentDraftRetained: onInitialAttachmentDraftRetained,
           initialVoiceMode: initialVoiceMode,
           requestComposerFocus: requestComposerFocus,
           performanceProbe: performanceProbe,
@@ -2760,6 +2767,29 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'Home attachment cancel keeps typed draft unsent and unacknowledged',
+    (tester) async {
+      FilePicker.platform = _FakeFilePicker(null);
+      addTearDown(() => FilePicker.platform = _FakeFilePicker(null));
+      var retained = 0;
+      final chat = await pumpChat(
+        tester,
+        initialAttachmentSource: AttachmentSourceChoice.files,
+        initialAttachmentDraftText: '  texto de Inicio sin enviar  ',
+        onInitialAttachmentDraftRetained: () => retained++,
+      );
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        '  texto de Inicio sin enviar  ',
+      );
+      expect(retained, 0);
+      expect(chat.messages, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('mentions: dictation takes the prepared route', (tester) async {
     final connection = _remoteConn('mention-dictation');

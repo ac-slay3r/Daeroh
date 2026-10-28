@@ -1196,6 +1196,11 @@ class ChatScreen extends StatefulWidget {
   final Session session;
   final String? initialPrompt;
   final AttachmentSourceChoice? initialAttachmentSource;
+
+  /// Texto de Inicio que acompaña un adjunto nuevo. Nunca usa [initialPrompt]:
+  /// el usuario aún no ha confirmado el envío.
+  final String? initialAttachmentDraftText;
+  final VoidCallback? onInitialAttachmentDraftRetained;
   final bool initialDictation;
   final bool initialVoiceMode;
   final bool requestComposerFocus;
@@ -1227,6 +1232,8 @@ class ChatScreen extends StatefulWidget {
     required this.session,
     this.initialPrompt,
     this.initialAttachmentSource,
+    this.initialAttachmentDraftText,
+    this.onInitialAttachmentDraftRetained,
     this.initialDictation = false,
     this.initialVoiceMode = false,
     this.requestComposerFocus = false,
@@ -1572,6 +1579,8 @@ class _ChatScreenState extends State<ChatScreen>
   Timer? _draftTimer;
   bool _restoringDraft = false;
   bool _draftLoaded = false;
+  String? _initialAttachmentHandoffText;
+  bool _initialAttachmentHandoffRetained = false;
   // Un composer vacío NO prueba que nadie lo haya tocado: también es el estado
   // exacto en el que queda cuando el usuario borra el texto a mano. La
   // recuperación de un turno puede reconciliar mucho después de abrir el chat
@@ -2033,6 +2042,8 @@ class _ChatScreenState extends State<ChatScreen>
 
     final initialAttachmentSource = widget.initialAttachmentSource;
     if (initialAttachmentSource != null) {
+      _stageInitialAttachmentDraft();
+      final attachmentCountBefore = _pendingAttachments.length;
       await WidgetsBinding.instance.endOfFrame;
       if (!mounted) return;
       switch (initialAttachmentSource) {
@@ -2045,6 +2056,9 @@ class _ChatScreenState extends State<ChatScreen>
         case AttachmentSourceChoice.files:
           await _pickDocument();
           break;
+      }
+      if (mounted && _pendingAttachments.length > attachmentCountBefore) {
+        await _retainInitialAttachmentDraft();
       }
       return;
     }
@@ -2086,6 +2100,32 @@ class _ChatScreenState extends State<ChatScreen>
       text: initialPrompt,
       selection: TextSelection.collapsed(offset: initialPrompt.length),
     );
+  }
+
+  void _stageInitialAttachmentDraft() {
+    final text = widget.initialAttachmentDraftText;
+    if (text == null || text.isEmpty || _textController.text.isNotEmpty) return;
+    _initialAttachmentHandoffText = text;
+    _restoringDraft = true;
+    _textController.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    _composerEmpty = false;
+    _restoringDraft = false;
+  }
+
+  Future<void> _retainInitialAttachmentDraft() async {
+    final text = _initialAttachmentHandoffText;
+    if (text == null || _initialAttachmentHandoffRetained) return;
+    final retained = await _saveDraftSnapshot(
+      text,
+      List<AttachmentDraft>.of(_pendingAttachments),
+    );
+    if (!retained || !mounted) return;
+    _initialAttachmentHandoffRetained = true;
+    _initialAttachmentHandoffText = null;
+    widget.onInitialAttachmentDraftRetained?.call();
   }
 
   String get _draftRecoverySessionId {
@@ -2688,7 +2728,7 @@ class _ChatScreenState extends State<ChatScreen>
 
   void _scheduleDraftSave() {
     _syncProducerAttachmentRetention();
-    if (_restoringDraft) return;
+    if (_restoringDraft || _initialAttachmentHandoffText != null) return;
     _draftTimer?.cancel();
     final text = _textController.text;
     final attachments = List<AttachmentDraft>.of(_pendingAttachments);
