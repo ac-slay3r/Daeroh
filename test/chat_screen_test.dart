@@ -134,11 +134,17 @@ Iterable<TextSpan> _flattenTextSpans(TextSpan root) sync* {
 }
 
 class _MemoryDraftSecureStorage extends FlutterSecureStorage {
-  _MemoryDraftSecureStorage(this.values, {this.beforeDelete, this.beforeRead});
+  _MemoryDraftSecureStorage(
+    this.values, {
+    this.beforeDelete,
+    this.beforeRead,
+    this.beforeWrite,
+  });
 
   final Map<String, String> values;
   final Future<void> Function(String key)? beforeDelete;
   final Future<void> Function(String key)? beforeRead;
+  final Future<void> Function(String key)? beforeWrite;
 
   @override
   Future<void> write({
@@ -151,6 +157,7 @@ class _MemoryDraftSecureStorage extends FlutterSecureStorage {
     AppleOptions? mOptions,
     WindowsOptions? wOptions,
   }) async {
+    await beforeWrite?.call(key);
     if (value == null) {
       values.remove(key);
     } else {
@@ -10922,6 +10929,84 @@ void main() {
     expect(saved.attachments.single.name, 'fixture.txt');
     expect(saved.text, 'latest edited Chat text');
   });
+
+  testWidgets(
+    'Home attachment removal during secure retention persists no attachment',
+    (tester) async {
+      mockCompanionStorage();
+      final temp = Directory.systemTemp.createTempSync('home-remove-race-');
+      addTearDown(() {
+        if (temp.existsSync()) temp.deleteSync(recursive: true);
+      });
+      final file = File('${temp.path}/fixture.txt')
+        ..writeAsStringSync('public fixture');
+      FilePicker.platform = _FakeFilePicker(
+        FilePickerResult([
+          PlatformFile(
+            name: 'fixture.txt',
+            path: file.path,
+            size: file.lengthSync(),
+          ),
+        ]),
+      );
+      addTearDown(() => FilePicker.platform = _FakeFilePicker(null));
+      final writeGate = Completer<void>();
+      var firstSecureWriteHeld = false;
+      var retained = 0;
+      var sendAttempts = 0;
+      final connection = _remoteConn('home-remove-during-secure-write');
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        initialAttachmentSource: AttachmentSourceChoice.files,
+        initialAttachmentDraftText: 'original Home text',
+        onInitialAttachmentDraftRetained: () => retained++,
+        attachmentPrivateCopyDeleter: (_) async => false,
+        sendAttemptObserver: () => sendAttempts++,
+        draftSecureStorage: _MemoryDraftSecureStorage(
+          secureStore,
+          beforeWrite: (key) async {
+            if (key.startsWith('chat_draft_v3.') && !firstSecureWriteHeld) {
+              firstSecureWriteHeld = true;
+              await writeGate.future;
+            }
+          },
+        ),
+      );
+      await pumpUntilReal(
+        tester,
+        () => firstSecureWriteHeld,
+        timeoutMessage: 'initial secure write not reached',
+      );
+      expect(retained, 0);
+      tester.widget<AttachmentCard>(find.byType(AttachmentCard)).onRemove!();
+      await pumpUntilReal(
+        tester,
+        () => find.byType(AttachmentCard).evaluate().isEmpty,
+        timeoutMessage: 'attachment chip was not removed',
+      );
+      writeGate.complete();
+      await pumpUntilReal(
+        tester,
+        () => retained == 1,
+        timeoutMessage: 'initial handoff was not retained',
+      );
+      await tester.pump(const Duration(seconds: 2));
+      final screen = tester.widget<ChatScreen>(find.byType(ChatScreen));
+      final saved = await screen.draftStoreOverride!.load(
+        connection.id,
+        screen.session.id,
+        profile: 'default',
+      );
+      expect(retained, 1);
+      expect(sendAttempts, 0);
+      expect(chat.messages, isEmpty);
+      expect(find.byType(AttachmentCard), findsNothing);
+      expect(saved.text, 'original Home text');
+      expect(saved.attachments, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'Home attachment does not resurrect after delayed restore and clear',
