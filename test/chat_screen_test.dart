@@ -1,3 +1,4 @@
+import 'package:hermes_android/core/widgets/home_prompt_composer.dart';
 import 'package:hermes_android/core/models/core_read.dart';
 import 'package:hermes_android/core/models/bot_mention.dart';
 import 'package:hermes_android/core/services/bot_mention_roster.dart';
@@ -103,6 +104,7 @@ import 'package:hermes_android/core/services/voice/stt_remote.dart';
 import 'package:hermes_android/core/services/voice/conversation/native_voice.dart';
 import 'package:hermes_android/core/services/voice/voice_phase.dart';
 import 'package:hermes_android/core/widgets/attachment_card.dart';
+import 'package:hermes_android/core/widgets/attachment_source_sheet.dart';
 import 'package:hermes_android/core/widgets/attachment_history_preview.dart';
 import 'package:hermes_android/core/widgets/chat_event_cards.dart';
 import 'package:hermes_android/core/widgets/compaction_dock.dart';
@@ -132,11 +134,17 @@ Iterable<TextSpan> _flattenTextSpans(TextSpan root) sync* {
 }
 
 class _MemoryDraftSecureStorage extends FlutterSecureStorage {
-  _MemoryDraftSecureStorage(this.values, {this.beforeDelete, this.beforeRead});
+  _MemoryDraftSecureStorage(
+    this.values, {
+    this.beforeDelete,
+    this.beforeRead,
+    this.beforeWrite,
+  });
 
   final Map<String, String> values;
   final Future<void> Function(String key)? beforeDelete;
   final Future<void> Function(String key)? beforeRead;
+  final Future<void> Function(String key)? beforeWrite;
 
   @override
   Future<void> write({
@@ -149,6 +157,7 @@ class _MemoryDraftSecureStorage extends FlutterSecureStorage {
     AppleOptions? mOptions,
     WindowsOptions? wOptions,
   }) async {
+    await beforeWrite?.call(key);
     if (value == null) {
       values.remove(key);
     } else {
@@ -2297,6 +2306,9 @@ void main() {
     Session? session,
     bool messagesLoaded = true,
     String? initialPrompt,
+    AttachmentSourceChoice? initialAttachmentSource,
+    String? initialAttachmentDraftText,
+    VoidCallback? onInitialAttachmentDraftRetained,
     bool initialVoiceMode = false,
     bool requestComposerFocus = false,
     bool? legacyConversationEnabled,
@@ -2465,6 +2477,9 @@ void main() {
           connection: targetConnection,
           session: targetSession,
           initialPrompt: initialPrompt,
+          initialAttachmentSource: initialAttachmentSource,
+          initialAttachmentDraftText: initialAttachmentDraftText,
+          onInitialAttachmentDraftRetained: onInitialAttachmentDraftRetained,
           initialVoiceMode: initialVoiceMode,
           requestComposerFocus: requestComposerFocus,
           performanceProbe: performanceProbe,
@@ -2760,6 +2775,29 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'Home attachment cancel keeps typed draft unsent and unacknowledged',
+    (tester) async {
+      FilePicker.platform = _FakeFilePicker(null);
+      addTearDown(() => FilePicker.platform = _FakeFilePicker(null));
+      var retained = 0;
+      final chat = await pumpChat(
+        tester,
+        initialAttachmentSource: AttachmentSourceChoice.files,
+        initialAttachmentDraftText: '  texto de Inicio sin enviar  ',
+        onInitialAttachmentDraftRetained: () => retained++,
+      );
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        '  texto de Inicio sin enviar  ',
+      );
+      expect(retained, 0);
+      expect(chat.messages, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('mentions: dictation takes the prepared route', (tester) async {
     final connection = _remoteConn('mention-dictation');
@@ -10729,6 +10767,378 @@ void main() {
     );
     await tester.pump();
   });
+
+  testWidgets('Home attachment file retains unsent text then sends once', (
+    tester,
+  ) async {
+    mockCompanionStorage();
+    final temp = Directory.systemTemp.createTempSync('review-selected-');
+    addTearDown(() {
+      if (temp.existsSync()) temp.deleteSync(recursive: true);
+    });
+    final file = File('${temp.path}/fixture.txt')
+      ..writeAsStringSync('public fixture');
+    FilePicker.platform = _FakeFilePicker(
+      FilePickerResult([
+        PlatformFile(
+          name: 'fixture.txt',
+          path: file.path,
+          size: file.lengthSync(),
+        ),
+      ]),
+    );
+    addTearDown(() => FilePicker.platform = _FakeFilePicker(null));
+    var retained = 0;
+    var attempts = 0;
+    final gateway = _SubmissionGateway();
+    final connection = _remoteConn('review-selected');
+    final chat = await pumpChat(
+      tester,
+      connection: connection,
+      desktopGateway: gateway,
+      initialAttachmentSource: AttachmentSourceChoice.files,
+      initialAttachmentDraftText: '  Home exact text  ',
+      onInitialAttachmentDraftRetained: () => retained++,
+      sendAttemptObserver: () => attempts++,
+    );
+    await pumpUntilReal(
+      tester,
+      () => retained == 1,
+      timeoutMessage: 'handoff not retained',
+    );
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      '  Home exact text  ',
+    );
+    expect(find.byType(AttachmentCard), findsOneWidget);
+    expect(chat.messages, isEmpty);
+    expect(attempts, 0);
+    expect(gateway.submissions, isEmpty);
+    final screen = tester.widget<ChatScreen>(find.byType(ChatScreen));
+    final saved = await screen.draftStoreOverride!.load(
+      connection.id,
+      screen.session.id,
+      profile: 'default',
+    );
+    expect(saved.text, '  Home exact text  ');
+    expect(saved.attachments.single.name, 'fixture.txt');
+    await tester.tap(find.byKey(const ValueKey('send')));
+    await tester.pump(const Duration(milliseconds: 600));
+    await pumpUntilReal(
+      tester,
+      () => gateway.submissions.isNotEmpty,
+      timeoutMessage: 'explicit send not delivered',
+    );
+    expect(attempts, 1);
+    expect(gateway.submissions, hasLength(1));
+    await tester.pump(const Duration(seconds: 2));
+    expect(gateway.submissions, hasLength(1));
+    gateway.emitComplete();
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Home attachment cancel releases Chat autosave suppression', (
+    tester,
+  ) async {
+    mockCompanionStorage();
+    FilePicker.platform = _FakeFilePicker(null);
+    addTearDown(() => FilePicker.platform = _FakeFilePicker(null));
+    final connection = _remoteConn('review-cancel-edit');
+    await pumpChat(
+      tester,
+      connection: connection,
+      initialAttachmentSource: AttachmentSourceChoice.files,
+      initialAttachmentDraftText: 'original Home text',
+    );
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      'original Home text',
+    );
+    await tester.enterText(find.byType(TextField), 'edited after cancellation');
+    await tester.pump(const Duration(seconds: 2));
+    final screen = tester.widget<ChatScreen>(find.byType(ChatScreen));
+    final saved = await screen.draftStoreOverride!.load(
+      connection.id,
+      screen.session.id,
+      profile: 'default',
+    );
+    expect(saved.text, 'edited after cancellation');
+  });
+
+  testWidgets('Home attachment retention persists latest Chat text', (
+    tester,
+  ) async {
+    mockCompanionStorage();
+    final temp = Directory.systemTemp.createTempSync('review-edit-during-');
+    addTearDown(() {
+      if (temp.existsSync()) temp.deleteSync(recursive: true);
+    });
+    final file = File('${temp.path}/fixture.txt')
+      ..writeAsStringSync('public fixture');
+    FilePicker.platform = _FakeFilePicker(
+      FilePickerResult([
+        PlatformFile(
+          name: 'fixture.txt',
+          path: file.path,
+          size: file.lengthSync(),
+        ),
+      ]),
+    );
+    addTearDown(() => FilePicker.platform = _FakeFilePicker(null));
+    final gate = Completer<void>();
+    var materializing = false;
+    var retained = 0;
+    final connection = _remoteConn('review-edit-during');
+    await pumpChat(
+      tester,
+      connection: connection,
+      initialAttachmentSource: AttachmentSourceChoice.files,
+      initialAttachmentDraftText: 'original Home text',
+      onInitialAttachmentDraftRetained: () => retained++,
+      attachmentMaterializer: (a) async {
+        materializing = true;
+        await gate.future;
+        return a;
+      },
+    );
+    await pumpUntilReal(
+      tester,
+      () => materializing,
+      timeoutMessage: 'materialization not reached',
+    );
+    await tester.enterText(find.byType(TextField), 'latest edited Chat text');
+    gate.complete();
+    await pumpUntilReal(
+      tester,
+      () => retained == 1,
+      timeoutMessage: 'handoff not retained',
+    );
+    await tester.pump(const Duration(seconds: 2));
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      'latest edited Chat text',
+    );
+    final screen = tester.widget<ChatScreen>(find.byType(ChatScreen));
+    final saved = await screen.draftStoreOverride!.load(
+      connection.id,
+      screen.session.id,
+      profile: 'default',
+    );
+    expect(saved.attachments.single.name, 'fixture.txt');
+    expect(saved.text, 'latest edited Chat text');
+  });
+
+  testWidgets(
+    'Home attachment removal during secure retention persists no attachment',
+    (tester) async {
+      mockCompanionStorage();
+      final temp = Directory.systemTemp.createTempSync('home-remove-race-');
+      addTearDown(() {
+        if (temp.existsSync()) temp.deleteSync(recursive: true);
+      });
+      final file = File('${temp.path}/fixture.txt')
+        ..writeAsStringSync('public fixture');
+      FilePicker.platform = _FakeFilePicker(
+        FilePickerResult([
+          PlatformFile(
+            name: 'fixture.txt',
+            path: file.path,
+            size: file.lengthSync(),
+          ),
+        ]),
+      );
+      addTearDown(() => FilePicker.platform = _FakeFilePicker(null));
+      final writeGate = Completer<void>();
+      var firstSecureWriteHeld = false;
+      var retained = 0;
+      var sendAttempts = 0;
+      final connection = _remoteConn('home-remove-during-secure-write');
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        initialAttachmentSource: AttachmentSourceChoice.files,
+        initialAttachmentDraftText: 'original Home text',
+        onInitialAttachmentDraftRetained: () => retained++,
+        attachmentPrivateCopyDeleter: (_) async => false,
+        sendAttemptObserver: () => sendAttempts++,
+        draftSecureStorage: _MemoryDraftSecureStorage(
+          secureStore,
+          beforeWrite: (key) async {
+            if (key.startsWith('chat_draft_v3.') && !firstSecureWriteHeld) {
+              firstSecureWriteHeld = true;
+              await writeGate.future;
+            }
+          },
+        ),
+      );
+      await pumpUntilReal(
+        tester,
+        () => firstSecureWriteHeld,
+        timeoutMessage: 'initial secure write not reached',
+      );
+      expect(retained, 0);
+      tester.widget<AttachmentCard>(find.byType(AttachmentCard)).onRemove!();
+      await pumpUntilReal(
+        tester,
+        () => find.byType(AttachmentCard).evaluate().isEmpty,
+        timeoutMessage: 'attachment chip was not removed',
+      );
+      writeGate.complete();
+      await pumpUntilReal(
+        tester,
+        () => retained == 1,
+        timeoutMessage: 'initial handoff was not retained',
+      );
+      await tester.pump(const Duration(seconds: 2));
+      final screen = tester.widget<ChatScreen>(find.byType(ChatScreen));
+      final saved = await screen.draftStoreOverride!.load(
+        connection.id,
+        screen.session.id,
+        profile: 'default',
+      );
+      expect(retained, 1);
+      expect(sendAttempts, 0);
+      expect(chat.messages, isEmpty);
+      expect(find.byType(AttachmentCard), findsNothing);
+      expect(saved.text, 'original Home text');
+      expect(saved.attachments, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'Home attachment does not resurrect after delayed restore and clear',
+    (tester) async {
+      mockCompanionStorage();
+      final gate = Completer<void>();
+      var readStarted = false;
+      FilePicker.platform = _FakeFilePicker(null);
+      addTearDown(() => FilePicker.platform = _FakeFilePicker(null));
+      await pumpChat(
+        tester,
+        initialAttachmentSource: AttachmentSourceChoice.files,
+        initialAttachmentDraftText: 'Home text must not resurrect',
+        draftSecureStorage: _MemoryDraftSecureStorage(
+          secureStore,
+          beforeRead: (key) async {
+            if (key.startsWith('chat_draft_v3.')) {
+              readStarted = true;
+              await gate.future;
+            }
+          },
+        ),
+      );
+      expect(readStarted, isTrue);
+      await tester.enterText(find.byType(TextField), 'user replacement');
+      await tester.enterText(find.byType(TextField), '');
+      gate.complete();
+      await tester.pump(const Duration(milliseconds: 800));
+      await tester.pump(const Duration(milliseconds: 800));
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        '',
+      );
+    },
+  );
+
+  testWidgets(
+    'Home attachment launch pins profile before deferred route build',
+    (tester) async {
+      mockCompanionStorage();
+      await pumpChat(tester);
+      Navigator.of(tester.element(find.byType(ChatScreen))).pop();
+      await tester.pump(const Duration(milliseconds: 600));
+      final app = tester.state<HermesAppState>(find.byType(HermesApp));
+      final manager = app.connManager;
+      await manager.saveConnection(
+        'Public fixture',
+        '127.0.0.2',
+        8642,
+        'public-fixture',
+        kind: InstanceKind.vps,
+      );
+      final connection = manager.getConnections().single;
+      await manager.setActiveConnection(connection.id);
+      await manager.setActiveProfile(connection.id, 'owner-a');
+      Navigator.of(tester.element(find.byType(Navigator).first)).push(
+        MaterialPageRoute(
+          builder: (_) => HomeDashboardScreen(
+            connManager: manager,
+            clientFactory: (_) => _safeApi(),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 700));
+      final composer = tester.widget<HomePromptComposer>(
+        find.byType(HomePromptComposer).first,
+      );
+      final field = find.descendant(
+        of: find.byType(HomePromptComposer).first,
+        matching: find.byType(TextField),
+      );
+      await tester.enterText(field, 'owner-a public draft');
+      await tester.pump(const Duration(milliseconds: 500));
+      FilePicker.platform = _FakeFilePicker(null);
+      addTearDown(() => FilePicker.platform = _FakeFilePicker(null));
+      // Switch away and back, then change the profile before the deferred route
+      // builder runs. The launch authority must remain the original pair.
+      composer.onAttachmentSelected(
+        AttachmentSourceChoice.files,
+        'owner-a public draft',
+      );
+      await manager.saveConnection(
+        'Other fixture',
+        '127.0.0.3',
+        8642,
+        'other-fixture',
+        kind: InstanceKind.vps,
+      );
+      final other = manager.getConnections().firstWhere(
+        (candidate) => candidate.id != connection.id,
+      );
+      await manager.setActiveConnection(other.id);
+      await manager.setActiveConnection(connection.id);
+      await manager.setActiveProfile(connection.id, 'owner-b');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 800));
+      await tester.pump(const Duration(milliseconds: 800));
+      expect(find.byType(ChatScreen), findsOneWidget);
+      final chatScreen = tester.widget<ChatScreen>(find.byType(ChatScreen));
+      final runtime = app.activeChats.of(connection.id, chatScreen.session.id);
+      expect(runtime, isNotNull);
+      final actualOwner = runtime!.sessionProfile;
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump(const Duration(milliseconds: 500));
+      final leaked = await ChatDraftStore(
+        manager.prefs,
+      ).load(connection.id, chatScreen.session.id, profile: 'owner-b');
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      final actualText = tester
+          .widget<TextField>(find.byType(TextField).last)
+          .controller!
+          .text;
+
+      expect(
+        actualOwner,
+        'owner-a',
+        reason: 'deferred builder must not rebind the Home draft to owner-b',
+      );
+      expect(actualText, 'owner-a public draft');
+      expect(
+        leaked.text,
+        isEmpty,
+        reason: 'owner-b must never persist owner-a content',
+      );
+    },
+  );
 
   testWidgets(
     'Archivos admite lote, deduplica, aplica límite y limpia al quitar',

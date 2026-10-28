@@ -1196,6 +1196,11 @@ class ChatScreen extends StatefulWidget {
   final Session session;
   final String? initialPrompt;
   final AttachmentSourceChoice? initialAttachmentSource;
+
+  /// Texto de Inicio que acompaña un adjunto nuevo. Nunca usa [initialPrompt]:
+  /// el usuario aún no ha confirmado el envío.
+  final String? initialAttachmentDraftText;
+  final VoidCallback? onInitialAttachmentDraftRetained;
   final bool initialDictation;
   final bool initialVoiceMode;
   final bool requestComposerFocus;
@@ -1227,6 +1232,8 @@ class ChatScreen extends StatefulWidget {
     required this.session,
     this.initialPrompt,
     this.initialAttachmentSource,
+    this.initialAttachmentDraftText,
+    this.onInitialAttachmentDraftRetained,
     this.initialDictation = false,
     this.initialVoiceMode = false,
     this.requestComposerFocus = false,
@@ -1572,6 +1579,10 @@ class _ChatScreenState extends State<ChatScreen>
   Timer? _draftTimer;
   bool _restoringDraft = false;
   bool _draftLoaded = false;
+  String? _initialAttachmentHandoffText;
+  bool _initialAttachmentHandoffRetained = false;
+  bool _initialAttachmentHandoffRetaining = false;
+  int _initialAttachmentHandoffGeneration = 0;
   // Un composer vacío NO prueba que nadie lo haya tocado: también es el estado
   // exacto en el que queda cuando el usuario borra el texto a mano. La
   // recuperación de un turno puede reconciliar mucho después de abrir el chat
@@ -2033,6 +2044,8 @@ class _ChatScreenState extends State<ChatScreen>
 
     final initialAttachmentSource = widget.initialAttachmentSource;
     if (initialAttachmentSource != null) {
+      _stageInitialAttachmentDraft();
+      final attachmentCountBefore = _pendingAttachments.length;
       await WidgetsBinding.instance.endOfFrame;
       if (!mounted) return;
       switch (initialAttachmentSource) {
@@ -2045,6 +2058,11 @@ class _ChatScreenState extends State<ChatScreen>
         case AttachmentSourceChoice.files:
           await _pickDocument();
           break;
+      }
+      if (mounted && _pendingAttachments.length > attachmentCountBefore) {
+        await _retainInitialAttachmentDraft();
+      } else {
+        _releaseInitialAttachmentHandoff();
       }
       return;
     }
@@ -2086,6 +2104,68 @@ class _ChatScreenState extends State<ChatScreen>
       text: initialPrompt,
       selection: TextSelection.collapsed(offset: initialPrompt.length),
     );
+  }
+
+  void _stageInitialAttachmentDraft() {
+    final text = widget.initialAttachmentDraftText;
+    if (text == null ||
+        text.isEmpty ||
+        _composerEmptiedByUser ||
+        _textController.text.isNotEmpty) {
+      return;
+    }
+    _initialAttachmentHandoffText = text;
+    _restoringDraft = true;
+    _textController.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    _composerEmpty = false;
+    _restoringDraft = false;
+  }
+
+  Future<void> _retainInitialAttachmentDraft() async {
+    if (_initialAttachmentHandoffText == null ||
+        _initialAttachmentHandoffRetained ||
+        _initialAttachmentHandoffRetaining) {
+      return;
+    }
+    _initialAttachmentHandoffRetaining = true;
+    try {
+      while (mounted && _initialAttachmentHandoffText != null) {
+        final generation = _initialAttachmentHandoffGeneration;
+        final retained = await _saveDraftSnapshot(
+          _textController.text,
+          List<AttachmentDraft>.of(_pendingAttachments),
+        );
+        if (!retained || !mounted) {
+          _releaseInitialAttachmentHandoff();
+          return;
+        }
+        // A user edit or attachment mutation while secure persistence was in
+        // flight invalidates this acknowledgement. Persist the latest pair
+        // before allowing Home to retire its copy.
+        if (generation != _initialAttachmentHandoffGeneration) continue;
+        _initialAttachmentHandoffRetained = true;
+        _initialAttachmentHandoffText = null;
+        widget.onInitialAttachmentDraftRetained?.call();
+        return;
+      }
+    } finally {
+      _initialAttachmentHandoffRetaining = false;
+    }
+  }
+
+  void _releaseInitialAttachmentHandoff() {
+    if (_initialAttachmentHandoffText == null) return;
+    _initialAttachmentHandoffText = null;
+    _scheduleDraftSave();
+  }
+
+  void _markInitialAttachmentHandoffMutation() {
+    if (_initialAttachmentHandoffText != null) {
+      _initialAttachmentHandoffGeneration++;
+    }
   }
 
   String get _draftRecoverySessionId {
@@ -2273,6 +2353,7 @@ class _ChatScreenState extends State<ChatScreen>
       }
     });
     _restoringDraft = false;
+    _markInitialAttachmentHandoffMutation();
     _syncProducerAttachmentRetention();
 
     // Si el servicio sigue vivo, él posee la frontera de transporte. Leer la
@@ -2381,6 +2462,7 @@ class _ChatScreenState extends State<ChatScreen>
       }
     });
     _restoringDraft = false;
+    _markInitialAttachmentHandoffMutation();
     _syncProducerAttachmentRetention();
     if (recoverPrepared &&
         prepared.state == PreparedTurnState.failedBeforeAcceptance &&
@@ -2498,6 +2580,7 @@ class _ChatScreenState extends State<ChatScreen>
         _textController.clear();
         _pendingAttachments.clear();
       });
+      _markInitialAttachmentHandoffMutation();
       _restoringDraft = false;
       await _clearDraft();
     } else if (mounted) {
@@ -2562,6 +2645,7 @@ class _ChatScreenState extends State<ChatScreen>
       _textController.clear();
       _pendingAttachments.clear();
     });
+    _markInitialAttachmentHandoffMutation();
     _restoringDraft = false;
     _syncProducerAttachmentRetention();
     await _clearDraft();
@@ -2688,7 +2772,7 @@ class _ChatScreenState extends State<ChatScreen>
 
   void _scheduleDraftSave() {
     _syncProducerAttachmentRetention();
-    if (_restoringDraft) return;
+    if (_restoringDraft || _initialAttachmentHandoffText != null) return;
     _draftTimer?.cancel();
     final text = _textController.text;
     final attachments = List<AttachmentDraft>.of(_pendingAttachments);
@@ -2894,6 +2978,7 @@ class _ChatScreenState extends State<ChatScreen>
         ..clear()
         ..addAll(next);
     });
+    _markInitialAttachmentHandoffMutation();
     final delivery = _attachmentDelivery;
     if (delivery != null) _preparedTurn = delivery.current;
     _scheduleDraftSave();
@@ -2939,6 +3024,7 @@ class _ChatScreenState extends State<ChatScreen>
     setState(() {
       _pendingAttachments.removeAt(removed);
     });
+    _markInitialAttachmentHandoffMutation();
     _maybeDiscardFailedTurnFromExplicitEmptyComposer();
     _scheduleDraftSave();
     // Puede retirarse antes de que el primer autosave llegue a referenciar la
@@ -3016,6 +3102,7 @@ class _ChatScreenState extends State<ChatScreen>
       return;
     }
     final isEmpty = text.isEmpty;
+    _markInitialAttachmentHandoffMutation();
     // Intención explícita del usuario sobre ESTE composer. Los vaciados
     // programáticos (restaurar, descartar, soltar el lote al enviar) ya se
     // envuelven en `_restoringDraft` y no la marcan.
@@ -7159,6 +7246,7 @@ class _ChatScreenState extends State<ChatScreen>
           _textController.clear();
           _pendingAttachments.clear();
         });
+        _markInitialAttachmentHandoffMutation();
         _restoringDraft = false;
         await _clearDraft();
       } else {
@@ -7312,6 +7400,7 @@ class _ChatScreenState extends State<ChatScreen>
         _composerPreparedTurnClientTurnId = null;
         _showScrollToBottom = false;
       });
+      _markInitialAttachmentHandoffMutation();
       _restoringDraft = false;
       composerReleasedBeforeAcceptance = true;
       FocusManager.instance.primaryFocus?.unfocus();
@@ -7339,6 +7428,7 @@ class _ChatScreenState extends State<ChatScreen>
             _pendingAttachments.addAll(attachments);
           }
         });
+        _markInitialAttachmentHandoffMutation();
         _restoringDraft = false;
       }
       if (usesComposerState) {
@@ -7388,6 +7478,7 @@ class _ChatScreenState extends State<ChatScreen>
         _showScrollToBottom = false;
         _pendingAttachments.clear();
       });
+      _markInitialAttachmentHandoffMutation();
       // Cierra el teclado al enviar: la respuesta suele ocupar gran parte de la
       // pantalla y el usuario ya no necesita editar el lote aceptado.
       FocusManager.instance.primaryFocus?.unfocus();
@@ -7546,6 +7637,7 @@ class _ChatScreenState extends State<ChatScreen>
             _textController.clear();
             _pendingAttachments.clear();
           });
+          _markInitialAttachmentHandoffMutation();
           _restoringDraft = false;
           await _clearDraft();
         }
@@ -9628,6 +9720,7 @@ class _ChatScreenState extends State<ChatScreen>
       setState(() {
         _pendingAttachments.add(persisted!);
       });
+      _markInitialAttachmentHandoffMutation();
       _scheduleDraftSave();
     } catch (_) {
       if (mounted) {
@@ -9768,6 +9861,7 @@ class _ChatScreenState extends State<ChatScreen>
         setState(() {
           _pendingAttachments.addAll(drafts);
         });
+        _markInitialAttachmentHandoffMutation();
         _scheduleDraftSave();
         drafts.clear();
       }
@@ -9906,6 +10000,7 @@ class _ChatScreenState extends State<ChatScreen>
         setState(() {
           _pendingAttachments.addAll(drafts);
         });
+        _markInitialAttachmentHandoffMutation();
         _scheduleDraftSave();
         drafts.clear();
       }

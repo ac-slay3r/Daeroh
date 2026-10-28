@@ -1360,12 +1360,15 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
 
   void _openChat(
     Session session, {
+    SavedConnection? launchConnection,
     String? initialPrompt,
     AttachmentSourceChoice? initialAttachmentSource,
+    String? initialAttachmentDraftText,
+    VoidCallback? onInitialAttachmentDraftRetained,
     bool initialDictation = false,
     bool initialVoiceMode = false,
   }) {
-    final conn = _active;
+    final conn = launchConnection ?? _active;
     if (conn == null) return;
     openChatFromHome<void>(
       context,
@@ -1374,6 +1377,8 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         session: session,
         initialPrompt: initialPrompt,
         initialAttachmentSource: initialAttachmentSource,
+        initialAttachmentDraftText: initialAttachmentDraftText,
+        onInitialAttachmentDraftRetained: onInitialAttachmentDraftRetained,
         initialDictation: initialDictation,
         initialVoiceMode: initialVoiceMode,
       ),
@@ -1474,11 +1479,21 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
   }
 
   void _newChat({
+    SavedConnection? launchConnection,
+    String? launchProfile,
     String? initialPrompt,
     AttachmentSourceChoice? initialAttachmentSource,
+    String? initialAttachmentDraftText,
+    VoidCallback? onInitialAttachmentDraftRetained,
     bool initialDictation = false,
     bool initialVoiceMode = false,
   }) {
+    final connection = launchConnection ?? _active;
+    if (connection == null) return;
+    final profile = Session.profileOwner(
+      launchProfile,
+      fallback: widget.connManager.activeProfileFor(connection.id),
+    );
     _openChat(
       Session(
         id: GatewayChatClient.generateSessionId(),
@@ -1491,17 +1506,43 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         isActive: true,
         preview: '',
         startedAt: DateTime.now().millisecondsSinceEpoch.toDouble() / 1000,
+        profile: profile,
       ),
+      launchConnection: connection,
       initialPrompt: initialPrompt,
       initialAttachmentSource: initialAttachmentSource,
+      initialAttachmentDraftText: initialAttachmentDraftText,
+      onInitialAttachmentDraftRetained: onInitialAttachmentDraftRetained,
       initialDictation: initialDictation,
       initialVoiceMode: initialVoiceMode,
     );
   }
 
-  void _selectHomeAttachment(AttachmentSourceChoice source) {
+  void _selectHomeAttachment(AttachmentSourceChoice source, String draftText) {
+    final target = _homeDraftTarget();
+    final connection = _active;
+    if (target == null || connection == null) return;
     FocusManager.instance.primaryFocus?.unfocus();
-    _newChat(initialAttachmentSource: source);
+    _newChat(
+      launchConnection: connection,
+      launchProfile: target.profile,
+      initialAttachmentSource: source,
+      initialAttachmentDraftText: draftText,
+      onInitialAttachmentDraftRetained: () {
+        if (!mounted) return;
+        final current = _homeDraftTarget();
+        if (current == null ||
+            current.connectionId != target.connectionId ||
+            current.profile != target.profile) {
+          return;
+        }
+        // El chat ya confirmó su snapshot cifrado en el mismo scope; ahora sí
+        // se puede retirar la copia de Inicio sin cruzar perfil/conexión.
+        _homeDraftRestoredText = null;
+        _onHomeDraftChanged('');
+        setState(() => _homeDraftEpoch++);
+      },
+    );
   }
 
   void _openSessions() {
@@ -1606,7 +1647,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     final composer = Opacity(
       opacity: dimmed ? 0.55 : 1,
       child: HomePromptComposer(
-        key: ValueKey('home-prompt-composer-${_homeDraftScope ?? ''}'),
+        key: ValueKey(
+          'home-prompt-composer-${_homeDraftScope ?? ''}-$_homeDraftEpoch',
+        ),
         restoredText: _homeDraftRestoredText,
         onTextChanged: _onHomeDraftChanged,
         hintText: Strings.of(context).homeAskHermes,
