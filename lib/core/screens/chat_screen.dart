@@ -1581,6 +1581,8 @@ class _ChatScreenState extends State<ChatScreen>
   bool _draftLoaded = false;
   String? _initialAttachmentHandoffText;
   bool _initialAttachmentHandoffRetained = false;
+  bool _initialAttachmentHandoffRetaining = false;
+  int _initialAttachmentHandoffGeneration = 0;
   // Un composer vacío NO prueba que nadie lo haya tocado: también es el estado
   // exacto en el que queda cuando el usuario borra el texto a mano. La
   // recuperación de un turno puede reconciliar mucho después de abrir el chat
@@ -2059,6 +2061,8 @@ class _ChatScreenState extends State<ChatScreen>
       }
       if (mounted && _pendingAttachments.length > attachmentCountBefore) {
         await _retainInitialAttachmentDraft();
+      } else {
+        _releaseInitialAttachmentHandoff();
       }
       return;
     }
@@ -2104,7 +2108,12 @@ class _ChatScreenState extends State<ChatScreen>
 
   void _stageInitialAttachmentDraft() {
     final text = widget.initialAttachmentDraftText;
-    if (text == null || text.isEmpty || _textController.text.isNotEmpty) return;
+    if (text == null ||
+        text.isEmpty ||
+        _composerEmptiedByUser ||
+        _textController.text.isNotEmpty) {
+      return;
+    }
     _initialAttachmentHandoffText = text;
     _restoringDraft = true;
     _textController.value = TextEditingValue(
@@ -2116,16 +2125,47 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   Future<void> _retainInitialAttachmentDraft() async {
-    final text = _initialAttachmentHandoffText;
-    if (text == null || _initialAttachmentHandoffRetained) return;
-    final retained = await _saveDraftSnapshot(
-      text,
-      List<AttachmentDraft>.of(_pendingAttachments),
-    );
-    if (!retained || !mounted) return;
-    _initialAttachmentHandoffRetained = true;
+    if (_initialAttachmentHandoffText == null ||
+        _initialAttachmentHandoffRetained ||
+        _initialAttachmentHandoffRetaining) {
+      return;
+    }
+    _initialAttachmentHandoffRetaining = true;
+    try {
+      while (mounted && _initialAttachmentHandoffText != null) {
+        final generation = _initialAttachmentHandoffGeneration;
+        final retained = await _saveDraftSnapshot(
+          _textController.text,
+          List<AttachmentDraft>.of(_pendingAttachments),
+        );
+        if (!retained || !mounted) {
+          _releaseInitialAttachmentHandoff();
+          return;
+        }
+        // A user edit or attachment mutation while secure persistence was in
+        // flight invalidates this acknowledgement. Persist the latest pair
+        // before allowing Home to retire its copy.
+        if (generation != _initialAttachmentHandoffGeneration) continue;
+        _initialAttachmentHandoffRetained = true;
+        _initialAttachmentHandoffText = null;
+        widget.onInitialAttachmentDraftRetained?.call();
+        return;
+      }
+    } finally {
+      _initialAttachmentHandoffRetaining = false;
+    }
+  }
+
+  void _releaseInitialAttachmentHandoff() {
+    if (_initialAttachmentHandoffText == null) return;
     _initialAttachmentHandoffText = null;
-    widget.onInitialAttachmentDraftRetained?.call();
+    _scheduleDraftSave();
+  }
+
+  void _markInitialAttachmentHandoffMutation() {
+    if (_initialAttachmentHandoffText != null) {
+      _initialAttachmentHandoffGeneration++;
+    }
   }
 
   String get _draftRecoverySessionId {
@@ -2934,6 +2974,7 @@ class _ChatScreenState extends State<ChatScreen>
         ..clear()
         ..addAll(next);
     });
+    _markInitialAttachmentHandoffMutation();
     final delivery = _attachmentDelivery;
     if (delivery != null) _preparedTurn = delivery.current;
     _scheduleDraftSave();
@@ -3056,6 +3097,7 @@ class _ChatScreenState extends State<ChatScreen>
       return;
     }
     final isEmpty = text.isEmpty;
+    _markInitialAttachmentHandoffMutation();
     // Intención explícita del usuario sobre ESTE composer. Los vaciados
     // programáticos (restaurar, descartar, soltar el lote al enviar) ya se
     // envuelven en `_restoringDraft` y no la marcan.
@@ -9808,6 +9850,7 @@ class _ChatScreenState extends State<ChatScreen>
         setState(() {
           _pendingAttachments.addAll(drafts);
         });
+        _markInitialAttachmentHandoffMutation();
         _scheduleDraftSave();
         drafts.clear();
       }
@@ -9946,6 +9989,7 @@ class _ChatScreenState extends State<ChatScreen>
         setState(() {
           _pendingAttachments.addAll(drafts);
         });
+        _markInitialAttachmentHandoffMutation();
         _scheduleDraftSave();
         drafts.clear();
       }

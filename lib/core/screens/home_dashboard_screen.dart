@@ -1360,6 +1360,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
 
   void _openChat(
     Session session, {
+    SavedConnection? launchConnection,
     String? initialPrompt,
     AttachmentSourceChoice? initialAttachmentSource,
     String? initialAttachmentDraftText,
@@ -1367,7 +1368,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     bool initialDictation = false,
     bool initialVoiceMode = false,
   }) {
-    final conn = _active;
+    final conn = launchConnection ?? _active;
     if (conn == null) return;
     openChatFromHome<void>(
       context,
@@ -1478,6 +1479,8 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
   }
 
   void _newChat({
+    SavedConnection? launchConnection,
+    String? launchProfile,
     String? initialPrompt,
     AttachmentSourceChoice? initialAttachmentSource,
     String? initialAttachmentDraftText,
@@ -1485,6 +1488,12 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     bool initialDictation = false,
     bool initialVoiceMode = false,
   }) {
+    final connection = launchConnection ?? _active;
+    if (connection == null) return;
+    final profile = Session.profileOwner(
+      launchProfile,
+      fallback: widget.connManager.activeProfileFor(connection.id),
+    );
     _openChat(
       Session(
         id: GatewayChatClient.generateSessionId(),
@@ -1497,7 +1506,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         isActive: true,
         preview: '',
         startedAt: DateTime.now().millisecondsSinceEpoch.toDouble() / 1000,
+        profile: profile,
       ),
+      launchConnection: connection,
       initialPrompt: initialPrompt,
       initialAttachmentSource: initialAttachmentSource,
       initialAttachmentDraftText: initialAttachmentDraftText,
@@ -1509,9 +1520,12 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
 
   void _selectHomeAttachment(AttachmentSourceChoice source, String draftText) {
     final target = _homeDraftTarget();
-    if (target == null) return;
+    final connection = _active;
+    if (target == null || connection == null) return;
     FocusManager.instance.primaryFocus?.unfocus();
     _newChat(
+      launchConnection: connection,
+      launchProfile: target.profile,
       initialAttachmentSource: source,
       initialAttachmentDraftText: draftText,
       onInitialAttachmentDraftRetained: () {
