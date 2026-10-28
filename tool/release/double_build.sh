@@ -65,11 +65,14 @@ chmod 700 -- "$STAGING_ROOT"
 
 build_replica() {
   local replica="$1"
-  local clone="$WORK/source-$replica"
-  local home="$WORK/home-$replica"
-  local pub_cache="$WORK/pub-cache-$replica"
-  local gradle_home="$WORK/gradle-$replica"
+  # Recreate every build-visible input at the same absolute path for each
+  # sequential replica. Only the copied, signed outputs remain side by side.
+  local clone="$WORK/source"
+  local home="$WORK/home"
+  local pub_cache="$WORK/pub-cache"
+  local gradle_home="$WORK/gradle"
   local destination="$STAGING_ROOT/replica-$replica"
+  rm -rf -- "$clone" "$home" "$pub_cache" "$gradle_home"
   mkdir -m 700 -- "$home" "$pub_cache" "$gradle_home" "$destination"
   git clone --no-local --no-hardlinks --recurse-submodules -- "$SOURCE_ROOT" "$clone" >/dev/null
   git -C "$clone" checkout --detach "$COMMIT" >/dev/null
