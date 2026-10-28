@@ -2721,6 +2721,21 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
         self.assertIn("git clone --no-local", source)
         self.assertIn("PUB_CACHE", source)
         self.assertIn("GRADLE_USER_HOME", source)
+        # Two independent checkouts must not present different absolute paths
+        # to Dart AOT or native compilers. Reset all build-visible state before B.
+        # Flutter/Gradle/native tools can also preserve temporary-file paths.
+        canonical_paths = {
+            "source": "clone", "pub-cache": "pub_cache",
+            "home": "home", "gradle": "gradle_home", "tmp": "tmp",
+        }
+        for path, variable in canonical_paths.items():
+            self.assertIn(f'local {variable}="$WORK/{path}"', source)
+            self.assertNotIn(f'$WORK/{path}-$replica', source)
+        reset = 'rm -rf -- "$clone" "$home" "$pub_cache" "$gradle_home" "$tmp"'
+        self.assertIn(reset, source)
+        self.assertLess(source.index(reset), source.index('git clone --no-local'))
+        self.assertEqual(source.count('TMPDIR="$tmp"'), 4)
+        self.assertIn('build_replica a\nbuild_replica b', source)
         self.assertIn("14328be1a42a6839e16931c8953acacdc2b063ce17672521f6687cc1e2644717", source)
         self.assertIn("compare_rebuilds.py", source)
         self.assertIn("ANDROID_HOME", source)
@@ -2729,6 +2744,23 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
         for tool in ("flutter", "git", "python3", "java", "sha256sum", "install", "mktemp", "mv"):
             self.assertIn(f'command -v "$tool"', source)
         self.assertNotIn("gh release", source)
+
+    def test_jni_native_build_disables_only_nondeterministic_build_id(self):
+        # NDK sha1 hashes unstripped link inputs; libdartjni is subsequently
+        # stripped, leaving identical payloads with different 20-byte IDs.
+        source = (ROOT / "android/build.gradle.kts").read_text(encoding="utf-8")
+        self.assertIn('project.name == "jni"', source)
+        self.assertIn('"-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--build-id=none"', source)
+        self.assertNotIn('build-id=none', (ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8"))
+
+    def test_apk_excludes_encrypted_dependency_metadata_but_bundle_keeps_it(self):
+        # AGP encrypts APK dependency metadata with fresh randomness. The strict
+        # direct-public double-build therefore excludes only that APK block;
+        # bundles retain it for Play's SDK dependency metadata.
+        source = (ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
+        self.assertIn("dependenciesInfo {", source)
+        self.assertIn("includeInApk = false", source)
+        self.assertIn("includeInBundle = true", source)
 
     def test_release_gate_rejects_artifacts_not_emitted_by_the_bound_double_build(self):
         with tempfile.TemporaryDirectory(prefix="s09-double-build-") as temporary:
