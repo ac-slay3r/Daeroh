@@ -2743,6 +2743,14 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
             self.assertIn(f'command -v "$tool"', source)
         self.assertNotIn("gh release", source)
 
+    def test_jni_native_build_disables_only_nondeterministic_build_id(self):
+        # NDK sha1 hashes unstripped link inputs; libdartjni is subsequently
+        # stripped, leaving identical payloads with different 20-byte IDs.
+        source = (ROOT / "android/build.gradle.kts").read_text(encoding="utf-8")
+        self.assertIn('project.name == "jni"', source)
+        self.assertIn('"-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--build-id=none"', source)
+        self.assertNotIn('build-id=none', (ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8"))
+
     def test_release_gate_rejects_artifacts_not_emitted_by_the_bound_double_build(self):
         with tempfile.TemporaryDirectory(prefix="s09-double-build-") as temporary:
             root = Path(temporary)

@@ -14,6 +14,18 @@ rootProject.layout.buildDirectory.value(newBuildDir)
 subprojects {
     val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
     project.layout.buildDirectory.value(newSubprojectBuildDir)
+    if (project.name == "jni") {
+        // NDK sha1 hashes unstripped inputs, but Gradle packages stripped
+        // libdartjni.so. The otherwise identical library then carries a
+        // replica-specific build ID. Disable this note only for jni's link.
+        pluginManager.withPlugin("com.android.library") {
+            extensions.configure<com.android.build.gradle.LibraryExtension>("android") {
+                defaultConfig.externalNativeBuild.cmake.arguments(
+                    "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--build-id=none"
+                )
+            }
+        }
+    }
 }
 subprojects {
     project.evaluationDependsOn(":app")
