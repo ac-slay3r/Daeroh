@@ -2753,6 +2753,15 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
         self.assertIn('"-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--build-id=none"', source)
         self.assertNotIn('build-id=none', (ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8"))
 
+    def test_apk_excludes_encrypted_dependency_metadata_but_bundle_keeps_it(self):
+        # AGP encrypts APK dependency metadata with fresh randomness. The strict
+        # direct-public double-build therefore excludes only that APK block;
+        # bundles retain it for Play's SDK dependency metadata.
+        source = (ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
+        self.assertIn("dependenciesInfo {", source)
+        self.assertIn("includeInApk = false", source)
+        self.assertIn("includeInBundle = true", source)
+
     def test_release_gate_rejects_artifacts_not_emitted_by_the_bound_double_build(self):
         with tempfile.TemporaryDirectory(prefix="s09-double-build-") as temporary:
             root = Path(temporary)

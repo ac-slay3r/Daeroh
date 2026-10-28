@@ -18,6 +18,14 @@ android {
    namespace = "com.hermesagent.hermes_android"
    compileSdk = 36
 
+   // APK SDK dependency metadata is encrypted with fresh randomness by AGP,
+   // preventing byte-identical signed direct builds. Keep it in Play AABs while
+   // excluding only the APK signing-block record.
+   dependenciesInfo {
+       includeInApk = false
+       includeInBundle = true
+   }
+
    compileOptions {
        sourceCompatibility = JavaVersion.VERSION_17
        targetCompatibility = JavaVersion.VERSION_17
