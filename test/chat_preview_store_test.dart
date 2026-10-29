@@ -175,23 +175,29 @@ void main() {
     },
   );
 
-  test('empty accepted projection retires the prior encrypted preview', () async {
-    await ChatPreviewStore.save(scope, [row(1)]);
-    await ChatPreviewStore.save(scope, const []);
+  test(
+    'empty accepted projection retires the prior encrypted preview',
+    () async {
+      await ChatPreviewStore.save(scope, [row(1)]);
+      await ChatPreviewStore.save(scope, const []);
 
-    expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
-  });
+      expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
+    },
+  );
 
-  test('profile cleanup fences a first write not yet visible to readAll', () async {
-    delayedWriteKey = ChatPreviewStore.debugKeyFor(scope);
-    final pending = ChatPreviewStore.save(scope, [row(1)]);
-    await Future<void>.delayed(Duration.zero);
+  test(
+    'profile cleanup fences a first write not yet visible to readAll',
+    () async {
+      delayedWriteKey = ChatPreviewStore.debugKeyFor(scope);
+      final pending = ChatPreviewStore.save(scope, [row(1)]);
+      await Future<void>.delayed(Duration.zero);
 
-    await ChatPreviewStore.deleteForProfile('conn-a', 'profile-a');
-    await pending;
+      await ChatPreviewStore.deleteForProfile('conn-a', 'profile-a');
+      await pending;
 
-    expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
-  });
+      expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
+    },
+  );
 
   test('scope clear fences a held secure read before it can publish', () async {
     await ChatPreviewStore.save(scope, [row(1)]);
@@ -202,7 +208,9 @@ void main() {
     await readStarted!.future;
 
     var clearFinished = false;
-    final clear = ChatPreviewStore.clear(scope).whenComplete(() => clearFinished = true);
+    final clear = ChatPreviewStore.clear(
+      scope,
+    ).whenComplete(() => clearFinished = true);
     await Future<void>.delayed(Duration.zero);
     expect(clearFinished, isFalse);
     release.complete();
@@ -212,25 +220,34 @@ void main() {
     expect((await pending).isEmpty, isTrue);
   });
 
-  test('newer publication wins when an older secure write finishes last', () async {
-    delayedWriteKey = ChatPreviewStore.debugKeyFor(scope);
-    final older = ChatPreviewStore.save(scope, [row(1, text: 'old')]);
-    await Future<void>.delayed(Duration.zero);
-    await ChatPreviewStore.save(scope, [row(1, text: 'new')]);
-    await older;
+  test(
+    'newer publication wins when an older secure write finishes last',
+    () async {
+      delayedWriteKey = ChatPreviewStore.debugKeyFor(scope);
+      final older = ChatPreviewStore.save(scope, [row(1, text: 'old')]);
+      await Future<void>.delayed(Duration.zero);
+      await ChatPreviewStore.save(scope, [row(1, text: 'new')]);
+      await older;
 
-    expect((await ChatPreviewStore.load(scope)).messages.single['content'], 'new 1');
-  });
+      expect(
+        (await ChatPreviewStore.load(scope)).messages.single['content'],
+        'new 1',
+      );
+    },
+  );
 
-  test('keeps integer canonical row identities through a safe round trip', () async {
-    await ChatPreviewStore.save(scope, [
-      {'row_id': 1, 'role': 'user', 'content': 'one'},
-      {'row_id': 2, 'role': 'assistant', 'content': 'two'},
-    ]);
+  test(
+    'keeps integer canonical row identities through a safe round trip',
+    () async {
+      await ChatPreviewStore.save(scope, [
+        {'row_id': 1, 'role': 'user', 'content': 'one'},
+        {'row_id': 2, 'role': 'assistant', 'content': 'two'},
+      ]);
 
-    final saved = await ChatPreviewStore.load(scope);
-    expect(saved.messages.map((row) => row['row_id']), [1, 2]);
-  });
+      final saved = await ChatPreviewStore.load(scope);
+      expect(saved.messages.map((row) => row['row_id']), [1, 2]);
+    },
+  );
 
   test('keeps desktop canonical aliases through a safe round trip', () async {
     await ChatPreviewStore.save(scope, [
@@ -275,7 +292,8 @@ void main() {
               final args =
                   (call.arguments as Map?)?.cast<String, dynamic>() ?? const {};
               final key = args['key'] as String?;
-              if (call.method == 'read' && key?.startsWith('chat_draft_v3.') == true) {
+              if (call.method == 'read' &&
+                  key?.startsWith('chat_draft_v3.') == true) {
                 throw PlatformException(code: 'draft-read-failed');
               }
               switch (call.method) {
@@ -302,7 +320,10 @@ void main() {
         ),
       );
 
-      expect(await api.deleteSession('session-a', profile: 'profile-a'), isTrue);
+      expect(
+        await api.deleteSession('session-a', profile: 'profile-a'),
+        isTrue,
+      );
       expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
     },
   );
@@ -314,7 +335,10 @@ void main() {
     final staleSave = ChatPreviewStore.save(scope, [row(1, text: 'private')]);
     await writeStarted!.future;
 
-    final cleanup = ChatPreviewStore.deleteForProfile(scope.connectionId, scope.profile);
+    final cleanup = ChatPreviewStore.deleteForProfile(
+      scope.connectionId,
+      scope.profile,
+    );
     await Future<void>.delayed(Duration.zero);
     releaseWrite.complete();
     await Future.wait([staleSave, cleanup]);
@@ -331,7 +355,9 @@ void main() {
     final staleEmpty = ChatPreviewStore.save(scope, const []);
     await deleteStarted!.future;
 
-    final validLater = ChatPreviewStore.save(scope, [row(1, text: 'valid-later')]);
+    final validLater = ChatPreviewStore.save(scope, [
+      row(1, text: 'valid-later'),
+    ]);
     releaseDelete.complete();
     await Future.wait([staleEmpty, validLater]);
 
@@ -341,59 +367,181 @@ void main() {
     );
   });
 
-  test('profile cleanup waits for a held native write then deletes raw storage', () async {
-    heldWrite = Completer<void>();
-    writeStarted = Completer<void>();
-    final releaseWrite = heldWrite!;
-    final pendingSave = ChatPreviewStore.save(scope, [row(1, text: 'private')]);
-    await writeStarted!.future;
+  test(
+    'profile cleanup waits for a held native write then deletes raw storage',
+    () async {
+      heldWrite = Completer<void>();
+      writeStarted = Completer<void>();
+      final releaseWrite = heldWrite!;
+      final pendingSave = ChatPreviewStore.save(scope, [
+        row(1, text: 'private'),
+      ]);
+      await writeStarted!.future;
 
-    var cleanupFinished = false;
-    final cleanup = ChatPreviewStore.deleteForProfile(scope.connectionId, scope.profile)
-        .whenComplete(() => cleanupFinished = true);
-    await Future<void>.delayed(Duration.zero);
-    expect(cleanupFinished, isFalse);
+      var cleanupFinished = false;
+      final cleanup = ChatPreviewStore.deleteForProfile(
+        scope.connectionId,
+        scope.profile,
+      ).whenComplete(() => cleanupFinished = true);
+      await Future<void>.delayed(Duration.zero);
+      expect(cleanupFinished, isFalse);
 
-    releaseWrite.complete();
-    await Future.wait([pendingSave, cleanup]);
-    expect(secure.containsKey(ChatPreviewStore.debugKeyFor(scope)), isFalse);
-    expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
-  });
+      releaseWrite.complete();
+      await Future.wait([pendingSave, cleanup]);
+      expect(secure.containsKey(ChatPreviewStore.debugKeyFor(scope)), isFalse);
+      expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
+    },
+  );
 
-  test('profile cleanup keeps the same profile on a neighboring connection', () async {
-    const neighboring = ChatPreviewScope(
-      connectionId: 'conn-b',
-      profile: 'profile-a',
-      sessionId: 'session-b',
-    );
-    await ChatPreviewStore.save(scope, [row(1, text: 'remove')]);
-    await ChatPreviewStore.save(neighboring, [row(2, text: 'keep')]);
+  test(
+    'profile cleanup preserves a preview admitted after its cleanup barrier',
+    () async {
+      heldWrite = Completer<void>();
+      writeStarted = Completer<void>();
+      final releaseWrite = heldWrite!;
+      final oldSave = ChatPreviewStore.save(scope, [
+        row(1, text: 'old-private'),
+      ]);
+      await writeStarted!.future;
 
-    await ChatPreviewStore.deleteForProfile(scope.connectionId, scope.profile);
-    ChatPreviewStore.resetForTesting(); // Simulated process recreation.
+      final cleanup = ChatPreviewStore.deleteForProfile(
+        scope.connectionId,
+        scope.profile,
+      );
+      final validLater = ChatPreviewStore.save(scope, [
+        row(2, text: 'later-valid'),
+      ]);
+      releaseWrite.complete();
 
-    expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
-    expect(
-      (await ChatPreviewStore.load(neighboring)).messages.single['content'],
-      'keep 2',
-    );
-  });
+      await Future.wait([oldSave, cleanup, validLater]);
+      expect(
+        (await ChatPreviewStore.load(scope)).messages.single['content'],
+        'later-valid 2',
+      );
+    },
+  );
 
-  test('failed physical profile cleanup is reported and does not poison FIFO', () async {
-    await ChatPreviewStore.save(scope, [row(1, text: 'private')]);
-    final key = ChatPreviewStore.debugKeyFor(scope);
-    failDeletes = true;
+  test(
+    'scope cleanup preserves a preview admitted after its cleanup barrier',
+    () async {
+      heldWrite = Completer<void>();
+      writeStarted = Completer<void>();
+      final releaseWrite = heldWrite!;
+      final oldSave = ChatPreviewStore.save(scope, [
+        row(1, text: 'old-private'),
+      ]);
+      await writeStarted!.future;
 
-    await expectLater(
-      ChatPreviewStore.deleteForProfile(scope.connectionId, scope.profile),
-      throwsA(isA<PlatformException>()),
-    );
-    expect(secure.containsKey(key), isTrue);
-    expect((await ChatPreviewStore.load(scope)).messages, isNotEmpty);
+      final cleanup = ChatPreviewStore.clear(scope);
+      final validLater = ChatPreviewStore.save(scope, [
+        row(2, text: 'later-valid'),
+      ]);
+      releaseWrite.complete();
 
-    failDeletes = false;
-    await ChatPreviewStore.deleteForProfile(scope.connectionId, scope.profile);
-    expect(secure.containsKey(key), isFalse);
-    expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
-  });
+      await Future.wait([oldSave, cleanup, validLater]);
+      expect(
+        (await ChatPreviewStore.load(scope)).messages.single['content'],
+        'later-valid 2',
+      );
+    },
+  );
+
+  test(
+    'connection cleanup preserves a preview admitted after its cleanup barrier',
+    () async {
+      heldWrite = Completer<void>();
+      writeStarted = Completer<void>();
+      final releaseWrite = heldWrite!;
+      final oldSave = ChatPreviewStore.save(scope, [
+        row(1, text: 'old-private'),
+      ]);
+      await writeStarted!.future;
+
+      final cleanup = ChatPreviewStore.deleteForConnection(scope.connectionId);
+      final validLater = ChatPreviewStore.save(scope, [
+        row(2, text: 'later-valid'),
+      ]);
+      releaseWrite.complete();
+
+      await Future.wait([oldSave, cleanup, validLater]);
+      expect(
+        (await ChatPreviewStore.load(scope)).messages.single['content'],
+        'later-valid 2',
+      );
+    },
+  );
+
+  test(
+    'session cleanup preserves a preview admitted after its cleanup barrier',
+    () async {
+      heldWrite = Completer<void>();
+      writeStarted = Completer<void>();
+      final releaseWrite = heldWrite!;
+      final oldSave = ChatPreviewStore.save(scope, [
+        row(1, text: 'old-private'),
+      ]);
+      await writeStarted!.future;
+
+      final cleanup = ChatPreviewStore.deleteForSession(scope.sessionId);
+      final validLater = ChatPreviewStore.save(scope, [
+        row(2, text: 'later-valid'),
+      ]);
+      releaseWrite.complete();
+
+      await Future.wait([oldSave, cleanup, validLater]);
+      expect(
+        (await ChatPreviewStore.load(scope)).messages.single['content'],
+        'later-valid 2',
+      );
+    },
+  );
+
+  test(
+    'profile cleanup keeps the same profile on a neighboring connection',
+    () async {
+      const neighboring = ChatPreviewScope(
+        connectionId: 'conn-b',
+        profile: 'profile-a',
+        sessionId: 'session-b',
+      );
+      await ChatPreviewStore.save(scope, [row(1, text: 'remove')]);
+      await ChatPreviewStore.save(neighboring, [row(2, text: 'keep')]);
+
+      await ChatPreviewStore.deleteForProfile(
+        scope.connectionId,
+        scope.profile,
+      );
+      ChatPreviewStore.resetForTesting(); // Simulated process recreation.
+
+      expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
+      expect(
+        (await ChatPreviewStore.load(neighboring)).messages.single['content'],
+        'keep 2',
+      );
+    },
+  );
+
+  test(
+    'failed physical profile cleanup is reported and does not poison FIFO',
+    () async {
+      await ChatPreviewStore.save(scope, [row(1, text: 'private')]);
+      final key = ChatPreviewStore.debugKeyFor(scope);
+      failDeletes = true;
+
+      await expectLater(
+        ChatPreviewStore.deleteForProfile(scope.connectionId, scope.profile),
+        throwsA(isA<PlatformException>()),
+      );
+      expect(secure.containsKey(key), isTrue);
+      expect((await ChatPreviewStore.load(scope)).messages, isNotEmpty);
+
+      failDeletes = false;
+      await ChatPreviewStore.deleteForProfile(
+        scope.connectionId,
+        scope.profile,
+      );
+      expect(secure.containsKey(key), isFalse);
+      expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
+    },
+  );
 }

@@ -115,8 +115,8 @@ final class ChatPreviewStore {
   }
 
   static String _identity(Map<String, dynamic> row) {
-    final messageId =
-        (row['message_id'] ?? row['_desktopMessageId'])?.toString();
+    final messageId = (row['message_id'] ?? row['_desktopMessageId'])
+        ?.toString();
     final rowId = (row['row_id'] ?? row['_desktopRowId'])?.toString();
     if (messageId != null && messageId.isNotEmpty) return 'm:$messageId';
     if (rowId != null && rowId.isNotEmpty) return 'r:$rowId';
@@ -182,7 +182,8 @@ final class ChatPreviewStore {
       'saved_at_ms': DateTime.now().millisecondsSinceEpoch,
       'messages': messages,
     });
-    while (messages.isNotEmpty && utf8.encode(encode()).length > _maxSessionBytes) {
+    while (messages.isNotEmpty &&
+        utf8.encode(encode()).length > _maxSessionBytes) {
       messages.removeAt(0);
     }
     return encode();
@@ -203,7 +204,10 @@ final class ChatPreviewStore {
             decoded['messages'] is! List) {
           return const ChatPreviewSnapshot([]);
         }
-        return ChatPreviewSnapshot(_bound(decoded['messages'] as List), admission);
+        return ChatPreviewSnapshot(
+          _bound(decoded['messages'] as List),
+          admission,
+        );
       } catch (_) {
         return const ChatPreviewSnapshot([]);
       }
@@ -227,7 +231,9 @@ final class ChatPreviewStore {
     final boundedRows = _bound(rows);
     final encoded = _encodeBounded(boundedRows);
     return _enqueue(() async {
-      if (!_stillAdmitted(scope, admission) || _revisions[key] != revision) return;
+      if (!_stillAdmitted(scope, admission) || _revisions[key] != revision) {
+        return;
+      }
       try {
         if (boundedRows.isEmpty) {
           await _storage.delete(key: key);
@@ -245,7 +251,9 @@ final class ChatPreviewStore {
   }
 
   /// Runs inside [_enqueue]; it must not enqueue nested operations.
-  static Future<void> _evictOldestUntilBoundInternal(String protectedKey) async {
+  static Future<void> _evictOldestUntilBoundInternal(
+    String protectedKey,
+  ) async {
     final all = await _storage.readAll();
     var bytes = all.entries
         .where((entry) => entry.key.startsWith(_prefix))
@@ -284,9 +292,11 @@ final class ChatPreviewStore {
 
   static Future<void> deleteForProfile(String connectionId, String profile) {
     final profileKey = '$connectionId\u0000$profile';
-    _profileGenerations[profileKey] = (_profileGenerations[profileKey] ?? 0) + 1;
-    return _deleteWhere((scope) =>
-        scope.connectionId == connectionId && scope.profile == profile);
+    _profileGenerations[profileKey] =
+        (_profileGenerations[profileKey] ?? 0) + 1;
+    return _deleteWhere(
+      (scope) => scope.connectionId == connectionId && scope.profile == profile,
+    );
   }
 
   static Future<void> deleteForConnection(String connectionId) {
@@ -301,13 +311,18 @@ final class ChatPreviewStore {
     return _deleteWhere((scope) => scope.sessionId == sessionId);
   }
 
-  static Future<void> _deleteWhere(bool Function(ChatPreviewScope scope) matches) {
+  static Future<void> _deleteWhere(
+    bool Function(ChatPreviewScope scope) matches,
+  ) {
     return _enqueue(() async {
       final all = await _storage.readAll();
       for (final key in all.keys.where((key) => key.startsWith(_prefix))) {
         final scope = _scopeFromKey(key);
         if (scope != null && matches(scope)) {
-          _nextRevision(key);
+          // The matching admission generation was advanced before this cleanup
+          // entered the FIFO. Do not advance this key's revision here: a valid
+          // save admitted after that barrier is queued behind this physical
+          // delete and must survive it.
           _completedRevisions.remove(key);
           await _storage.delete(key: key);
         }

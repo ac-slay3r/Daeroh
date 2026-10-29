@@ -1300,13 +1300,16 @@ class _ChatScreenState extends State<ChatScreen>
   List<Map<String, dynamic>>? _editingMessagesSnapshot;
   ChatPipelineState? _editingPipelineSnapshot;
   List<Map<String, dynamic>>? _savedPreviewMessages;
+  ChatPreviewSnapshot? _savedPreviewSnapshot;
   bool _authoritativeTranscriptPublished = false;
   int _savedPreviewGeneration = 0;
 
   bool get _showingSavedPreview =>
       !_authoritativeTranscriptPublished &&
       _savedPreviewMessages != null &&
-      _savedPreviewMessages!.isNotEmpty;
+      _savedPreviewMessages!.isNotEmpty &&
+      _savedPreviewSnapshot != null &&
+      ChatPreviewStore.isCurrent(_savedPreviewScope, _savedPreviewSnapshot!);
 
   ChatPreviewScope get _savedPreviewScope => ChatPreviewScope(
     connectionId: widget.connection.id,
@@ -1372,18 +1375,22 @@ class _ChatScreenState extends State<ChatScreen>
     final preview = await previewFuture;
     final privacy = await privacyFuture;
     final checkpoint = privacy.privacyCheckpoint;
-    final graph = checkpoint == null ? null : TranscriptPrivacyGraph(checkpoint.facts);
-    final previewNewestFirst = preview.messages.reversed.toList(growable: false);
+    final graph = checkpoint == null
+        ? null
+        : TranscriptPrivacyGraph(checkpoint.facts);
+    final previewNewestFirst = preview.messages.reversed.toList(
+      growable: false,
+    );
     final safeRows = checkpoint?.suppressedWindow == true
         ? const <Map<String, dynamic>>[]
         : _chat
-            .projectCachedPreviewForDisplay(previewNewestFirst)
-            .where(
-              (row) =>
-                  graph == null ||
-                  !graph.excludes(TranscriptPrivacyObservation.fromRaw(row)),
-            )
-            .toList(growable: false);
+              .projectCachedPreviewForDisplay(previewNewestFirst)
+              .where(
+                (row) =>
+                    graph == null ||
+                    !graph.excludes(TranscriptPrivacyObservation.fromRaw(row)),
+              )
+              .toList(growable: false);
     if (!_disposed &&
         mounted &&
         generation == _savedPreviewGeneration &&
@@ -1392,7 +1399,10 @@ class _ChatScreenState extends State<ChatScreen>
         _chat.messages.isEmpty &&
         safeRows.isNotEmpty) {
       // ActiveChat's renderer source contract is newest-first.
-      setState(() => _savedPreviewMessages = safeRows);
+      setState(() {
+        _savedPreviewMessages = safeRows;
+        _savedPreviewSnapshot = preview;
+      });
     }
   }
 
@@ -1400,6 +1410,7 @@ class _ChatScreenState extends State<ChatScreen>
     if (_authoritativeTranscriptPublished) return;
     _authoritativeTranscriptPublished = true;
     _savedPreviewMessages = null;
+    _savedPreviewSnapshot = null;
     _renderProjection = null;
     _listEntriesProjection = null;
     _listEntries = null;

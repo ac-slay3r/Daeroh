@@ -2556,6 +2556,136 @@ void main() {
     },
   );
 
+  testWidgets(
+    'completed preview profile cleanup removes an already-rendered preview on rebuild',
+    (tester) async {
+      ChatPreviewStore.resetForTesting();
+      final connection = _remoteConn('preview-cleanup-visible');
+      final session = _session().copyWith(id: 'preview-cleanup-session');
+      final scope = ChatPreviewScope(
+        connectionId: connection.id,
+        profile: 'default',
+        sessionId: session.id,
+      );
+      await ChatPreviewStore.save(scope, const [
+        {
+          'message_id': 'private-preview-row',
+          'role': 'assistant',
+          'content': 'PRIVATE_PREVIEW_MUST_RETIRE',
+        },
+      ]);
+      final canonical = Completer<List<Map<String, dynamic>>>();
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        desktopGateway: _UiRewindGateway(),
+        messagesLoaded: false,
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        storedMessageLoader: (_, _) => canonical.future,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('PRIVATE_PREVIEW_MUST_RETIRE'), findsOneWidget);
+
+      await ChatPreviewStore.deleteForProfile(connection.id, 'default');
+      expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
+      expect(chat.messages, isEmpty);
+
+      await tester.enterText(find.byType(TextField).first, 'unsent draft');
+      await tester.pump();
+      expect(find.text('PRIVATE_PREVIEW_MUST_RETIRE'), findsNothing);
+      expect(chat.messages, isEmpty);
+    },
+  );
+
+  testWidgets(
+    'completed preview connection cleanup removes an already-rendered preview on rebuild',
+    (tester) async {
+      ChatPreviewStore.resetForTesting();
+      final connection = _remoteConn('preview-connection-cleanup-visible');
+      final session = _session().copyWith(
+        id: 'preview-connection-cleanup-session',
+      );
+      final scope = ChatPreviewScope(
+        connectionId: connection.id,
+        profile: 'default',
+        sessionId: session.id,
+      );
+      await ChatPreviewStore.save(scope, const [
+        {
+          'message_id': 'connection-private-preview-row',
+          'role': 'assistant',
+          'content': 'CONNECTION_PRIVATE_PREVIEW_MUST_RETIRE',
+        },
+      ]);
+      final canonical = Completer<List<Map<String, dynamic>>>();
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        desktopGateway: _UiRewindGateway(),
+        messagesLoaded: false,
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        storedMessageLoader: (_, _) => canonical.future,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(
+        find.text('CONNECTION_PRIVATE_PREVIEW_MUST_RETIRE'),
+        findsOneWidget,
+      );
+
+      await ChatPreviewStore.deleteForConnection(connection.id);
+      expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
+      await tester.enterText(find.byType(TextField).first, 'unsent draft');
+      await tester.pump();
+      expect(find.text('CONNECTION_PRIVATE_PREVIEW_MUST_RETIRE'), findsNothing);
+      expect(chat.messages, isEmpty);
+    },
+  );
+
+  testWidgets(
+    'completed preview scope cleanup removes an already-rendered preview on rebuild',
+    (tester) async {
+      ChatPreviewStore.resetForTesting();
+      final connection = _remoteConn('preview-scope-cleanup-visible');
+      final session = _session().copyWith(id: 'preview-scope-cleanup-session');
+      final scope = ChatPreviewScope(
+        connectionId: connection.id,
+        profile: 'default',
+        sessionId: session.id,
+      );
+      await ChatPreviewStore.save(scope, const [
+        {
+          'message_id': 'scope-private-preview-row',
+          'role': 'assistant',
+          'content': 'SCOPE_PRIVATE_PREVIEW_MUST_RETIRE',
+        },
+      ]);
+      final canonical = Completer<List<Map<String, dynamic>>>();
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        desktopGateway: _UiRewindGateway(),
+        messagesLoaded: false,
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        storedMessageLoader: (_, _) => canonical.future,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('SCOPE_PRIVATE_PREVIEW_MUST_RETIRE'), findsOneWidget);
+
+      await ChatPreviewStore.clear(scope);
+      expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
+      await tester.enterText(find.byType(TextField).first, 'unsent draft');
+      await tester.pump();
+      expect(find.text('SCOPE_PRIVATE_PREVIEW_MUST_RETIRE'), findsNothing);
+      expect(chat.messages, isEmpty);
+    },
+  );
+
   void mockCompanionStorage() {
     final support = Directory.systemTemp.createTempSync(
       'chat-single-sprite-companion-',
