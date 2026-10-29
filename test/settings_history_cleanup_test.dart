@@ -1452,5 +1452,91 @@ void main() {
         );
       },
     );
+    testWidgets(
+      'retira preview y reporta el fallo anterior al borrar LocalTranscript',
+      (tester) async {
+        ChatPreviewStore.resetForTesting();
+        final prefs = await SharedPreferences.getInstance();
+        final manager = await ConnectionManager.create(prefs);
+        final connection = connectionWith('instance-a');
+        await manager.setActiveProfile(connection.id, 'profile-a');
+        const scope = ChatPreviewScope(
+          connectionId: 'instance-a',
+          profile: 'profile-a',
+          sessionId: 'failed-preview',
+        );
+        final key = ChatPreviewStore.debugKeyFor(scope);
+        await ChatPreviewStore.save(scope, const [
+          {
+            'role': 'assistant',
+            'content': 'retained private preview',
+            'message_id': 'retained-preview',
+          },
+        ]);
+        await LocalTranscriptStore.saveFromNewestFirst(
+          connection.id,
+          scope.sessionId,
+          const [
+            {'role': 'assistant', 'content': 'private transcript'},
+          ],
+          profile: scope.profile,
+        );
+        var transcriptAttempts = 0;
+        var previewAttempts = 0;
+        shouldFailDelete = (candidate) {
+          if (candidate == key) previewAttempts++;
+          if (candidate.startsWith('hermes.transcript.v3.')) {
+            transcriptAttempts++;
+            return true;
+          }
+          return false;
+        };
+        final remote = ApiClient(
+          baseUrl: connection.baseUrl,
+          apiKey: connection.apiKey,
+          connectionId: connection.id,
+          httpClient: MockClient(
+            (_) async => http.Response(jsonEncode({'data': <Object>[]}), 200),
+          ),
+        );
+        addTearDown(remote.close);
+
+        await tester.pumpWidget(
+          wrap(
+            HistoryCleanupSection(
+              connection: connection,
+              connManager: manager,
+              verifyHistoryCleanupForTesting: () async => true,
+              remoteClientOverride: remote,
+            ),
+          ),
+        );
+        final strings = Strings.of(
+          tester.element(find.byType(HistoryCleanupSection)),
+        );
+        await tester.tap(find.byKey(const ValueKey('history-cleanup-normal')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.tap(
+          find.byKey(const ValueKey('history-cleanup-scope-confirm')),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.pump(const Duration(milliseconds: 300));
+
+        expect(transcriptAttempts, greaterThan(0));
+        expect(previewAttempts, greaterThan(0));
+        expect(secureValues.containsKey(key), isFalse);
+        expect((await ChatPreviewStore.load(scope)).messages, isEmpty);
+        expect(
+          secureValues.keys.any((k) => k.startsWith('hermes.transcript.v3.')),
+          isTrue,
+        );
+        expect(
+          await snackBarText(tester),
+          contains(strings.setLocalClearFailures(1)),
+        );
+      },
+    );
   });
 }

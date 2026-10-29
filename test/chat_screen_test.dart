@@ -22,6 +22,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'package:crypto/crypto.dart' as crypto;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart' show MarkdownBody;
@@ -1817,6 +1818,17 @@ class _RecoverableSubmissionGateway extends _SubmissionGateway
   }
 }
 
+// A held public acquisition captures all authority coordinates, including the
+// private Stop revision. Its continuation must remain valid across preview paint.
+class _PreviewAuthorityGateway extends _UiRewindGateway {
+  final connectGate = Completer<void>();
+  @override
+  Future<void> connect() async {
+    await connectGate.future;
+    await super.connect();
+  }
+}
+
 class _RecordingBotModeGateway extends TuiGatewayClient {
   _RecordingBotModeGateway(super.connection);
 
@@ -2351,6 +2363,8 @@ void main() {
     int Function()? wallClockMs,
     List<CancelledTurnTombstone> initialCancelledTurnTombstones = const [],
     Future<void> Function(CancelledTurnTombstone)? onCancelledTurn,
+    CancelledTurnTombstoneStore? cancelledTurnStore,
+    void Function(ActiveChat)? onChatCreated,
   }) async {
     // Forzar locale español para que las cadenas i18n de ChatScreen coincidan
     // con las expectativas del test (el test fue escrito en español).
@@ -2377,6 +2391,7 @@ void main() {
     );
     final sec = SecureStorage();
     final activeChats = ActiveChatService(
+      cancelledTurnStore: cancelledTurnStore,
       attachDesktopRuntimeOnLoad: attachDesktopRuntimeOnLoad,
       compressionRestoreStore:
           compressionRestoreStore ??
@@ -2424,10 +2439,12 @@ void main() {
         disableForegroundKeepAlive: desktopGateway != null,
         transcriptPageSizeForTesting: transcriptPageSizeForTesting,
         wallClockMsForTesting: wallClockMs,
-        initialCancelledTurnTombstonesForTesting:
-            initialCancelledTurnTombstones,
+        initialCancelledTurnTombstonesForTesting: cancelledTurnStore == null
+            ? initialCancelledTurnTombstones
+            : null,
         onCancelledTurnForTesting: onCancelledTurn,
       );
+      onChatCreated?.call(chat);
       chat.internalMessagesForTesting = List<Map<String, dynamic>>.from(
         messages,
       );
@@ -2733,177 +2750,532 @@ void main() {
   testWidgets(
     'queued recovery has identical no-side-effect trace with or without cached preview',
     (tester) async {
-      Future<
-        ({
-          bool previewVisible,
-          int sendAttempts,
-          int materializations,
-          int tombstoneWrites,
-          int promptSubmissions,
-          int statusCalls,
-          int attachmentUploads,
-        })
-      >
-      runCase({required bool cacheOn}) async {
+      final requests = <String>[];
+      final root = Directory('.dart_tool/preview-media-trace')
+        ..createSync(recursive: true);
+      const provider = MethodChannel('plugins.flutter.io/path_provider');
+      TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(provider, (_) async => root.absolute.path);
+      addTearDown(
+        () => TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(provider, null),
+      );
+      await http.runWithClient(
+        () async {
+          Future<
+            ({
+              bool previewVisible,
+              Map<String, Object?> trace,
+              int sendAttempts,
+              int materializations,
+              int tombstoneWrites,
+              int promptSubmissions,
+              int statusCalls,
+              int attachmentUploads,
+            })
+          >
+          runCase({required bool cacheOn}) async {
+            requests.clear();
+            ChatPreviewStore.resetForTesting();
+            const suffix = 'paired';
+            final connection = _remoteConn('preview-queued-trace-$suffix');
+            final session = _session().copyWith(
+              id: 'preview-queued-session-$suffix',
+            );
+            final scope = ChatPreviewScope(
+              connectionId: connection.id,
+              profile: 'default',
+              sessionId: session.id,
+            );
+            const previewText = 'CACHED_MEDIA_DISPLAY_METADATA_ONLY';
+            const previewMedia =
+                '$previewText\n'
+                'MEDIA:/workspace/private/review-preview-only.png';
+            if (cacheOn) {
+              await ChatPreviewStore.save(scope, const [
+                {
+                  'message_id': 'preview-queued-media',
+                  'role': 'assistant',
+                  'content': previewMedia,
+                  'timestamp': 1,
+                },
+              ]);
+            }
+            final now = DateTime.now().millisecondsSinceEpoch;
+            final queuedAttachment = AttachmentDraft(
+              localId: 'queued-media-$suffix',
+              type: AttachmentType.image,
+              name: 'queued-media.png',
+              mimeType: 'image/png',
+              sizeBytes: 1,
+              localPath: '/device-only/queued-media.png',
+            );
+            final ambiguous = PreparedTurn(
+              connectionId: connection.id,
+              sessionId: session.id,
+              clientTurnId: 'preview-ambiguous-$suffix',
+              createdAtMs: now,
+              updatedAtMs: now,
+              text: 'ambiguous turn must reconcile first',
+              attachments: const [],
+              model: 'hermes-agent',
+              profile: '',
+              state: PreparedTurnState.ambiguous,
+              restoresComposer: false,
+            );
+            final queued = PreparedTurn(
+              connectionId: connection.id,
+              sessionId: session.id,
+              clientTurnId: 'preview-queued-$suffix',
+              createdAtMs: now + 1,
+              updatedAtMs: now + 1,
+              queueOrder: 1,
+              text: 'queued turn must not drain from preview',
+              fullText: 'queued turn must not drain from preview',
+              attachments: [queuedAttachment],
+              model: 'hermes-agent',
+              profile: '',
+              queued: true,
+              restoresComposer: false,
+            );
+            secureStore['chat_turn_outbox_v1'] = jsonEncode({
+              ambiguous.storageId: ambiguous.toJson(),
+              queued.storageId: queued.toJson(),
+            });
+            final canonical = Completer<List<Map<String, dynamic>>>();
+            final statusGate = Completer<DesktopTurnStatus>();
+            final gateway = _RecoverableSubmissionGateway()
+              ..statusGate = statusGate;
+            var sendAttempts = 0;
+            var materializations = 0;
+            var tombstoneWrites = 0;
+            final events = <ActiveChatEvent>[];
+            late StreamSubscription<ActiveChatEvent> subscription;
+            final chat = await pumpChat(
+              tester,
+              onChatCreated: (chat) {
+                subscription = chat.changes.listen(events.add);
+              },
+              connection: connection,
+              session: session,
+              desktopGateway: gateway,
+              messagesLoaded: false,
+              attachDesktopRuntimeOnLoad: false,
+              allowUnownedDesktopSnapshotForTesting: false,
+              storedMessageLoader: (_, _) => canonical.future,
+              initialStoredSessionId: session.id,
+              turnIdempotencyCapability: () async => true,
+              sendAttemptObserver: () => sendAttempts++,
+              attachmentMaterializer: (attachment) async {
+                materializations++;
+                return attachment;
+              },
+              onCancelledTurn: (_) async => tombstoneWrites++,
+            );
+            for (var frame = 0; frame < 40; frame++) {
+              await tester.pump(const Duration(milliseconds: 10));
+            }
+            expect(gateway.statusCalls, 1);
+            final previewVisible = find.text(previewText).evaluate().isNotEmpty;
+            expect(previewVisible, cacheOn);
+            expect(
+              find.byType(GeneratedMediaAttachmentCard),
+              findsNothing,
+              reason:
+                  'a saved preview must not enter the authenticated media loader',
+            );
+            expect(chat.messagesLoaded, isFalse);
+            expect(chat.messages, isEmpty);
+            final durableOutbox =
+                jsonDecode(secureStore['chat_turn_outbox_v1']!) as Map;
+            expect(
+              durableOutbox.values.map((v) => v['client_turn_id']),
+              containsAll([ambiguous.clientTurnId, queued.clientTurnId]),
+            );
+            expect(sendAttempts, 0);
+            expect(materializations, 0);
+            expect(tombstoneWrites, 0);
+            expect(gateway.submissions, isEmpty);
+            expect(gateway.imageAttachCalls + gateway.fileAttachCalls, 0);
+            expect(tester.takeException(), isNull);
+
+            // Freeze ALL operational observations while BOTH authoritative lanes
+            // are still held. Post-release recovery is deliberately excluded.
+            final trace = <String, Object?>{
+              'http': List<String>.of(requests),
+              'send': sendAttempts,
+              'materialize': materializations,
+              'authorityWrites': tombstoneWrites,
+              'authorityBytes': secureStore['cancelled_turn_tombstones_v2'],
+              'submissions': List<String>.of(gateway.submissions),
+              'status': gateway.statusCalls,
+              'uploads': gateway.imageAttachCalls + gateway.fileAttachCalls,
+              'done': events.where((e) => e == ActiveChatEvent.done).length,
+              'queueChanged': events
+                  .where((e) => e == ActiveChatEvent.queueChanged)
+                  .length,
+              'queue': chat.queuedTurns
+                  .map((q) => q.turn.clientTurnId)
+                  .toList(),
+              'drainSuspended': chat.queueDrainSuspendedForTesting,
+              'outbox': durableOutbox.values
+                  .map(
+                    (v) => {
+                      'client_turn_id': v['client_turn_id'],
+                      'state': v['state'],
+                      'queued': v['queued'],
+                    },
+                  )
+                  .toList(),
+              'revision': chat.transcriptCoverageRevisionForTesting,
+              'state': chat.state.name,
+            };
+            expect(
+              requests.where((r) => r.contains('/api/files/download')),
+              isEmpty,
+            );
+            expect(trace['done'], 0);
+            final frozenSend = sendAttempts;
+            final frozenMaterialize = materializations;
+            final frozenWrites = tombstoneWrites;
+            final frozenSubmissions = gateway.submissions.length;
+            final frozenStatus = gateway.statusCalls;
+            final frozenUploads =
+                gateway.imageAttachCalls + gateway.fileAttachCalls;
+            unawaited(subscription.cancel());
+            // Let the fixture settle before the paired mount. The trace is captured
+            // before canonical publication, so only preview admission differs.
+            statusGate.complete(
+              DesktopTurnStatus(
+                known: true,
+                clientTurnId: ambiguous.clientTurnId,
+                serverTurnId: 'server-${ambiguous.clientTurnId}',
+                state: DesktopTurnState.terminal,
+              ),
+            );
+            canonical.complete(const []);
+            await tester.pump();
+            await tester.pump(const Duration(milliseconds: 100));
+            return (
+              previewVisible: previewVisible,
+              trace: trace,
+              sendAttempts: frozenSend,
+              materializations: frozenMaterialize,
+              tombstoneWrites: frozenWrites,
+              promptSubmissions: frozenSubmissions,
+              statusCalls: frozenStatus,
+              attachmentUploads: frozenUploads,
+            );
+          }
+
+          final cacheOn = await runCase(cacheOn: true);
+          final cacheOff = await runCase(cacheOn: false);
+          expect(cacheOn.trace, cacheOff.trace);
+          expect(cacheOn.previewVisible, isTrue);
+          expect(cacheOff.previewVisible, isFalse);
+          expect(
+            (
+              sendAttempts: cacheOn.sendAttempts,
+              materializations: cacheOn.materializations,
+              tombstoneWrites: cacheOn.tombstoneWrites,
+              promptSubmissions: cacheOn.promptSubmissions,
+              statusCalls: cacheOn.statusCalls,
+              attachmentUploads: cacheOn.attachmentUploads,
+            ),
+            (
+              sendAttempts: cacheOff.sendAttempts,
+              materializations: cacheOff.materializations,
+              tombstoneWrites: cacheOff.tombstoneWrites,
+              promptSubmissions: cacheOff.promptSubmissions,
+              statusCalls: cacheOff.statusCalls,
+              attachmentUploads: cacheOff.attachmentUploads,
+            ),
+            reason:
+                'cache preview must not change queued recovery, authority, or media trace',
+          );
+          expect(tester.takeException(), isNull);
+        },
+        () => MockClient((request) async {
+          requests.add('${request.method} ${request.url.path}');
+          if (request.url.path == '/') {
+            return http.Response(
+              'window.__HERMES_SESSION_TOKEN__="synthetic-preview-token";',
+              200,
+            );
+          }
+          return http.Response('{}', 404);
+        }),
+      );
+    },
+  );
+
+  testWidgets(
+    'target-unbound Stop authority stays byte-identical with or without cached preview',
+    (tester) async {
+      final stampedAt = DateTime.now().millisecondsSinceEpoch;
+      Future<Map<String, Object?>> runCase(bool cacheOn) async {
         ChatPreviewStore.resetForTesting();
-        final suffix = cacheOn ? 'on' : 'off';
-        final connection = _remoteConn('preview-queued-trace-$suffix');
-        final session = _session().copyWith(
-          id: 'preview-queued-session-$suffix',
-        );
+        final connection = _remoteConn('preview-unbound-stop');
+        final session = _session();
         final scope = ChatPreviewScope(
           connectionId: connection.id,
           profile: 'default',
           sessionId: session.id,
         );
-        const previewText = 'CACHED_MEDIA_DISPLAY_METADATA_ONLY';
-        const previewMedia =
-            '$previewText\n'
-            'MEDIA:/workspace/private/review-preview-only.png';
+        const rows = <Map<String, dynamic>>[
+          {
+            'message_id': 'anchor',
+            'role': 'assistant',
+            'content': 'UNBOUND_SAFE_ANCHOR',
+          },
+          {
+            'message_id': 'cached-user',
+            'role': 'user',
+            'content': 'UNBOUND_CANCELLED_USER',
+          },
+          {
+            'message_id': 'cached-reply',
+            'role': 'assistant',
+            'content': 'UNBOUND_CANCELLED_REPLY',
+          },
+        ];
         if (cacheOn) {
-          await ChatPreviewStore.save(scope, const [
-            {
-              'message_id': 'preview-queued-media',
-              'role': 'assistant',
-              'content': previewMedia,
-              'timestamp': 1,
-            },
-          ]);
+          await ChatPreviewStore.save(scope, rows);
         }
-        final now = DateTime.now().millisecondsSinceEpoch;
-        final queuedAttachment = AttachmentDraft(
-          localId: 'queued-media-$suffix',
-          type: AttachmentType.image,
-          name: 'queued-media.png',
-          mimeType: 'image/png',
-          sizeBytes: 1,
-          localPath: '/device-only/queued-media.png',
-        );
-        final ambiguous = PreparedTurn(
-          connectionId: connection.id,
-          sessionId: session.id,
-          clientTurnId: 'preview-ambiguous-$suffix',
-          createdAtMs: now,
-          updatedAtMs: now,
-          text: 'ambiguous turn must reconcile first',
-          attachments: const [],
-          model: 'hermes-agent',
-          profile: '',
-          state: PreparedTurnState.ambiguous,
-          restoresComposer: false,
-        );
-        final queued = PreparedTurn(
-          connectionId: connection.id,
-          sessionId: session.id,
-          clientTurnId: 'preview-queued-$suffix',
-          createdAtMs: now + 1,
-          updatedAtMs: now + 1,
-          queueOrder: 1,
-          text: 'queued turn must not drain from preview',
-          fullText: 'queued turn must not drain from preview',
-          attachments: [queuedAttachment],
-          model: 'hermes-agent',
-          profile: '',
-          queued: true,
-          restoresComposer: false,
-        );
-        secureStore['chat_turn_outbox_v1'] = jsonEncode({
-          ambiguous.storageId: ambiguous.toJson(),
-          queued.storageId: queued.toJson(),
+        final generation = crypto.sha256
+            .convert(
+              utf8.encode(
+                jsonEncode([
+                  connection.id,
+                  connection.kind.name,
+                  connection.host,
+                  connection.port,
+                  connection.useHttps,
+                  connection.gatewayAuthMode.storageKey,
+                  connection.apiKey,
+                ]),
+              ),
+            )
+            .toString();
+        final scopeKey = jsonEncode([
+          connection.id,
+          generation,
+          'default',
+          session.id,
+        ]);
+        String durable = jsonEncode({
+          scopeKey: [
+            const CancelledTurnTombstone(
+              content: 'UNBOUND_CANCELLED_USER',
+              anchorMessageId: 'anchor',
+            ).stamped(stampedAt).toJson(),
+          ],
         });
+        final before = durable;
+        var writes = 0;
+        final store = CancelledTurnTombstoneStore(
+          read: () async => durable,
+          write: (value) async {
+            writes++;
+            durable = value;
+          },
+        );
+        await store.initialize();
+        List<CancelledTurnTombstone> authority() => store.load(
+          connectionId: connection.id,
+          profile: 'default',
+          sessionId: session.id,
+          generation: generation,
+        );
+        expect(authority().single.hasTargetIdentity, isFalse);
         final canonical = Completer<List<Map<String, dynamic>>>();
-        final statusGate = Completer<DesktopTurnStatus>();
-        final gateway = _RecoverableSubmissionGateway()
-          ..statusGate = statusGate;
-        var sendAttempts = 0;
-        var materializations = 0;
-        var tombstoneWrites = 0;
+        heldPreviewPrivacyRead = Completer<void>();
+        previewPrivacyReadStarted = Completer<void>();
+        final privacyGate = heldPreviewPrivacyRead!;
+        final gateway = _PreviewAuthorityGateway();
         final chat = await pumpChat(
           tester,
           connection: connection,
           session: session,
+          cancelledTurnStore: store,
           desktopGateway: gateway,
+          initialStoredSessionId: session.id,
           messagesLoaded: false,
           attachDesktopRuntimeOnLoad: false,
           allowUnownedDesktopSnapshotForTesting: false,
           storedMessageLoader: (_, _) => canonical.future,
-          initialStoredSessionId: session.id,
-          turnIdempotencyCapability: () async => true,
-          sendAttemptObserver: () => sendAttempts++,
-          attachmentMaterializer: (attachment) async {
-            materializations++;
-            return attachment;
-          },
-          onCancelledTurn: (_) async => tombstoneWrites++,
         );
+        await previewPrivacyReadStarted!.future;
+        final acquisition = chat.ensureDesktopRuntime(
+          acquireForExplicitAction: true,
+        );
+        await tester.pump();
+        privacyGate.complete();
         for (var frame = 0; frame < 40; frame++) {
           await tester.pump(const Duration(milliseconds: 10));
         }
-        expect(gateway.statusCalls, 1);
-        final previewVisible = find.text(previewText).evaluate().isNotEmpty;
-        expect(previewVisible, cacheOn);
-        expect(
-          find.byType(GeneratedMediaAttachmentCard),
-          findsNothing,
-          reason:
-              'a saved preview must not enter the authenticated media loader',
-        );
+        expect(chat.messagesLoaded, isFalse);
         expect(chat.messages, isEmpty);
-        expect(sendAttempts, 0);
-        expect(materializations, 0);
-        expect(tombstoneWrites, 0);
-        expect(gateway.submissions, isEmpty);
-        expect(gateway.imageAttachCalls + gateway.fileAttachCalls, 0);
-        expect(tester.takeException(), isNull);
-
-        // Let the fixture settle before the paired mount. The trace is captured
-        // before canonical publication, so only preview admission differs.
-        statusGate.complete(
-          DesktopTurnStatus(
-            known: true,
-            clientTurnId: ambiguous.clientTurnId,
-            serverTurnId: 'server-${ambiguous.clientTurnId}',
-            state: DesktopTurnState.terminal,
-          ),
+        expect(
+          find.text('UNBOUND_SAFE_ANCHOR'),
+          cacheOn ? findsOneWidget : findsNothing,
         );
+        expect(find.text('UNBOUND_CANCELLED_REPLY'), findsNothing);
+        expect(authority().single.hasTargetIdentity, isFalse);
+        expect(
+          durable,
+          before,
+          reason: 'preview cannot bind/persist a cached user identity',
+        );
+        expect(writes, 0);
+        final trace = <String, Object?>{
+          'bytes': durable,
+          'authority': authority().map((t) => t.toJson()).toList(),
+          'writes': writes,
+          'transcriptRevision': chat.transcriptCoverageRevisionForTesting,
+          'pendingCancellation': chat.hasPendingDurableCancellation,
+        };
+        gateway.connectGate.complete();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(
+          await acquisition,
+          isTrue,
+          reason:
+              'captured authority coordinates, including Stop revision, must remain exact across cached rendering',
+        );
+        expect(gateway.resumeExistingCalls, 1);
         canonical.complete(const []);
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
-        return (
-          previewVisible: previewVisible,
-          sendAttempts: sendAttempts,
-          materializations: materializations,
-          tombstoneWrites: tombstoneWrites,
-          promptSubmissions: gateway.submissions.length,
-          statusCalls: gateway.statusCalls,
-          attachmentUploads: gateway.imageAttachCalls + gateway.fileAttachCalls,
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        return trace;
+      }
+
+      final cacheOff = await runCase(false);
+      final cacheOn = await runCase(true);
+      expect(cacheOn, cacheOff);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'cached multirow physical order survives canonical paging and newest100 handoff',
+    (tester) async {
+      ChatPreviewStore.resetForTesting();
+      final connection = _remoteConn('preview-paging');
+      final session = _session();
+      final scope = ChatPreviewScope(
+        connectionId: connection.id,
+        profile: 'default',
+        sessionId: session.id,
+      );
+      await ChatPreviewStore.save(scope, [
+        for (var i = 238; i <= 240; i++)
+          {
+            'message_id': 'saved-$i',
+            'role': 'assistant',
+            'content': 'SAVED ORDER $i',
+          },
+      ]);
+      final firstPage = Completer<http.Response>();
+      final requests = <({int offset, String? order, int limit})>[];
+      final rows = <Map<String, dynamic>>[
+        for (var i = 1; i <= 240; i++)
+          {
+            'id': i,
+            'message_id': 'canonical-$i',
+            'role': i.isOdd ? 'user' : 'assistant',
+            'content': 'CANONICAL ORDER $i',
+          },
+      ];
+      http.Response page(int offset) {
+        final end = math.max(0, rows.length - offset);
+        final start = math.max(0, end - 120);
+        final messages = rows.sublist(start, end);
+        return http.Response(
+          jsonEncode({
+            'object': 'list',
+            'session_id': session.id,
+            'messages': messages,
+            'pagination': {
+              'limit': 120,
+              'offset': offset,
+              'order': 'latest',
+              'returned': messages.length,
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
         );
       }
 
-      final cacheOn = await runCase(cacheOn: true);
-      final cacheOff = await runCase(cacheOn: false);
-      expect(cacheOn.previewVisible, isTrue);
-      expect(cacheOff.previewVisible, isFalse);
-      expect(
-        (
-          sendAttempts: cacheOn.sendAttempts,
-          materializations: cacheOn.materializations,
-          tombstoneWrites: cacheOn.tombstoneWrites,
-          promptSubmissions: cacheOn.promptSubmissions,
-          statusCalls: cacheOn.statusCalls,
-          attachmentUploads: cacheOn.attachmentUploads,
-        ),
-        (
-          sendAttempts: cacheOff.sendAttempts,
-          materializations: cacheOff.materializations,
-          tombstoneWrites: cacheOff.tombstoneWrites,
-          promptSubmissions: cacheOff.promptSubmissions,
-          statusCalls: cacheOff.statusCalls,
-          attachmentUploads: cacheOff.attachmentUploads,
-        ),
-        reason:
-            'cache preview must not change queued recovery, authority, or media trace',
+      final api = ApiClient(
+        baseUrl: 'https://example.test',
+        apiKey: 'synthetic',
+        httpClient: MockClient((request) async {
+          final offset = int.parse(
+            request.url.queryParameters['offset'] ?? '0',
+          );
+          requests.add((
+            offset: offset,
+            order: request.url.queryParameters['order'],
+            limit: int.parse(request.url.queryParameters['limit'] ?? '0'),
+          ));
+          return offset == 0 ? firstPage.future : page(offset);
+        }),
       );
+      addTearDown(api.close);
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        api: api,
+        desktopGateway: _UiRewindGateway(),
+        messagesLoaded: false,
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(chat.messagesLoaded, isFalse);
+      expect(chat.messages, isEmpty);
+      for (var i = 238; i <= 240; i++) {
+        expect(find.text('SAVED ORDER $i'), findsOneWidget);
+      }
+      expect(
+        tester.getTopLeft(find.text('SAVED ORDER 238')).dy,
+        lessThan(tester.getTopLeft(find.text('SAVED ORDER 239')).dy),
+      );
+      expect(
+        tester.getTopLeft(find.text('SAVED ORDER 239')).dy,
+        lessThan(tester.getTopLeft(find.text('SAVED ORDER 240')).dy),
+      );
+      expect(requests, [(offset: 0, order: 'latest', limit: 120)]);
+      firstPage.complete(page(0));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('SAVED ORDER 240'), findsNothing);
+      expect(chat.messages.map((m) => m['message_id']), [
+        for (var i = 240; i >= 121; i--) 'canonical-$i',
+      ]);
+      expect(chat.hasEarlierMessages, isTrue);
+      final earlier = chat.loadEarlierMessages();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(await earlier, isTrue);
+      expect(requests, [
+        (offset: 0, order: 'latest', limit: 120),
+        (offset: 120, order: 'latest', limit: 120),
+      ]);
+      expect(chat.messages.map((m) => m['message_id']), [
+        for (var i = 240; i >= 1; i--) 'canonical-$i',
+      ]);
+      final cached = await ChatPreviewStore.load(scope);
+      expect(cached.messages.length, 100);
+      expect(cached.messages.map((m) => m['message_id']), [
+        for (var i = 141; i <= 240; i++) 'canonical-$i',
+      ]);
       expect(tester.takeException(), isNull);
     },
   );
@@ -2976,7 +3348,10 @@ void main() {
       );
       await previewPrivacyReadStarted!.future;
       expect(secureStore.containsKey(transcriptKey), isTrue);
-      expect(secureStore.containsKey(ChatPreviewStore.debugKeyFor(scope)), isTrue);
+      expect(
+        secureStore.containsKey(ChatPreviewStore.debugKeyFor(scope)),
+        isTrue,
+      );
       privacyGate.complete();
       await tester.pump(const Duration(milliseconds: 100));
 
