@@ -51,6 +51,12 @@ final class ChatPreviewStore {
   static final Map<String, int> _completedRevisions = <String, int>{};
   static Future<void> _tail = Future<void>.value();
   static bool _tailIdle = true;
+  static final ValueNotifier<int> _retirementEvents = ValueNotifier<int>(0);
+
+  /// Changes synchronously whenever a cleanup revokes in-process display
+  /// admission. Consumers use this only to discard an already-rendered preview;
+  /// it has no bearing on canonical chat or durable turn authority.
+  static ValueListenable<int> get retirementEvents => _retirementEvents;
 
   static String _hex(String value) => value.codeUnits
       .map((unit) => unit.toRadixString(16).padLeft(4, '0'))
@@ -286,6 +292,7 @@ final class ChatPreviewStore {
 
   static Future<void> clear(ChatPreviewScope scope) {
     _invalidate(scope);
+    _notifyRetirement();
     _nextRevision(debugKeyFor(scope));
     return _enqueue(() => _deleteScopeInternal(scope));
   }
@@ -294,6 +301,7 @@ final class ChatPreviewStore {
     final profileKey = '$connectionId\u0000$profile';
     _profileGenerations[profileKey] =
         (_profileGenerations[profileKey] ?? 0) + 1;
+    _notifyRetirement();
     return _deleteWhere(
       (scope) => scope.connectionId == connectionId && scope.profile == profile,
     );
@@ -302,12 +310,14 @@ final class ChatPreviewStore {
   static Future<void> deleteForConnection(String connectionId) {
     _connectionGenerations[connectionId] =
         (_connectionGenerations[connectionId] ?? 0) + 1;
+    _notifyRetirement();
     return _deleteWhere((scope) => scope.connectionId == connectionId);
   }
 
   /// Deletes every local preview that names a remotely deleted durable id.
   static Future<void> deleteForSession(String sessionId) {
     _sessionGenerations[sessionId] = (_sessionGenerations[sessionId] ?? 0) + 1;
+    _notifyRetirement();
     return _deleteWhere((scope) => scope.sessionId == sessionId);
   }
 
@@ -355,6 +365,10 @@ final class ChatPreviewStore {
   static void _invalidate(ChatPreviewScope scope) {
     final key = debugKeyFor(scope);
     _generations[key] = (_generations[key] ?? 0) + 1;
+  }
+
+  static void _notifyRetirement() {
+    _retirementEvents.value++;
   }
 
   @visibleForTesting

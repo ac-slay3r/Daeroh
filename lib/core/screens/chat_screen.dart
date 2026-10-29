@@ -1301,6 +1301,7 @@ class _ChatScreenState extends State<ChatScreen>
   ChatPipelineState? _editingPipelineSnapshot;
   List<Map<String, dynamic>>? _savedPreviewMessages;
   ChatPreviewSnapshot? _savedPreviewSnapshot;
+  ChatPreviewScope? _savedPreviewOwner;
   bool _authoritativeTranscriptPublished = false;
   int _savedPreviewGeneration = 0;
 
@@ -1309,7 +1310,8 @@ class _ChatScreenState extends State<ChatScreen>
       _savedPreviewMessages != null &&
       _savedPreviewMessages!.isNotEmpty &&
       _savedPreviewSnapshot != null &&
-      ChatPreviewStore.isCurrent(_savedPreviewScope, _savedPreviewSnapshot!);
+      _savedPreviewOwner != null &&
+      ChatPreviewStore.isCurrent(_savedPreviewOwner!, _savedPreviewSnapshot!);
 
   ChatPreviewScope get _savedPreviewScope => ChatPreviewScope(
     connectionId: widget.connection.id,
@@ -1402,6 +1404,7 @@ class _ChatScreenState extends State<ChatScreen>
       setState(() {
         _savedPreviewMessages = safeRows;
         _savedPreviewSnapshot = preview;
+        _savedPreviewOwner = scope;
       });
     }
   }
@@ -1411,9 +1414,25 @@ class _ChatScreenState extends State<ChatScreen>
     _authoritativeTranscriptPublished = true;
     _savedPreviewMessages = null;
     _savedPreviewSnapshot = null;
+    _savedPreviewOwner = null;
     _renderProjection = null;
     _listEntriesProjection = null;
     _listEntries = null;
+  }
+
+  void _retireSavedPreviewIfAdmissionRevoked() {
+    final snapshot = _savedPreviewSnapshot;
+    final owner = _savedPreviewOwner;
+    if (_disposed || !mounted || snapshot == null || owner == null) return;
+    if (ChatPreviewStore.isCurrent(owner, snapshot)) return;
+    setState(() {
+      _savedPreviewMessages = null;
+      _savedPreviewSnapshot = null;
+      _savedPreviewOwner = null;
+      _renderProjection = null;
+      _listEntriesProjection = null;
+      _listEntries = null;
+    });
   }
 
   void _saveAuthoritativePreview() {
@@ -2092,6 +2111,9 @@ class _ChatScreenState extends State<ChatScreen>
     _attachmentListener = _applyAttachmentProjection;
     _sessionUsageSnapshot = widget.session;
     _compaction.addListener(_onCompactionChanged);
+    ChatPreviewStore.retirementEvents.addListener(
+      _retireSavedPreviewIfAdmissionRevoked,
+    );
     WidgetsBinding.instance.addObserver(this);
     _loadPrefs();
     _loadActiveModel();
@@ -6047,6 +6069,9 @@ class _ChatScreenState extends State<ChatScreen>
     // defunct. El stream del agente NO se cancela aquí: el servicio lo mantiene
     // vivo en segundo plano (se suelta más abajo con _chatService.release).
     _disposed = true;
+    ChatPreviewStore.retirementEvents.removeListener(
+      _retireSavedPreviewIfAdmissionRevoked,
+    );
     _composerTurnSettleRetryTimer?.cancel();
     _composerTurnSettleRetryTimer = null;
     final modelConfirmationNavigator = _modelConfirmationNavigator;

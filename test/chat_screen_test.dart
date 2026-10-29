@@ -2557,7 +2557,7 @@ void main() {
   );
 
   testWidgets(
-    'completed preview profile cleanup removes an already-rendered preview on rebuild',
+    'completed preview profile cleanup automatically removes an already-rendered preview',
     (tester) async {
       ChatPreviewStore.resetForTesting();
       final connection = _remoteConn('preview-cleanup-visible');
@@ -2592,7 +2592,6 @@ void main() {
       expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
       expect(chat.messages, isEmpty);
 
-      await tester.enterText(find.byType(TextField).first, 'unsent draft');
       await tester.pump();
       expect(find.text('PRIVATE_PREVIEW_MUST_RETIRE'), findsNothing);
       expect(chat.messages, isEmpty);
@@ -2600,7 +2599,7 @@ void main() {
   );
 
   testWidgets(
-    'completed preview connection cleanup removes an already-rendered preview on rebuild',
+    'completed preview connection cleanup automatically removes an already-rendered preview',
     (tester) async {
       ChatPreviewStore.resetForTesting();
       final connection = _remoteConn('preview-connection-cleanup-visible');
@@ -2638,7 +2637,6 @@ void main() {
 
       await ChatPreviewStore.deleteForConnection(connection.id);
       expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
-      await tester.enterText(find.byType(TextField).first, 'unsent draft');
       await tester.pump();
       expect(find.text('CONNECTION_PRIVATE_PREVIEW_MUST_RETIRE'), findsNothing);
       expect(chat.messages, isEmpty);
@@ -2646,7 +2644,7 @@ void main() {
   );
 
   testWidgets(
-    'completed preview scope cleanup removes an already-rendered preview on rebuild',
+    'completed preview scope cleanup automatically removes an already-rendered preview',
     (tester) async {
       ChatPreviewStore.resetForTesting();
       final connection = _remoteConn('preview-scope-cleanup-visible');
@@ -2679,7 +2677,6 @@ void main() {
 
       await ChatPreviewStore.clear(scope);
       expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
-      await tester.enterText(find.byType(TextField).first, 'unsent draft');
       await tester.pump();
       expect(find.text('SCOPE_PRIVATE_PREVIEW_MUST_RETIRE'), findsNothing);
       expect(chat.messages, isEmpty);
