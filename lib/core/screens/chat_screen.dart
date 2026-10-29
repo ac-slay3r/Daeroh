@@ -14240,6 +14240,7 @@ class _ChatScreenState extends State<ChatScreen>
       content: displayContent,
       isUser: role == 'user',
       assistantRole: role == 'assistant' && !isStreaming && !isPipeline,
+      savedPreview: _showingSavedPreview,
       verbose: _devDiagnostics,
       metadata: metadataMsg,
       linkCache: _linkCache,
@@ -15745,6 +15746,7 @@ class _MessageBubble extends StatelessWidget {
   final String content;
   final bool isUser;
   final bool assistantRole;
+  final bool savedPreview;
   final bool verbose;
   final Map<String, dynamic> metadata;
   final Map<String, _LinkPreviewData?> linkCache;
@@ -15778,6 +15780,7 @@ class _MessageBubble extends StatelessWidget {
     required this.content,
     required this.isUser,
     this.assistantRole = false,
+    this.savedPreview = false,
     required this.linkCache,
     required this.fetchLinkPreview,
     required this.firstUrl,
@@ -15825,6 +15828,7 @@ class _MessageBubble extends StatelessWidget {
           )
         : _AssistantMessage(
             content: content,
+            savedPreview: savedPreview,
             verbose: verbose,
             metadata: metadata,
             linkCache: linkCache,
@@ -16871,6 +16875,7 @@ class _AssistantLiveHeader extends StatelessWidget {
 
 class _AssistantMessage extends StatelessWidget {
   final String content;
+  final bool savedPreview;
   final bool verbose;
   final Map<String, dynamic> metadata;
   final Map<String, _LinkPreviewData?> linkCache;
@@ -16894,6 +16899,7 @@ class _AssistantMessage extends StatelessWidget {
 
   const _AssistantMessage({
     required this.content,
+    this.savedPreview = false,
     required this.linkCache,
     required this.fetchLinkPreview,
     required this.firstUrl,
@@ -17059,6 +17065,14 @@ class _AssistantMessage extends StatelessWidget {
     }
 
     Iterable<Widget> answerWidgets() sync* {
+      if (savedPreview) {
+        // Saved previews are device-only display state. They must never route
+        // a retained MEDIA: directive or attachment metadata into a canonical
+        // renderer that can authenticate or fetch a managed server file.
+        final text = GeneratedMediaService.stripDirectives(answer);
+        if (text.trim().isNotEmpty) yield markdownWidget(text);
+        return;
+      }
       final projected = terminalProjection;
       if (projected != null) {
         var generatedMediaOrdinal = 0;

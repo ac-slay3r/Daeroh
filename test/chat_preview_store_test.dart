@@ -125,6 +125,31 @@ void main() {
   );
 
   test(
+    'complete near-cap envelope remains within the encrypted session bound',
+    () async {
+      final payload = List<String>.filled(4096, 'x').join();
+      await ChatPreviewStore.save(scope, [
+        for (var index = 0; index < 100; index++)
+          {
+            'message_id': 'near-cap-$index',
+            'role': 'assistant',
+            'content': '$payload-$index',
+            'timestamp': index,
+          },
+      ]);
+
+      final raw = secure[ChatPreviewStore.debugKeyFor(scope)]!;
+      final bytes = utf8.encode(raw).length;
+      expect(bytes, greaterThan(80 * 1024));
+      expect(bytes, lessThanOrEqualTo(96 * 1024));
+      final decoded = jsonDecode(raw) as Map<String, dynamic>;
+      expect(decoded['messages'], isNotEmpty);
+      expect(decoded['messages'], isA<List>());
+      expect((await ChatPreviewStore.load(scope)).messages, isNotEmpty);
+    },
+  );
+
+  test(
     'global bound evicts the oldest saved preview without touching the newest',
     () async {
       final largeText = List<String>.filled(4096, 'x').join();

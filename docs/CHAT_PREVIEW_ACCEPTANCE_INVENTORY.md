@@ -69,8 +69,16 @@ the final validation section after the committed candidate exists.
 
 - `test/chat_preview_store_test.dart` — `keeps integer canonical row identities through a safe round trip` and `keeps desktop canonical aliases through a safe round trip`.
 - `test/chat_preview_store_test.dart` — `dedupes canonical identity and accepts newer render metadata`, `rejects rows without canonical identity or private render state`, and `oversized text is clipped and a storage failure stays non-fatal`.
-- `test/chat_preview_store_test.dart` — `writes bounded encrypted render previews and reads them back` (count and complete serialized envelope), `global bound evicts the oldest saved preview without touching the newest` (1 MiB global bound and oldest-saved eviction), and `newer publication wins when an older secure write finishes last` (obsolete publication retention).
+- `test/chat_preview_store_test.dart` — `complete near-cap envelope remains within the encrypted session bound`: a retained multi-row payload exceeds 80 KiB while the complete serialized envelope remains at or below 96 KiB; removing envelope-aware trimming fails this control.
+- `test/chat_preview_store_test.dart` — `global bound evicts the oldest saved preview without touching the newest` (1 MiB global bound and oldest-saved eviction), and `newer publication wins when an older secure write finishes last` (obsolete publication retention).
 
 ## Uncovered / limits
 
-No uncovered source/host acceptance group was identified in the listed shipping tests. This inventory deliberately does not substitute host-widget results for Android runtime acceptance: no build, emulator, physical-device, signer, APK, or distribution gate was run for this source-only card.
+The inventory is incomplete and must not be read as release acceptance. The following required shipping controls are still absent or too weak to detect their historical regression:
+
+- a paired actual-Chat cached `MEDIA:` trace that intercepts Dashboard/Gateway HTTP actions and proves no authenticated token/file-download request before canonical publication;
+- an actual LocalTranscript privacy checkpoint seeded with a revoked cached row, plus a target-unbound Stop tombstone control comparing exact durable bytes, revision, and write count before/after preview rendering;
+- the Settings earlier transcript-delete-error path with a seeded preview that is still cleared and an accurately surfaced partial failure;
+- a cached multirow physical order/paging newest-100 handoff regression.
+
+The current paired seeded queue test has been strengthened to include a real cached `MEDIA:` directive and asserts no generated media card, but it does not yet record Dashboard HTTP activity. Host-widget results do not establish Android runtime acceptance: no build, emulator, physical-device, signer, APK, integration, or distribution gate was run for this source-only card.

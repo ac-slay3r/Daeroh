@@ -2732,31 +2732,39 @@ void main() {
   testWidgets(
     'queued recovery has identical no-side-effect trace with or without cached preview',
     (tester) async {
-      Future<({
-        bool previewVisible,
-        int sendAttempts,
-        int materializations,
-        int tombstoneWrites,
-        int promptSubmissions,
-        int statusCalls,
-        int attachmentUploads,
-      })> runCase({required bool cacheOn}) async {
+      Future<
+        ({
+          bool previewVisible,
+          int sendAttempts,
+          int materializations,
+          int tombstoneWrites,
+          int promptSubmissions,
+          int statusCalls,
+          int attachmentUploads,
+        })
+      >
+      runCase({required bool cacheOn}) async {
         ChatPreviewStore.resetForTesting();
         final suffix = cacheOn ? 'on' : 'off';
         final connection = _remoteConn('preview-queued-trace-$suffix');
-        final session = _session().copyWith(id: 'preview-queued-session-$suffix');
+        final session = _session().copyWith(
+          id: 'preview-queued-session-$suffix',
+        );
         final scope = ChatPreviewScope(
           connectionId: connection.id,
           profile: 'default',
           sessionId: session.id,
         );
         const previewText = 'CACHED_MEDIA_DISPLAY_METADATA_ONLY';
+        const previewMedia =
+            '$previewText\n'
+            'MEDIA:/workspace/private/review-preview-only.png';
         if (cacheOn) {
           await ChatPreviewStore.save(scope, const [
             {
               'message_id': 'preview-queued-media',
               'role': 'assistant',
-              'content': previewText,
+              'content': previewMedia,
               'timestamp': 1,
             },
           ]);
@@ -2833,6 +2841,12 @@ void main() {
         expect(gateway.statusCalls, 1);
         final previewVisible = find.text(previewText).evaluate().isNotEmpty;
         expect(previewVisible, cacheOn);
+        expect(
+          find.byType(GeneratedMediaAttachmentCard),
+          findsNothing,
+          reason:
+              'a saved preview must not enter the authenticated media loader',
+        );
         expect(chat.messages, isEmpty);
         expect(sendAttempts, 0);
         expect(materializations, 0);
@@ -2886,7 +2900,8 @@ void main() {
           statusCalls: cacheOff.statusCalls,
           attachmentUploads: cacheOff.attachmentUploads,
         ),
-        reason: 'cache preview must not change queued recovery, authority, or media trace',
+        reason:
+            'cache preview must not change queued recovery, authority, or media trace',
       );
       expect(tester.takeException(), isNull);
     },
