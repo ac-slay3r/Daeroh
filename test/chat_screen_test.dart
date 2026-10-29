@@ -2010,6 +2010,8 @@ void main() {
   var failOutboxWrites = false;
   var outboxWriteCalls = 0;
   Completer<String?>? delayedOutboxRead;
+  Completer<void>? heldPreviewPrivacyRead;
+  Completer<void>? previewPrivacyReadStarted;
   String? clipboardText;
   var foregroundServiceRunning = false;
   var hapticCalls = 0;
@@ -2215,6 +2217,8 @@ void main() {
     failOutboxWrites = false;
     outboxWriteCalls = 0;
     delayedOutboxRead = null;
+    heldPreviewPrivacyRead = null;
+    previewPrivacyReadStarted = null;
     clipboardText = null;
     foregroundServiceRunning = false;
     hapticCalls = 0;
@@ -2253,6 +2257,13 @@ void main() {
                 return null;
               case 'read':
                 final key = args['key'] as String;
+                if (key.startsWith('hermes.transcript.v3.') &&
+                    heldPreviewPrivacyRead != null) {
+                  previewPrivacyReadStarted?.complete();
+                  final gate = heldPreviewPrivacyRead!;
+                  heldPreviewPrivacyRead = null;
+                  await gate.future;
+                }
                 if (key == 'chat_turn_outbox_v1' && delayedOutboxRead != null) {
                   return delayedOutboxRead!.future;
                 }
@@ -2717,6 +2728,63 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  for (final lane in ['scope', 'profile', 'connection']) {
+    testWidgets('late privacy await cannot publish a retired $lane preview', (
+      tester,
+    ) async {
+      ChatPreviewStore.resetForTesting();
+      final connection = _remoteConn('preview-late-privacy-$lane');
+      final session = _session().copyWith(id: 'preview-late-privacy-session');
+      final scope = ChatPreviewScope(
+        connectionId: connection.id,
+        profile: 'default',
+        sessionId: session.id,
+      );
+      await ChatPreviewStore.save(scope, const [
+        {
+          'message_id': 'late-privacy-preview',
+          'role': 'assistant',
+          'content': 'RETIRED_DURING_PRIVACY_AWAIT',
+        },
+      ]);
+      heldPreviewPrivacyRead = Completer<void>();
+      previewPrivacyReadStarted = Completer<void>();
+      final privacyGate = heldPreviewPrivacyRead!;
+      final canonical = Completer<List<Map<String, dynamic>>>();
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        desktopGateway: _UiRewindGateway(),
+        messagesLoaded: false,
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        storedMessageLoader: (_, _) => canonical.future,
+      );
+      await previewPrivacyReadStarted!.future;
+      switch (lane) {
+        case 'scope':
+          await ChatPreviewStore.clear(scope);
+        case 'profile':
+          await ChatPreviewStore.deleteForProfile(
+            scope.connectionId,
+            scope.profile,
+          );
+        case 'connection':
+          await ChatPreviewStore.deleteForConnection(scope.connectionId);
+      }
+      privacyGate.complete();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
+      expect(find.text('RETIRED_DURING_PRIVACY_AWAIT'), findsNothing);
+      expect(chat.messagesLoaded, isFalse);
+      expect(chat.messages, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+  }
 
   testWidgets(
     'completed preview profile cleanup automatically removes an already-rendered preview',
