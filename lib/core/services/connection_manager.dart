@@ -28,6 +28,7 @@ import '../models/session.dart';
 import 'chat_draft_store.dart';
 import 'bridge_client.dart';
 import 'local_transcript_store.dart';
+import 'chat_preview_store.dart';
 import 'mission_bot_chat_store.dart';
 import 'secure_storage.dart';
 import 'turn_outbox_store.dart';
@@ -1073,6 +1074,9 @@ class ConnectionManager {
       () async => LocalTranscriptStore.deleteForConnection(id),
     );
     await bestEffortCleanup(
+      () async => ChatPreviewStore.deleteForConnection(id),
+    );
+    await bestEffortCleanup(
       () async => MissionBotChatStore(prefs).deleteForConnection(id),
     );
     // Credenciales (Keystore): intentar todas aunque falle otra authority.
@@ -1781,24 +1785,47 @@ class ApiClient {
     required String? profile,
   }) async {
     final connectionId = _connectionId;
-    if (connectionId == null || connectionId.isEmpty) return;
+    if (connectionId == null || connectionId.isEmpty) {
+      // An unbound transport cannot identify a preview owner. Preserve the
+      // confirmed remote-delete result while recording the local cleanup fault;
+      // bound Settings/profile cleanup awaits and reports its own durable error.
+      try {
+        await ChatPreviewStore.deleteForSession(sessionId);
+      } catch (error) {
+        debugPrint('[connection] preview cleanup failed (${error.runtimeType})');
+      }
+      return;
+    }
     final ownerProfile = Session.profileOwner(profile);
+    // The server has already confirmed deletion. Each local store is independent
+    // so a draft/outbox failure cannot retain a private rendered preview.
     try {
       final prefs = await SharedPreferences.getInstance();
       await ChatDraftStore(
         prefs,
       ).clear(connectionId, sessionId, profile: ownerProfile);
+    } catch (error) {
+      debugPrint('[connection] draft cleanup failed (${error.runtimeType})');
+    }
+    try {
       await TurnOutboxStore().deleteForChat(
         connectionId,
         sessionId,
         profile: ownerProfile,
       );
     } catch (error) {
-      // El servidor ya confirmó el borrado: un fallo local de Keystore no debe
-      // convertir esa operación remota correcta en un falso error de UI.
-      debugPrint(
-        '[connection] session recovery cleanup failed (${error.runtimeType})',
+      debugPrint('[connection] outbox cleanup failed (${error.runtimeType})');
+    }
+    try {
+      await ChatPreviewStore.clear(
+        ChatPreviewScope(
+          connectionId: connectionId,
+          profile: ownerProfile,
+          sessionId: sessionId,
+        ),
       );
+    } catch (error) {
+      debugPrint('[connection] preview cleanup failed (${error.runtimeType})');
     }
   }
 
@@ -2460,6 +2487,7 @@ class DashboardClient {
 
   final http.Client _http;
   final String _baseUrl;
+  final String? _connectionId;
   final DateTime Function() _now;
   String? _manualToken;
   String? _basicUser;
@@ -2514,6 +2542,7 @@ class DashboardClient {
     int port = 9119,
     bool useHttps = false,
     String? manualToken,
+    String? connectionId,
     String? basicUser,
     String? basicPass,
     http.Client? httpClientOverride,
@@ -2522,6 +2551,7 @@ class DashboardClient {
          '${useHttps ? 'https' : 'http'}://$host:$port',
        ),
        _manualToken = manualToken,
+       _connectionId = connectionId,
        _basicUser = basicUser,
        _basicPass = basicPass,
        _http = PrivateHttpClient(httpClientOverride ?? http.Client()),
@@ -2538,6 +2568,7 @@ class DashboardClient {
       host: conn.dashboardHost,
       port: conn.dashboardPort,
       useHttps: conn.dashboardUseHttps,
+      connectionId: conn.id,
       httpClientOverride: httpClientOverride,
     );
     if (conn.dashboardAuthMode == AuthMode.sessionToken ||
@@ -2592,6 +2623,7 @@ class DashboardClient {
       host: conn.dashboardHost,
       port: conn.dashboardPort,
       useHttps: conn.dashboardUseHttps,
+      connectionId: conn.id,
       manualToken: conn.dashboardAuthMode == AuthMode.sessionToken
           ? secrets?.sessionToken
           : null,
@@ -3800,7 +3832,15 @@ class DashboardClient {
       apiPatch('profiles/$name', body: {'new_name': newName});
 
   /// DELETE /api/profiles/{name} — elimina el perfil.
-  Future<void> deleteProfile(String name) => apiDelete('profiles/$name');
+  Future<void> deleteProfile(String name) async {
+    await apiDelete('profiles/$name');
+    // Only a client bound to a SavedConnection can retire a local owner.
+    // A matching profile name on another server is unrelated private history.
+    final connectionId = _connectionId;
+    if (connectionId != null && connectionId.isNotEmpty) {
+      await ChatPreviewStore.deleteForProfile(connectionId, name);
+    }
+  }
 
   /// GET /api/profiles/{name}/soul → {content, exists}.
   Future<Map<String, dynamic>> getProfileSoul(String name) =>

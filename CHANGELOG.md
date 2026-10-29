@@ -3,6 +3,21 @@
 All notable public changes are documented here. Internal QA/profile artifacts
 are not releases.
 
+## Daeroh 0.1.16 (4020) — private source candidate
+
+- Add an encrypted, bounded device-only saved Chat preview of at most the
+  newest 100 messages. It is nonauthoritative display data, not current server
+  truth; saved content stays inert until canonical history replaces it.
+- Preview display does not send or replay prompts, fetch media, activate tools,
+  or restore operational state. Clearing the saved preview is local-only and
+  does not delete server history.
+- Normal canonical recovery is unchanged and may still download full history.
+  This is not delta sync, a battery-policy cure, or a change to reconnect
+  banners or terminal-authority rules.
+- Source/host review does not establish Android Keystore, emulator, or
+  physical-device runtime acceptance. No build, signing, installation, or
+  distribution is claimed by this entry.
+
 ## 1.2.14 (9420) — 2026-09-27
 
 Reconnection and reliability fixes, a redesigned Bot Mode, one shared design

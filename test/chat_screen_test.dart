@@ -23,6 +23,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:crypto/crypto.dart' as crypto;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart' show MarkdownBody;
 import 'package:flutter/semantics.dart';
@@ -61,6 +63,7 @@ import 'package:hermes_android/core/models/desktop_control_center.dart';
 import 'package:hermes_android/core/models/desktop_model_catalog.dart';
 import 'package:hermes_android/core/models/desktop_session_config.dart';
 import 'package:hermes_android/core/models/desktop_session_snapshot.dart';
+import 'package:hermes_android/core/models/transcript_privacy_state.dart';
 import 'package:hermes_android/core/services/recovery_proof.dart';
 import 'package:hermes_android/core/services/replay_coordinator.dart';
 import 'package:hermes_android/core/services/session_config_reducer.dart';
@@ -83,6 +86,7 @@ import 'package:hermes_android/core/services/approval_policy.dart';
 import 'package:hermes_android/core/services/attachment_uploader.dart';
 import 'package:hermes_android/core/services/bridge_manager.dart';
 import 'package:hermes_android/core/services/chat_preference_store.dart';
+import 'package:hermes_android/core/services/chat_preview_store.dart';
 import 'package:hermes_android/core/services/chat_draft_store.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/utils/byte_bounded_lru_cache.dart';
@@ -1815,6 +1819,17 @@ class _RecoverableSubmissionGateway extends _SubmissionGateway
   }
 }
 
+// A held public acquisition captures all authority coordinates, including the
+// private Stop revision. Its continuation must remain valid across preview paint.
+class _PreviewAuthorityGateway extends _UiRewindGateway {
+  final connectGate = Completer<void>();
+  @override
+  Future<void> connect() async {
+    await connectGate.future;
+    await super.connect();
+  }
+}
+
 class _RecordingBotModeGateway extends TuiGatewayClient {
   _RecordingBotModeGateway(super.connection);
 
@@ -2001,6 +2016,21 @@ Future<void> _openActivityPanel(WidgetTester tester) async {
   await tester.pump(const Duration(milliseconds: 300));
 }
 
+// Framework image requests bypass package:http mocks.
+class _PreviewImageHttpClient implements HttpClient {
+  final List<String> requests;
+  _PreviewImageHttpClient(this.requests);
+
+  @override
+  Future<HttpClientRequest> getUrl(Uri url) {
+    requests.add(url.toString());
+    return Completer<HttpClientRequest>().future;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   var secureStore = <String, String>{};
@@ -2009,6 +2039,8 @@ void main() {
   var failOutboxWrites = false;
   var outboxWriteCalls = 0;
   Completer<String?>? delayedOutboxRead;
+  Completer<void>? heldPreviewPrivacyRead;
+  Completer<void>? previewPrivacyReadStarted;
   String? clipboardText;
   var foregroundServiceRunning = false;
   var hapticCalls = 0;
@@ -2214,6 +2246,8 @@ void main() {
     failOutboxWrites = false;
     outboxWriteCalls = 0;
     delayedOutboxRead = null;
+    heldPreviewPrivacyRead = null;
+    previewPrivacyReadStarted = null;
     clipboardText = null;
     foregroundServiceRunning = false;
     hapticCalls = 0;
@@ -2252,6 +2286,13 @@ void main() {
                 return null;
               case 'read':
                 final key = args['key'] as String;
+                if (key.startsWith('hermes.transcript.v3.') &&
+                    heldPreviewPrivacyRead != null) {
+                  previewPrivacyReadStarted?.complete();
+                  final gate = heldPreviewPrivacyRead!;
+                  heldPreviewPrivacyRead = null;
+                  await gate.future;
+                }
                 if (key == 'chat_turn_outbox_v1' && delayedOutboxRead != null) {
                   return delayedOutboxRead!.future;
                 }
@@ -2336,6 +2377,10 @@ void main() {
     bool registerActiveChatsTearDown = true,
     int transcriptPageSizeForTesting = 120,
     int Function()? wallClockMs,
+    List<CancelledTurnTombstone> initialCancelledTurnTombstones = const [],
+    Future<void> Function(CancelledTurnTombstone)? onCancelledTurn,
+    CancelledTurnTombstoneStore? cancelledTurnStore,
+    void Function(ActiveChat)? onChatCreated,
   }) async {
     // Forzar locale español para que las cadenas i18n de ChatScreen coincidan
     // con las expectativas del test (el test fue escrito en español).
@@ -2362,6 +2407,7 @@ void main() {
     );
     final sec = SecureStorage();
     final activeChats = ActiveChatService(
+      cancelledTurnStore: cancelledTurnStore,
       attachDesktopRuntimeOnLoad: attachDesktopRuntimeOnLoad,
       compressionRestoreStore:
           compressionRestoreStore ??
@@ -2409,7 +2455,12 @@ void main() {
         disableForegroundKeepAlive: desktopGateway != null,
         transcriptPageSizeForTesting: transcriptPageSizeForTesting,
         wallClockMsForTesting: wallClockMs,
+        initialCancelledTurnTombstonesForTesting: cancelledTurnStore == null
+            ? initialCancelledTurnTombstones
+            : null,
+        onCancelledTurnForTesting: onCancelledTurn,
       );
+      onChatCreated?.call(chat);
       chat.internalMessagesForTesting = List<Map<String, dynamic>>.from(
         messages,
       );
@@ -2507,6 +2558,1106 @@ void main() {
     });
     return chat;
   }
+
+  testWidgets(
+    'encrypted preview is render-only before canonical history and never submits',
+    (tester) async {
+      ChatPreviewStore.resetForTesting();
+      final connection = _remoteConn('preview-render-only');
+      final session = _session().copyWith(id: 'preview-session');
+      await ChatPreviewStore.save(
+        ChatPreviewScope(
+          connectionId: connection.id,
+          profile: 'default',
+          sessionId: session.id,
+        ),
+        const [
+          {
+            'message_id': 'preview-row',
+            'role': 'assistant',
+            'content': 'SYNTHETIC_RENDER_ONLY_PREVIEW',
+          },
+        ],
+      );
+      final canonical = Completer<List<Map<String, dynamic>>>();
+      final gateway = _UiRewindGateway();
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        desktopGateway: gateway,
+        messagesLoaded: false,
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        storedMessageLoader: (_, _) => canonical.future,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('SYNTHETIC_RENDER_ONLY_PREVIEW'), findsOneWidget);
+      expect(chat.messages, isEmpty);
+      expect(gateway.submissions, isEmpty);
+
+      canonical.complete(const []);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('SYNTHETIC_RENDER_ONLY_PREVIEW'), findsNothing);
+      expect(gateway.submissions, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final role in ['user', 'assistant']) {
+    testWidgets(
+      'saved $role markdown is inert before canonical rich image rendering',
+      (tester) async {
+        final requests = <String>[];
+        await HttpOverrides.runZoned(() async {
+          Future<List<String>> runCase(bool cached) async {
+            ChatPreviewStore.resetForTesting();
+            final scope = ChatPreviewScope(
+              connectionId: 'preview-markdown-$role',
+              profile: 'default',
+              sessionId: 'sess-test',
+            );
+            final row = <String, dynamic>{
+              'message_id': 'preview-image-$role',
+              'role': role,
+              'content':
+                  '${role == 'user' ? '[📎 saved.png · 1 KB]\n⟦img:0:/preview-only/missing.png⟧\n' : ''}'
+                  'SAVED_MARKDOWN_$role\n![saved](https://preview-only.invalid/$role-$cached.png)',
+            };
+            if (cached) await ChatPreviewStore.save(scope, [row]);
+            final canonical = Completer<List<Map<String, dynamic>>>();
+            final chat = await pumpChat(
+              tester,
+              connection: _remoteConn(scope.connectionId),
+              desktopGateway: _UiRewindGateway(),
+              messagesLoaded: false,
+              attachDesktopRuntimeOnLoad: false,
+              allowUnownedDesktopSnapshotForTesting: false,
+              storedMessageLoader: (_, _) => canonical.future,
+            );
+            for (var i = 0; i < 20; i++) {
+              await tester.pump(const Duration(milliseconds: 20));
+            }
+            expect(chat.messagesLoaded, isFalse);
+            expect(chat.messages, isEmpty);
+            expect(
+              find.textContaining('SAVED_MARKDOWN_$role', findRichText: true),
+              cached ? findsOneWidget : findsNothing,
+            );
+            final observed = List<String>.of(requests);
+            expect(
+              find.byType(MarkdownBody),
+              findsNothing,
+              reason: 'saved content must remain plain inert text',
+            );
+            expect(
+              find.byType(AttachmentCard),
+              findsNothing,
+              reason:
+                  'saved attachments must not instantiate operational cards',
+            );
+            canonical.complete([row]);
+            for (var i = 0; i < 20; i++) {
+              await tester.pump(const Duration(milliseconds: 20));
+            }
+            expect(chat.messagesLoaded, isTrue);
+            expect(
+              find.byType(MarkdownBody),
+              findsWidgets,
+              reason: 'canonical $role retains rich Markdown rendering',
+            );
+            if (role == 'user') {
+              expect(
+                find.byType(AttachmentCard),
+                findsOneWidget,
+                reason: 'canonical attachments keep their normal renderer',
+              );
+            }
+            if (role == 'user' && !cached) {
+              expect(
+                requests.length,
+                greaterThan(observed.length),
+                reason: 'canonical user image still requests its source',
+              );
+            }
+            await tester.pumpWidget(const SizedBox.shrink());
+            await tester.pump();
+            await ChatPreviewStore.load(scope); // Drain before the next seed.
+            requests.clear();
+            return observed;
+          }
+
+          final off = await runCase(false);
+          final on = await runCase(true);
+          expect(off, isEmpty);
+          expect(
+            on,
+            off,
+            reason:
+                'saved $role display must not attempt HttpClient image fetches',
+          );
+        }, createHttpClient: (_) => _PreviewImageHttpClient(requests));
+      },
+    );
+  }
+
+  testWidgets(
+    'canonical nonempty history replaces the cached preview without changing submission authority',
+    (tester) async {
+      ChatPreviewStore.resetForTesting();
+      final connection = _remoteConn('preview-canonical-replacement');
+      final session = _session().copyWith(id: 'preview-canonical-session');
+      final scope = ChatPreviewScope(
+        connectionId: connection.id,
+        profile: 'default',
+        sessionId: session.id,
+      );
+      await ChatPreviewStore.save(scope, const [
+        {
+          'message_id': 'cached-row',
+          'role': 'assistant',
+          'content': 'CACHED_BEFORE_CANONICAL',
+        },
+      ]);
+      final canonical = Completer<List<Map<String, dynamic>>>();
+      final gateway = _UiRewindGateway();
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        desktopGateway: gateway,
+        messagesLoaded: false,
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        storedMessageLoader: (_, _) => canonical.future,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('CACHED_BEFORE_CANONICAL'), findsOneWidget);
+      expect(chat.messages, isEmpty);
+      expect(gateway.submissions, isEmpty);
+
+      canonical.complete(const [
+        {
+          'message_id': 'canonical-row',
+          'role': 'assistant',
+          'content': 'CANONICAL_REPLACES_PREVIEW',
+        },
+      ]);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('CACHED_BEFORE_CANONICAL'), findsNothing);
+      expect(find.text('CANONICAL_REPLACES_PREVIEW'), findsOneWidget);
+      expect(chat.messages.single['message_id'], 'canonical-row');
+      expect(gateway.submissions, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'cached preview remains render-only when canonical history fails offline',
+    (tester) async {
+      ChatPreviewStore.resetForTesting();
+      final connection = _remoteConn('preview-offline');
+      final session = _session().copyWith(id: 'preview-offline-session');
+      await ChatPreviewStore.save(
+        ChatPreviewScope(
+          connectionId: connection.id,
+          profile: 'default',
+          sessionId: session.id,
+        ),
+        const [
+          {
+            'message_id': 'offline-preview',
+            'role': 'assistant',
+            'content': 'OFFLINE_PREVIEW_REMAINS_VISIBLE',
+          },
+        ],
+      );
+      final gateway = _UiRewindGateway();
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        desktopGateway: gateway,
+        messagesLoaded: false,
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        storedMessageLoader: (_, _) =>
+            Future<List<Map<String, dynamic>>>.error(StateError('offline')),
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('OFFLINE_PREVIEW_REMAINS_VISIBLE'), findsOneWidget);
+      expect(chat.messages, isEmpty);
+      expect(gateway.submissions, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'cached preview applies Stop suppression without mutating durable authority',
+    (tester) async {
+      ChatPreviewStore.resetForTesting();
+      final connection = _remoteConn('preview-stop-render-only');
+      final session = _session().copyWith(id: 'preview-stop-session');
+      final scope = ChatPreviewScope(
+        connectionId: connection.id,
+        profile: 'default',
+        sessionId: session.id,
+      );
+      const rows = <Map<String, dynamic>>[
+        {
+          'message_id': 'preview-anchor',
+          'role': 'assistant',
+          'content': 'SAFE_ANCHOR',
+        },
+        {
+          'message_id': 'preview-cancelled-user',
+          'role': 'user',
+          'content': 'CANCELLED_CACHED_USER',
+        },
+        {
+          'message_id': 'preview-cancelled-reply',
+          'role': 'assistant',
+          'content': 'CANCELLED_CACHED_REPLY',
+        },
+      ];
+      await ChatPreviewStore.save(scope, rows);
+      final canonical = Completer<List<Map<String, dynamic>>>();
+      var durableWrites = 0;
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        desktopGateway: _UiRewindGateway(),
+        messagesLoaded: false,
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        storedMessageLoader: (_, _) => canonical.future,
+        initialCancelledTurnTombstones: const [
+          CancelledTurnTombstone(
+            content: 'CANCELLED_CACHED_USER',
+            anchorMessageId: 'preview-anchor',
+            cancelledMessageId: 'preview-cancelled-user',
+          ),
+        ],
+        onCancelledTurn: (_) async => durableWrites++,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('SAFE_ANCHOR'), findsOneWidget);
+      expect(find.text('CANCELLED_CACHED_REPLY'), findsNothing);
+      expect(chat.messages, isEmpty);
+      expect(durableWrites, 0);
+
+      canonical.complete(rows);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(durableWrites, 0);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'queued recovery has identical no-side-effect trace with or without cached preview',
+    (tester) async {
+      final requests = <String>[];
+      final root = Directory('.dart_tool/preview-media-trace')
+        ..createSync(recursive: true);
+      const provider = MethodChannel('plugins.flutter.io/path_provider');
+      TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(provider, (_) async => root.absolute.path);
+      addTearDown(
+        () => TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(provider, null),
+      );
+      await http.runWithClient(
+        () async {
+          Future<
+            ({
+              bool previewVisible,
+              Map<String, Object?> trace,
+              int sendAttempts,
+              int materializations,
+              int tombstoneWrites,
+              int promptSubmissions,
+              int statusCalls,
+              int attachmentUploads,
+            })
+          >
+          runCase({required bool cacheOn}) async {
+            requests.clear();
+            ChatPreviewStore.resetForTesting();
+            const suffix = 'paired';
+            final connection = _remoteConn('preview-queued-trace-$suffix');
+            final session = _session().copyWith(
+              id: 'preview-queued-session-$suffix',
+            );
+            final scope = ChatPreviewScope(
+              connectionId: connection.id,
+              profile: 'default',
+              sessionId: session.id,
+            );
+            const previewText = 'CACHED_MEDIA_DISPLAY_METADATA_ONLY';
+            const previewMedia =
+                '$previewText\n'
+                'MEDIA:/workspace/private/review-preview-only.png';
+            if (cacheOn) {
+              await ChatPreviewStore.save(scope, const [
+                {
+                  'message_id': 'preview-queued-media',
+                  'role': 'assistant',
+                  'content': previewMedia,
+                  'timestamp': 1,
+                },
+              ]);
+            }
+            final now = DateTime.now().millisecondsSinceEpoch;
+            final queuedAttachment = AttachmentDraft(
+              localId: 'queued-media-$suffix',
+              type: AttachmentType.image,
+              name: 'queued-media.png',
+              mimeType: 'image/png',
+              sizeBytes: 1,
+              localPath: '/device-only/queued-media.png',
+            );
+            final ambiguous = PreparedTurn(
+              connectionId: connection.id,
+              sessionId: session.id,
+              clientTurnId: 'preview-ambiguous-$suffix',
+              createdAtMs: now,
+              updatedAtMs: now,
+              text: 'ambiguous turn must reconcile first',
+              attachments: const [],
+              model: 'hermes-agent',
+              profile: '',
+              state: PreparedTurnState.ambiguous,
+              restoresComposer: false,
+            );
+            final queued = PreparedTurn(
+              connectionId: connection.id,
+              sessionId: session.id,
+              clientTurnId: 'preview-queued-$suffix',
+              createdAtMs: now + 1,
+              updatedAtMs: now + 1,
+              queueOrder: 1,
+              text: 'queued turn must not drain from preview',
+              fullText: 'queued turn must not drain from preview',
+              attachments: [queuedAttachment],
+              model: 'hermes-agent',
+              profile: '',
+              queued: true,
+              restoresComposer: false,
+            );
+            secureStore['chat_turn_outbox_v1'] = jsonEncode({
+              ambiguous.storageId: ambiguous.toJson(),
+              queued.storageId: queued.toJson(),
+            });
+            final canonical = Completer<List<Map<String, dynamic>>>();
+            final statusGate = Completer<DesktopTurnStatus>();
+            final gateway = _RecoverableSubmissionGateway()
+              ..statusGate = statusGate;
+            var sendAttempts = 0;
+            var materializations = 0;
+            var tombstoneWrites = 0;
+            final events = <ActiveChatEvent>[];
+            late StreamSubscription<ActiveChatEvent> subscription;
+            final chat = await pumpChat(
+              tester,
+              onChatCreated: (chat) {
+                subscription = chat.changes.listen(events.add);
+              },
+              connection: connection,
+              session: session,
+              desktopGateway: gateway,
+              messagesLoaded: false,
+              attachDesktopRuntimeOnLoad: false,
+              allowUnownedDesktopSnapshotForTesting: false,
+              storedMessageLoader: (_, _) => canonical.future,
+              initialStoredSessionId: session.id,
+              turnIdempotencyCapability: () async => true,
+              sendAttemptObserver: () => sendAttempts++,
+              attachmentMaterializer: (attachment) async {
+                materializations++;
+                return attachment;
+              },
+              onCancelledTurn: (_) async => tombstoneWrites++,
+            );
+            for (var frame = 0; frame < 40; frame++) {
+              await tester.pump(const Duration(milliseconds: 10));
+            }
+            expect(gateway.statusCalls, 1);
+            final previewVisible = find.text(previewText).evaluate().isNotEmpty;
+            expect(previewVisible, cacheOn);
+            expect(
+              find.byType(GeneratedMediaAttachmentCard),
+              findsNothing,
+              reason:
+                  'a saved preview must not enter the authenticated media loader',
+            );
+            expect(chat.messagesLoaded, isFalse);
+            expect(chat.messages, isEmpty);
+            final durableOutbox =
+                jsonDecode(secureStore['chat_turn_outbox_v1']!) as Map;
+            expect(
+              durableOutbox.values.map((v) => v['client_turn_id']),
+              containsAll([ambiguous.clientTurnId, queued.clientTurnId]),
+            );
+            expect(sendAttempts, 0);
+            expect(materializations, 0);
+            expect(tombstoneWrites, 0);
+            expect(gateway.submissions, isEmpty);
+            expect(gateway.imageAttachCalls + gateway.fileAttachCalls, 0);
+            expect(tester.takeException(), isNull);
+
+            // Freeze ALL operational observations while BOTH authoritative lanes
+            // are still held. Post-release recovery is deliberately excluded.
+            final trace = <String, Object?>{
+              'http': List<String>.of(requests),
+              'send': sendAttempts,
+              'materialize': materializations,
+              'authorityWrites': tombstoneWrites,
+              'authorityBytes': secureStore['cancelled_turn_tombstones_v2'],
+              'submissions': List<String>.of(gateway.submissions),
+              'status': gateway.statusCalls,
+              'uploads': gateway.imageAttachCalls + gateway.fileAttachCalls,
+              'done': events.where((e) => e == ActiveChatEvent.done).length,
+              'queueChanged': events
+                  .where((e) => e == ActiveChatEvent.queueChanged)
+                  .length,
+              'queue': chat.queuedTurns
+                  .map((q) => q.turn.clientTurnId)
+                  .toList(),
+              'drainSuspended': chat.queueDrainSuspendedForTesting,
+              'outbox': durableOutbox.values
+                  .map(
+                    (v) => {
+                      'client_turn_id': v['client_turn_id'],
+                      'state': v['state'],
+                      'queued': v['queued'],
+                    },
+                  )
+                  .toList(),
+              'revision': chat.transcriptCoverageRevisionForTesting,
+              'state': chat.state.name,
+            };
+            expect(
+              requests.where((r) => r.contains('/api/files/download')),
+              isEmpty,
+            );
+            expect(trace['done'], 0);
+            final frozenSend = sendAttempts;
+            final frozenMaterialize = materializations;
+            final frozenWrites = tombstoneWrites;
+            final frozenSubmissions = gateway.submissions.length;
+            final frozenStatus = gateway.statusCalls;
+            final frozenUploads =
+                gateway.imageAttachCalls + gateway.fileAttachCalls;
+            unawaited(subscription.cancel());
+            // Let the fixture settle before the paired mount. The trace is captured
+            // before canonical publication, so only preview admission differs.
+            statusGate.complete(
+              DesktopTurnStatus(
+                known: true,
+                clientTurnId: ambiguous.clientTurnId,
+                serverTurnId: 'server-${ambiguous.clientTurnId}',
+                state: DesktopTurnState.terminal,
+              ),
+            );
+            canonical.complete(const []);
+            await tester.pump();
+            await tester.pump(const Duration(milliseconds: 100));
+            return (
+              previewVisible: previewVisible,
+              trace: trace,
+              sendAttempts: frozenSend,
+              materializations: frozenMaterialize,
+              tombstoneWrites: frozenWrites,
+              promptSubmissions: frozenSubmissions,
+              statusCalls: frozenStatus,
+              attachmentUploads: frozenUploads,
+            );
+          }
+
+          final cacheOn = await runCase(cacheOn: true);
+          final cacheOff = await runCase(cacheOn: false);
+          expect(cacheOn.trace, cacheOff.trace);
+          expect(cacheOn.previewVisible, isTrue);
+          expect(cacheOff.previewVisible, isFalse);
+          expect(
+            (
+              sendAttempts: cacheOn.sendAttempts,
+              materializations: cacheOn.materializations,
+              tombstoneWrites: cacheOn.tombstoneWrites,
+              promptSubmissions: cacheOn.promptSubmissions,
+              statusCalls: cacheOn.statusCalls,
+              attachmentUploads: cacheOn.attachmentUploads,
+            ),
+            (
+              sendAttempts: cacheOff.sendAttempts,
+              materializations: cacheOff.materializations,
+              tombstoneWrites: cacheOff.tombstoneWrites,
+              promptSubmissions: cacheOff.promptSubmissions,
+              statusCalls: cacheOff.statusCalls,
+              attachmentUploads: cacheOff.attachmentUploads,
+            ),
+            reason:
+                'cache preview must not change queued recovery, authority, or media trace',
+          );
+          expect(tester.takeException(), isNull);
+        },
+        () => MockClient((request) async {
+          requests.add('${request.method} ${request.url.path}');
+          if (request.url.path == '/') {
+            return http.Response(
+              'window.__HERMES_SESSION_TOKEN__="synthetic-preview-token";',
+              200,
+            );
+          }
+          return http.Response('{}', 404);
+        }),
+      );
+    },
+  );
+
+  testWidgets(
+    'target-unbound Stop authority stays byte-identical with or without cached preview',
+    (tester) async {
+      final stampedAt = DateTime.now().millisecondsSinceEpoch;
+      Future<Map<String, Object?>> runCase(bool cacheOn) async {
+        ChatPreviewStore.resetForTesting();
+        final connection = _remoteConn('preview-unbound-stop');
+        final session = _session();
+        final scope = ChatPreviewScope(
+          connectionId: connection.id,
+          profile: 'default',
+          sessionId: session.id,
+        );
+        const rows = <Map<String, dynamic>>[
+          {
+            'message_id': 'anchor',
+            'role': 'assistant',
+            'content': 'UNBOUND_SAFE_ANCHOR',
+          },
+          {
+            'message_id': 'cached-user',
+            'role': 'user',
+            'content': 'UNBOUND_CANCELLED_USER',
+          },
+          {
+            'message_id': 'cached-reply',
+            'role': 'assistant',
+            'content': 'UNBOUND_CANCELLED_REPLY',
+          },
+        ];
+        if (cacheOn) {
+          await ChatPreviewStore.save(scope, rows);
+        }
+        final generation = crypto.sha256
+            .convert(
+              utf8.encode(
+                jsonEncode([
+                  connection.id,
+                  connection.kind.name,
+                  connection.host,
+                  connection.port,
+                  connection.useHttps,
+                  connection.gatewayAuthMode.storageKey,
+                  connection.apiKey,
+                ]),
+              ),
+            )
+            .toString();
+        final scopeKey = jsonEncode([
+          connection.id,
+          generation,
+          'default',
+          session.id,
+        ]);
+        String durable = jsonEncode({
+          scopeKey: [
+            const CancelledTurnTombstone(
+              content: 'UNBOUND_CANCELLED_USER',
+              anchorMessageId: 'anchor',
+            ).stamped(stampedAt).toJson(),
+          ],
+        });
+        final before = durable;
+        var writes = 0;
+        final store = CancelledTurnTombstoneStore(
+          read: () async => durable,
+          write: (value) async {
+            writes++;
+            durable = value;
+          },
+        );
+        await store.initialize();
+        List<CancelledTurnTombstone> authority() => store.load(
+          connectionId: connection.id,
+          profile: 'default',
+          sessionId: session.id,
+          generation: generation,
+        );
+        expect(authority().single.hasTargetIdentity, isFalse);
+        final canonical = Completer<List<Map<String, dynamic>>>();
+        heldPreviewPrivacyRead = Completer<void>();
+        previewPrivacyReadStarted = Completer<void>();
+        final privacyGate = heldPreviewPrivacyRead!;
+        final gateway = _PreviewAuthorityGateway();
+        final chat = await pumpChat(
+          tester,
+          connection: connection,
+          session: session,
+          cancelledTurnStore: store,
+          desktopGateway: gateway,
+          initialStoredSessionId: session.id,
+          messagesLoaded: false,
+          attachDesktopRuntimeOnLoad: false,
+          allowUnownedDesktopSnapshotForTesting: false,
+          storedMessageLoader: (_, _) => canonical.future,
+        );
+        await previewPrivacyReadStarted!.future;
+        final acquisition = chat.ensureDesktopRuntime(
+          acquireForExplicitAction: true,
+        );
+        await tester.pump();
+        privacyGate.complete();
+        for (var frame = 0; frame < 40; frame++) {
+          await tester.pump(const Duration(milliseconds: 10));
+        }
+        expect(chat.messagesLoaded, isFalse);
+        expect(chat.messages, isEmpty);
+        expect(
+          find.text('UNBOUND_SAFE_ANCHOR'),
+          cacheOn ? findsOneWidget : findsNothing,
+        );
+        expect(find.text('UNBOUND_CANCELLED_REPLY'), findsNothing);
+        expect(authority().single.hasTargetIdentity, isFalse);
+        expect(
+          durable,
+          before,
+          reason: 'preview cannot bind/persist a cached user identity',
+        );
+        expect(writes, 0);
+        final trace = <String, Object?>{
+          'bytes': durable,
+          'authority': authority().map((t) => t.toJson()).toList(),
+          'writes': writes,
+          'transcriptRevision': chat.transcriptCoverageRevisionForTesting,
+          'pendingCancellation': chat.hasPendingDurableCancellation,
+        };
+        gateway.connectGate.complete();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(
+          await acquisition,
+          isTrue,
+          reason:
+              'captured authority coordinates, including Stop revision, must remain exact across cached rendering',
+        );
+        expect(gateway.resumeExistingCalls, 1);
+        canonical.complete(const []);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        return trace;
+      }
+
+      final cacheOff = await runCase(false);
+      final cacheOn = await runCase(true);
+      expect(cacheOn, cacheOff);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'cached multirow physical order survives canonical paging and newest100 handoff',
+    (tester) async {
+      ChatPreviewStore.resetForTesting();
+      final connection = _remoteConn('preview-paging');
+      final session = _session();
+      final scope = ChatPreviewScope(
+        connectionId: connection.id,
+        profile: 'default',
+        sessionId: session.id,
+      );
+      await ChatPreviewStore.save(scope, [
+        for (var i = 238; i <= 240; i++)
+          {
+            'message_id': 'saved-$i',
+            'role': 'assistant',
+            'content': 'SAVED ORDER $i',
+          },
+      ]);
+      final firstPage = Completer<http.Response>();
+      final requests = <({int offset, String? order, int limit})>[];
+      final rows = <Map<String, dynamic>>[
+        for (var i = 1; i <= 240; i++)
+          {
+            'id': i,
+            'message_id': 'canonical-$i',
+            'role': i.isOdd ? 'user' : 'assistant',
+            'content': 'CANONICAL ORDER $i',
+          },
+      ];
+      http.Response page(int offset) {
+        final end = math.max(0, rows.length - offset);
+        final start = math.max(0, end - 120);
+        final messages = rows.sublist(start, end);
+        return http.Response(
+          jsonEncode({
+            'object': 'list',
+            'session_id': session.id,
+            'messages': messages,
+            'pagination': {
+              'limit': 120,
+              'offset': offset,
+              'order': 'latest',
+              'returned': messages.length,
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }
+
+      final api = ApiClient(
+        baseUrl: 'https://example.test',
+        apiKey: 'synthetic',
+        httpClient: MockClient((request) async {
+          final offset = int.parse(
+            request.url.queryParameters['offset'] ?? '0',
+          );
+          requests.add((
+            offset: offset,
+            order: request.url.queryParameters['order'],
+            limit: int.parse(request.url.queryParameters['limit'] ?? '0'),
+          ));
+          return offset == 0 ? firstPage.future : page(offset);
+        }),
+      );
+      addTearDown(api.close);
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        api: api,
+        desktopGateway: _UiRewindGateway(),
+        messagesLoaded: false,
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(chat.messagesLoaded, isFalse);
+      expect(chat.messages, isEmpty);
+      for (var i = 238; i <= 240; i++) {
+        expect(find.text('SAVED ORDER $i'), findsOneWidget);
+      }
+      expect(
+        tester.getTopLeft(find.text('SAVED ORDER 238')).dy,
+        lessThan(tester.getTopLeft(find.text('SAVED ORDER 239')).dy),
+      );
+      expect(
+        tester.getTopLeft(find.text('SAVED ORDER 239')).dy,
+        lessThan(tester.getTopLeft(find.text('SAVED ORDER 240')).dy),
+      );
+      expect(requests, [(offset: 0, order: 'latest', limit: 120)]);
+      firstPage.complete(page(0));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('SAVED ORDER 240'), findsNothing);
+      expect(chat.messages.map((m) => m['message_id']), [
+        for (var i = 240; i >= 121; i--) 'canonical-$i',
+      ]);
+      expect(chat.hasEarlierMessages, isTrue);
+      final earlier = chat.loadEarlierMessages();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(await earlier, isTrue);
+      expect(requests, [
+        (offset: 0, order: 'latest', limit: 120),
+        (offset: 120, order: 'latest', limit: 120),
+      ]);
+      expect(chat.messages.map((m) => m['message_id']), [
+        for (var i = 240; i >= 1; i--) 'canonical-$i',
+      ]);
+      final cached = await ChatPreviewStore.load(scope);
+      expect(cached.messages.length, 100);
+      expect(cached.messages.map((m) => m['message_id']), [
+        for (var i = 141; i <= 240; i++) 'canonical-$i',
+      ]);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'actual LocalTranscript privacy checkpoint excludes a revoked cached preview row',
+    (tester) async {
+      ChatPreviewStore.resetForTesting();
+      final connection = _remoteConn('preview-privacy-checkpoint');
+      final session = _session().copyWith(
+        id: 'preview-privacy-checkpoint-session',
+      );
+      final scope = ChatPreviewScope(
+        connectionId: connection.id,
+        profile: 'default',
+        sessionId: session.id,
+      );
+      await ChatPreviewStore.save(scope, const [
+        {
+          'message_id': 'revoked-cached-row',
+          'role': 'assistant',
+          'content': 'REVOKED_CACHED_PREVIEW_MUST_NOT_RENDER',
+        },
+      ]);
+      // `savePrivacyCheckpoint` serializes via an async native-storage tail.
+      // Calling it before the first widget pump deadlocks this FakeAsync test;
+      // seed its exact encrypted-storage envelope immediately before mounting,
+      // as the production reader receives it. The held real read below proves
+      // Chat actually loads this checkpoint before the assertion.
+      final checkpoint = TranscriptPrivacyCheckpoint(
+        connectionId: connection.id,
+        profile: 'default',
+        storedSessionId: session.id,
+        revision: 1,
+        coverage: TranscriptPrivacyCoverage.partial,
+        suppressedWindow: false,
+        facts: [
+          TranscriptPrivacyObservation(
+            messageId: 'revoked-cached-row',
+            negative: true,
+          ),
+        ],
+      );
+      String scopeKey(String value) => value.codeUnits
+          .map((unit) => unit.toRadixString(16).padLeft(4, '0'))
+          .join();
+      final transcriptKey =
+          'hermes.transcript.v3.${scopeKey(connection.id)}.${scopeKey('default')}.${scopeKey(session.id)}';
+      heldPreviewPrivacyRead = Completer<void>();
+      previewPrivacyReadStarted = Completer<void>();
+      final privacyGate = heldPreviewPrivacyRead!;
+      final canonical = Completer<List<Map<String, dynamic>>>();
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        desktopGateway: _UiRewindGateway(),
+        messagesLoaded: false,
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        beforeChatPush: () {
+          secureStore[transcriptKey] = jsonEncode({
+            'version': 2,
+            'older_history_truncated': false,
+            'messages': const <Object>[],
+            'privacy_checkpoint': checkpoint.toJson(),
+          });
+        },
+        storedMessageLoader: (_, _) => canonical.future,
+      );
+      await previewPrivacyReadStarted!.future;
+      expect(secureStore.containsKey(transcriptKey), isTrue);
+      expect(
+        secureStore.containsKey(ChatPreviewStore.debugKeyFor(scope)),
+        isTrue,
+      );
+      privacyGate.complete();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('REVOKED_CACHED_PREVIEW_MUST_NOT_RENDER'), findsNothing);
+      expect(chat.messagesLoaded, isFalse);
+      expect(chat.messages, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final lane in ['scope', 'profile', 'connection']) {
+    testWidgets('late privacy await cannot publish a retired $lane preview', (
+      tester,
+    ) async {
+      ChatPreviewStore.resetForTesting();
+      final connection = _remoteConn('preview-late-privacy-$lane');
+      final session = _session().copyWith(id: 'preview-late-privacy-session');
+      final scope = ChatPreviewScope(
+        connectionId: connection.id,
+        profile: 'default',
+        sessionId: session.id,
+      );
+      await ChatPreviewStore.save(scope, const [
+        {
+          'message_id': 'late-privacy-preview',
+          'role': 'assistant',
+          'content': 'RETIRED_DURING_PRIVACY_AWAIT',
+        },
+      ]);
+      heldPreviewPrivacyRead = Completer<void>();
+      previewPrivacyReadStarted = Completer<void>();
+      final privacyGate = heldPreviewPrivacyRead!;
+      final canonical = Completer<List<Map<String, dynamic>>>();
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        desktopGateway: _UiRewindGateway(),
+        messagesLoaded: false,
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        storedMessageLoader: (_, _) => canonical.future,
+      );
+      await previewPrivacyReadStarted!.future;
+      switch (lane) {
+        case 'scope':
+          await ChatPreviewStore.clear(scope);
+        case 'profile':
+          await ChatPreviewStore.deleteForProfile(
+            scope.connectionId,
+            scope.profile,
+          );
+        case 'connection':
+          await ChatPreviewStore.deleteForConnection(scope.connectionId);
+      }
+      privacyGate.complete();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
+      expect(find.text('RETIRED_DURING_PRIVACY_AWAIT'), findsNothing);
+      expect(chat.messagesLoaded, isFalse);
+      expect(chat.messages, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets(
+    'completed preview profile cleanup automatically removes an already-rendered preview',
+    (tester) async {
+      ChatPreviewStore.resetForTesting();
+      final connection = _remoteConn('preview-cleanup-visible');
+      final session = _session().copyWith(id: 'preview-cleanup-session');
+      final scope = ChatPreviewScope(
+        connectionId: connection.id,
+        profile: 'default',
+        sessionId: session.id,
+      );
+      await ChatPreviewStore.save(scope, const [
+        {
+          'message_id': 'private-preview-row',
+          'role': 'assistant',
+          'content': 'PRIVATE_PREVIEW_MUST_RETIRE',
+        },
+      ]);
+      final canonical = Completer<List<Map<String, dynamic>>>();
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        desktopGateway: _UiRewindGateway(),
+        messagesLoaded: false,
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        storedMessageLoader: (_, _) => canonical.future,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('PRIVATE_PREVIEW_MUST_RETIRE'), findsOneWidget);
+
+      await ChatPreviewStore.deleteForProfile(connection.id, 'default');
+      expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
+      expect(chat.messages, isEmpty);
+
+      await tester.pump();
+      expect(find.text('PRIVATE_PREVIEW_MUST_RETIRE'), findsNothing);
+      expect(chat.messages, isEmpty);
+    },
+  );
+
+  testWidgets(
+    'completed preview connection cleanup automatically removes an already-rendered preview',
+    (tester) async {
+      ChatPreviewStore.resetForTesting();
+      final connection = _remoteConn('preview-connection-cleanup-visible');
+      final session = _session().copyWith(
+        id: 'preview-connection-cleanup-session',
+      );
+      final scope = ChatPreviewScope(
+        connectionId: connection.id,
+        profile: 'default',
+        sessionId: session.id,
+      );
+      await ChatPreviewStore.save(scope, const [
+        {
+          'message_id': 'connection-private-preview-row',
+          'role': 'assistant',
+          'content': 'CONNECTION_PRIVATE_PREVIEW_MUST_RETIRE',
+        },
+      ]);
+      final canonical = Completer<List<Map<String, dynamic>>>();
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        desktopGateway: _UiRewindGateway(),
+        messagesLoaded: false,
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        storedMessageLoader: (_, _) => canonical.future,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(
+        find.text('CONNECTION_PRIVATE_PREVIEW_MUST_RETIRE'),
+        findsOneWidget,
+      );
+
+      await ChatPreviewStore.deleteForConnection(connection.id);
+      expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
+      await tester.pump();
+      expect(find.text('CONNECTION_PRIVATE_PREVIEW_MUST_RETIRE'), findsNothing);
+      expect(chat.messages, isEmpty);
+    },
+  );
+
+  testWidgets(
+    'completed preview scope cleanup automatically removes an already-rendered preview',
+    (tester) async {
+      ChatPreviewStore.resetForTesting();
+      final connection = _remoteConn('preview-scope-cleanup-visible');
+      final session = _session().copyWith(id: 'preview-scope-cleanup-session');
+      final scope = ChatPreviewScope(
+        connectionId: connection.id,
+        profile: 'default',
+        sessionId: session.id,
+      );
+      await ChatPreviewStore.save(scope, const [
+        {
+          'message_id': 'scope-private-preview-row',
+          'role': 'assistant',
+          'content': 'SCOPE_PRIVATE_PREVIEW_MUST_RETIRE',
+        },
+      ]);
+      final canonical = Completer<List<Map<String, dynamic>>>();
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        desktopGateway: _UiRewindGateway(),
+        messagesLoaded: false,
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        storedMessageLoader: (_, _) => canonical.future,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('SCOPE_PRIVATE_PREVIEW_MUST_RETIRE'), findsOneWidget);
+
+      await ChatPreviewStore.clear(scope);
+      expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
+      await tester.pump();
+      expect(find.text('SCOPE_PRIVATE_PREVIEW_MUST_RETIRE'), findsNothing);
+      expect(chat.messages, isEmpty);
+    },
+  );
 
   void mockCompanionStorage() {
     final support = Directory.systemTemp.createTempSync(

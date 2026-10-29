@@ -8470,6 +8470,22 @@ class ActiveChat {
     ),
   );
 
+  /// Applies already-loaded local privacy and Stop-tombstone display vetoes to a
+  /// non-authoritative device preview. This is deliberately side-effect-free:
+  /// cached rows cannot bind, revise, or persist durable Stop metadata.
+  List<Map<String, dynamic>> projectCachedPreviewForDisplay(
+    List<Map<String, dynamic>> newestFirst,
+  ) => _projectTranscriptForInternalState(
+    _applyDurablePrivateTranscriptVetoes(
+      projectCancelledTurnTombstones(
+        existingNewestFirst: const <Map<String, dynamic>>[],
+        incomingNewestFirst: newestFirst,
+        durableTombstones: _cancelledTurnTombstones,
+        incomingTranscriptComplete: false,
+      ),
+    ),
+  );
+
   void _persistUpdatedTombstone(CancelledTurnTombstone tombstone) {
     final persist = _onCancelledTurn;
     if (persist == null) return;
@@ -26972,6 +26988,10 @@ class ActiveChatService {
     @visibleForTesting bool disableForegroundKeepAlive = false,
     @visibleForTesting int transcriptPageSizeForTesting = 500,
     @visibleForTesting int Function()? wallClockMsForTesting,
+    @visibleForTesting
+    List<CancelledTurnTombstone>? initialCancelledTurnTombstonesForTesting,
+    @visibleForTesting
+    Future<void> Function(CancelledTurnTombstone)? onCancelledTurnForTesting,
   }) {
     final owner = Session.profileOwner(
       sessionProfile ?? sessionSnapshot?.profile,
@@ -27097,6 +27117,7 @@ class ActiveChatService {
       // durable de Desktop. Restaura la unión exacta de ruta, lineage y stored
       // id para que un Stop confirmado no desaparezca tras reabrir.
       initialCancelledTurnTombstones:
+          initialCancelledTurnTombstonesForTesting ??
           cancelledTurnStore?.loadAliases(
             connectionId: connection.id,
             profile: owner,
@@ -27104,22 +27125,24 @@ class ActiveChatService {
             generation: tombstoneGeneration,
           ) ??
           const [],
-      onCancelledTurn: cancelledTurnStore == null
-          ? null
-          : (tombstone) {
-              final aliases = <String>{...initialTombstoneSessionIds};
-              final storedId = chat.storedSessionId;
-              if (storedId != null && storedId.isNotEmpty) {
-                aliases.add(storedId);
-              }
-              return cancelledTurnStore.addAliases(
-                connectionId: connection.id,
-                profile: owner,
-                sessionIds: aliases,
-                tombstone: tombstone,
-                generation: tombstoneGeneration,
-              );
-            },
+      onCancelledTurn:
+          onCancelledTurnForTesting ??
+          (cancelledTurnStore == null
+              ? null
+              : (tombstone) {
+                  final aliases = <String>{...initialTombstoneSessionIds};
+                  final storedId = chat.storedSessionId;
+                  if (storedId != null && storedId.isNotEmpty) {
+                    aliases.add(storedId);
+                  }
+                  return cancelledTurnStore.addAliases(
+                    connectionId: connection.id,
+                    profile: owner,
+                    sessionIds: aliases,
+                    tombstone: tombstone,
+                    generation: tombstoneGeneration,
+                  );
+                }),
     );
     _chats[key] = chat;
     final seed =

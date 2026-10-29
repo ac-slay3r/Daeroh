@@ -24,6 +24,7 @@ import '../services/global_activity_aggregate.dart';
 import '../services/home_widget_publisher.dart';
 import '../services/platform/android_apps.dart';
 import '../services/local_transcript_store.dart';
+import '../services/chat_preview_store.dart';
 import '../services/session_archive.dart';
 import '../services/session_deletion.dart';
 import '../services/session_library_diagnostics.dart';
@@ -707,6 +708,14 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
       if (!removed) return;
     }
     if (!mounted || !removed) return;
+    await ChatPreviewStore.clear(
+      ChatPreviewScope(
+        connectionId: conn.id,
+        profile: ownerProfile,
+        sessionId: session.id,
+      ),
+    );
+    if (!mounted) return;
     final aggregate = _activeChats?.globalActivity;
     aggregate?.clearSession(conn.id, ownerProfile, session.id);
     await aggregate?.flushJournal();
