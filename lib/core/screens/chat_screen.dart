@@ -92,6 +92,8 @@ import '../services/bridge_update_service.dart';
 import '../services/chat_draft_store.dart';
 import '../services/chat_preference_store.dart';
 import '../services/chat_preview_store.dart';
+import '../services/local_transcript_store.dart';
+import '../models/transcript_privacy_state.dart';
 import '../services/desktop_gateway_capabilities.dart';
 import '../services/mission_bot_chat_store.dart';
 import '../services/notifications/notification_service.dart';
@@ -1314,19 +1316,16 @@ class _ChatScreenState extends State<ChatScreen>
     sessionId: _chat.serverSessionId,
   );
 
-  /// Congela la proyección visual mientras el editor está abierto. El agente
-  /// puede avanzar en segundo plano, pero su respuesta no aparece mientras se
-  /// edita: Cancelar revela el progreso real y Guardar rebobina el turno.
+  /// Authoritative state only. Preview rows must never influence recovery,
+  /// send, edit, queue, user-count or missing-session decisions.
   List<Map<String, dynamic>> get _messages {
     final probe = widget.performanceProbe;
     if (probe != null) probe.publicTranscriptReads += 1;
-    if (_editingMessagesSnapshot != null) return _editingMessagesSnapshot!;
-    // Saved preview is a separate UI projection. It never enters ActiveChat.
-    if (_showingSavedPreview && _chat.messages.isEmpty) {
-      return _savedPreviewMessages!;
-    }
-    return _chat.messages;
+    return _editingMessagesSnapshot ?? _chat.messages;
   }
+
+  List<Map<String, dynamic>> get _renderMessages =>
+      _showingSavedPreview ? _savedPreviewMessages! : _messages;
 
   bool get _editingTranscriptChanged {
     final before = _editingMessagesSnapshot;
@@ -1361,17 +1360,32 @@ class _ChatScreenState extends State<ChatScreen>
       await _fetchMessages(passiveOnly: passiveOnly);
       return;
     }
+    final scope = _savedPreviewScope;
     final generation = ++_savedPreviewGeneration;
-    final previewFuture = ChatPreviewStore.load(_savedPreviewScope);
+    final previewFuture = ChatPreviewStore.load(scope);
+    final privacyFuture = LocalTranscriptStore.loadSnapshot(
+      scope.connectionId,
+      scope.sessionId,
+      profile: scope.profile,
+    );
     unawaited(_fetchMessages(passiveOnly: passiveOnly));
     final preview = await previewFuture;
+    final privacy = await privacyFuture;
+    final checkpoint = privacy.privacyCheckpoint;
+    final graph = checkpoint == null ? null : TranscriptPrivacyGraph(checkpoint.facts);
+    final safeRows = checkpoint?.suppressedWindow == true
+        ? const <Map<String, dynamic>>[]
+        : preview.messages
+            .where((row) => graph == null || !graph.excludes(TranscriptPrivacyObservation.fromRaw(row)))
+            .toList(growable: false);
     if (!_disposed &&
         mounted &&
         generation == _savedPreviewGeneration &&
         !_chat.messagesLoaded &&
         _chat.messages.isEmpty &&
-        preview.messages.isNotEmpty) {
-      setState(() => _savedPreviewMessages = preview.messages);
+        safeRows.isNotEmpty) {
+      // Store is chronological; the reverse ListView's source contract is newest-first.
+      setState(() => _savedPreviewMessages = safeRows.reversed.toList());
     }
   }
 
@@ -1385,8 +1399,7 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   void _saveAuthoritativePreview() {
-    if (widget.connection.kind == InstanceKind.localhost ||
-        _chat.messages.isEmpty) {
+    if (widget.connection.kind == InstanceKind.localhost) {
       return;
     }
     // ActiveChat already applies its privacy/tombstone display vetoes. Copy the
@@ -6502,7 +6515,7 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   ChatRenderProjection get _currentRenderProjection {
-    final messages = _messages;
+    final messages = _renderMessages;
     final cached = _renderProjection;
     if (cached != null && cached.canReuseFor(messages)) return cached;
     widget.performanceProbe?.renderProjectionBuilds++;
@@ -6520,7 +6533,7 @@ class _ChatScreenState extends State<ChatScreen>
     // ActiveChat.messages computes the privacy/editorial projection. Read one
     // coherent snapshot for this synchronous pass, not the full history once
     // per row (quadratic on a cached long chat, before any network request).
-    final messages = _messages;
+    final messages = _renderMessages;
     final entries = <_ChatListEntry>[];
     final retainedErrorPair =
         !_chat.isStreaming &&
@@ -6832,7 +6845,9 @@ class _ChatScreenState extends State<ChatScreen>
               passiveOnly: passiveOnly,
               published: true,
             );
+            _replaceSavedPreviewWithAuthoritativeTranscript();
           });
+          _saveAuthoritativePreview();
         },
       );
       if (_disposed || !mounted || refreshEpoch != _messageRefreshEpoch) {
@@ -6874,6 +6889,8 @@ class _ChatScreenState extends State<ChatScreen>
         }
         if (storedSessionGone) {
           _chat.markStoredSessionGone();
+          _replaceSavedPreviewWithAuthoritativeTranscript();
+          unawaited(ChatPreviewStore.clear(_savedPreviewScope));
           setState(() => _error = null);
           HermesNotice.of(context).showSnackBar(
             SnackBar(content: Text(Strings.of(context).chaSessionGone)),
@@ -7924,7 +7941,8 @@ class _ChatScreenState extends State<ChatScreen>
 
   bool _isLatestAssistant(Map<String, dynamic> target) {
     final indexes = _currentRenderProjection.assistantMessageIndexesNewestFirst;
-    return indexes.isNotEmpty && identical(_messages[indexes.first], target);
+    return indexes.isNotEmpty &&
+        identical(_renderMessages[indexes.first], target);
   }
 
   void _editUserMessage(Map<String, dynamic> message, double bubbleWidth) {
@@ -13461,7 +13479,7 @@ class _ChatScreenState extends State<ChatScreen>
 
   Widget _buildBodyContent() {
     final colors = Theme.of(context).hermes;
-    if (_messages.isEmpty &&
+    if (_renderMessages.isEmpty &&
         (_interactiveMessageRefreshPending || !_chat.messagesLoaded) &&
         _error == null) {
       // Estado de carga con la mascota (006): si la presencia está activa, el
@@ -13486,7 +13504,7 @@ class _ChatScreenState extends State<ChatScreen>
       );
     }
 
-    if (_error != null && _messages.isEmpty) {
+    if (_error != null && _renderMessages.isEmpty) {
       // A-201 (spec 028): estado de error según la plantilla §14 del design
       // system — card `error` alpha 0.08 con borde 0.3, mensaje conciso en
       // español y reintento con HermesSecondaryButton. La excepción cruda
@@ -13575,7 +13593,7 @@ class _ChatScreenState extends State<ChatScreen>
       );
     }
 
-    if (_messages.isEmpty) {
+    if (_renderMessages.isEmpty) {
       return KeyedSubtree(
         key: const ValueKey('chat-empty-state'),
         child: _EmptyChatState(
@@ -13586,7 +13604,7 @@ class _ChatScreenState extends State<ChatScreen>
     }
 
     final entries = _currentListEntries;
-    pruneMessageAnchorCache(_messageAnchors, _messages);
+    pruneMessageAnchorCache(_messageAnchors, _renderMessages);
 
     final transcript = ListenableBuilder(
       listenable: Listenable.merge([
@@ -13820,14 +13838,14 @@ class _ChatScreenState extends State<ChatScreen>
   Object _materializeRenderUnit(ChatRenderUnitPlan plan) {
     switch (plan) {
       case ChatMessageUnitPlan(:final messageIndex):
-        return _messages[messageIndex];
+        return _renderMessages[messageIndex];
       case ChatUserTurnUnitPlan(
         :final primaryMessageIndex,
         :final supplementMessageIndexes,
       ):
-        final group = _UserTurnGroup(_messages[primaryMessageIndex]);
+        final group = _UserTurnGroup(_renderMessages[primaryMessageIndex]);
         group.supplements.addAll(
-          supplementMessageIndexes.map((index) => _messages[index]),
+          supplementMessageIndexes.map((index) => _renderMessages[index]),
         );
         return group;
       case ChatToolActivityUnitPlan(:final events):
@@ -13847,7 +13865,7 @@ class _ChatScreenState extends State<ChatScreen>
         [primaryMessageIndex, ...supplementMessageIndexes],
       ChatToolActivityUnitPlan(:final messageIndexes) => messageIndexes,
     };
-    return [for (final index in indexes) _messages[index]];
+    return [for (final index in indexes) _renderMessages[index]];
   }
 
   /// Stable key for the newest-row entrance. Durable transcript coordinates are

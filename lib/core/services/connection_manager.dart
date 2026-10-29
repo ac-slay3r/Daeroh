@@ -1785,7 +1785,10 @@ class ApiClient {
     required String? profile,
   }) async {
     final connectionId = _connectionId;
-    if (connectionId == null || connectionId.isEmpty) return;
+    if (connectionId == null || connectionId.isEmpty) {
+      await ChatPreviewStore.deleteForSession(sessionId);
+      return;
+    }
     final ownerProfile = Session.profileOwner(profile);
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -1796,6 +1799,13 @@ class ApiClient {
         connectionId,
         sessionId,
         profile: ownerProfile,
+      );
+      await ChatPreviewStore.clear(
+        ChatPreviewScope(
+          connectionId: connectionId,
+          profile: ownerProfile,
+          sessionId: sessionId,
+        ),
       );
     } catch (error) {
       // El servidor ya confirmó el borrado: un fallo local de Keystore no debe

@@ -39,6 +39,14 @@ final class ChatPreviewStore {
   static const _maxGlobalBytes = 1024 * 1024;
   static final _storage = sharedSecureStorage;
   static final Map<String, int> _generations = <String, int>{};
+  static final Map<String, int> _profileGenerations = <String, int>{};
+  static final Map<String, int> _connectionGenerations = <String, int>{};
+  static final Map<String, int> _sessionGenerations = <String, int>{};
+  static final Map<String, int> _writeVersions = <String, int>{};
+  static final Map<String, String?> _latestEncoded = <String, String?>{};
+  static final Map<String, ({int scope, int profile, int connection, int session})>
+  _latestAdmissions =
+      <String, ({int scope, int profile, int connection, int session})>{};
 
   static String _hex(String value) => value.codeUnits
       .map((unit) => unit.toRadixString(16).padLeft(4, '0'))
@@ -46,6 +54,32 @@ final class ChatPreviewStore {
 
   static String debugKeyFor(ChatPreviewScope scope) =>
       '$_prefix${_hex(scope.connectionId)}.${_hex(scope.profile)}.${_hex(scope.sessionId)}';
+
+  static String _profileKey(ChatPreviewScope scope) =>
+      '${scope.connectionId}\u0000${scope.profile}';
+
+  static ({int scope, int profile, int connection, int session}) _admission(
+    ChatPreviewScope scope,
+  ) {
+    final key = debugKeyFor(scope);
+    return (
+      scope: _generations[key] ?? 0,
+      profile: _profileGenerations[_profileKey(scope)] ?? 0,
+      connection: _connectionGenerations[scope.connectionId] ?? 0,
+      session: _sessionGenerations[scope.sessionId] ?? 0,
+    );
+  }
+
+  static bool _stillAdmitted(
+    ChatPreviewScope scope,
+    ({int scope, int profile, int connection, int session}) admission,
+  ) {
+    final now = _admission(scope);
+    return now.scope == admission.scope &&
+        now.profile == admission.profile &&
+        now.connection == admission.connection &&
+        now.session == admission.session;
+  }
 
   static String _identity(Map<String, dynamic> row) {
     final messageId = row['message_id']?.toString();
@@ -77,7 +111,8 @@ final class ChatPreviewStore {
       'role': role,
       'content': clipped,
       if (row['message_id'] is String) 'message_id': row['message_id'],
-      if (row['row_id'] is String) 'row_id': row['row_id'],
+      if (row['row_id'] is String || row['row_id'] is int)
+        'row_id': row['row_id'],
       if (row['timestamp'] is num) 'timestamp': row['timestamp'],
       if (displayKind == 'process_complete' ||
           displayKind == 'async_delegation_complete')
@@ -103,9 +138,12 @@ final class ChatPreviewStore {
   }
 
   static Future<ChatPreviewSnapshot> load(ChatPreviewScope scope) async {
+    final admission = _admission(scope);
     try {
       final raw = await _storage.read(key: debugKeyFor(scope));
-      if (raw == null || raw.isEmpty) return const ChatPreviewSnapshot([]);
+      if (!_stillAdmitted(scope, admission) || raw == null || raw.isEmpty) {
+        return const ChatPreviewSnapshot([]);
+      }
       final decoded = jsonDecode(raw);
       if (decoded is! Map ||
           decoded['version'] != 1 ||
@@ -124,19 +162,41 @@ final class ChatPreviewStore {
     Iterable<Map<String, dynamic>> chronologicalRows,
   ) async {
     final key = debugKeyFor(scope);
-    final generation = _generations[key] ?? 0;
-    final rows = _bound(chronologicalRows);
-    if (rows.isEmpty) return;
-    final encoded = jsonEncode({
+    final admission = _admission(scope);
+    final version = (_writeVersions[key] ?? 0) + 1;
+    _writeVersions[key] = version;
+    final savedAtMs = DateTime.now().millisecondsSinceEpoch;
+    String encode(List<Map<String, dynamic>> messages) => jsonEncode({
       'version': 1,
-      'saved_at_ms': DateTime.now().millisecondsSinceEpoch,
-      'messages': rows,
+      'saved_at_ms': savedAtMs,
+      'messages': messages,
     });
+    final rows = _bound(chronologicalRows).toList(growable: true);
+    while (rows.isNotEmpty && utf8.encode(encode(rows)).length > _maxSessionBytes) {
+      rows.removeAt(0);
+    }
+    final encoded = rows.isEmpty ? null : encode(rows);
+    _latestEncoded[key] = encoded;
+    _latestAdmissions[key] = admission;
     try {
-      if ((_generations[key] ?? 0) != generation) return;
-      await _storage.write(key: key, value: encoded);
-      if ((_generations[key] ?? 0) != generation) {
+      if (!_stillAdmitted(scope, admission) || _writeVersions[key] != version) {
+        return;
+      }
+      if (encoded == null) {
         await _storage.delete(key: key);
+        return;
+      }
+      await _storage.write(key: key, value: encoded);
+      if (!_stillAdmitted(scope, admission) || _writeVersions[key] != version) {
+        final latest = _latestEncoded[key];
+        final latestAdmission = _latestAdmissions[key];
+        if (latest == null ||
+            latestAdmission == null ||
+            !_stillAdmitted(scope, latestAdmission)) {
+          await _storage.delete(key: key);
+        } else {
+          await _storage.write(key: key, value: latest);
+        }
         return;
       }
       await _evictOldestUntilBound(key);
@@ -176,21 +236,33 @@ final class ChatPreviewStore {
   }
 
   static Future<void> clear(ChatPreviewScope scope) async {
-    final key = debugKeyFor(scope);
-    _generations[key] = (_generations[key] ?? 0) + 1;
+    _invalidate(scope);
     try {
-      await _storage.delete(key: key);
+      await _storage.delete(key: debugKeyFor(scope));
     } catch (_) {}
   }
 
-  static Future<void> deleteForProfile(String connectionId, String profile) =>
-      _deleteWhere(
-        (scope) =>
-            scope.connectionId == connectionId && scope.profile == profile,
-      );
+  static Future<void> deleteForProfile(String connectionId, String profile) {
+    final profileKey = '$connectionId\u0000$profile';
+    _profileGenerations[profileKey] = (_profileGenerations[profileKey] ?? 0) + 1;
+    return _deleteWhere(
+      (scope) =>
+          scope.connectionId == connectionId && scope.profile == profile,
+    );
+  }
 
-  static Future<void> deleteForConnection(String connectionId) =>
-      _deleteWhere((scope) => scope.connectionId == connectionId);
+  static Future<void> deleteForConnection(String connectionId) {
+    _connectionGenerations[connectionId] =
+        (_connectionGenerations[connectionId] ?? 0) + 1;
+    return _deleteWhere((scope) => scope.connectionId == connectionId);
+  }
+
+  /// Deletes every local preview that names a remotely deleted durable id.
+  /// A caller without a connection binding must fail closed across owners.
+  static Future<void> deleteForSession(String sessionId) {
+    _sessionGenerations[sessionId] = (_sessionGenerations[sessionId] ?? 0) + 1;
+    return _deleteWhere((scope) => scope.sessionId == sessionId);
+  }
 
   static Future<void> _deleteWhere(
     bool Function(ChatPreviewScope scope) matches,
@@ -211,13 +283,29 @@ final class ChatPreviewStore {
             sessionId: decode(pieces[2]),
           );
           if (!matches(scope)) continue;
-          _generations[key] = (_generations[key] ?? 0) + 1;
+          _invalidate(scope);
           await _storage.delete(key: key);
         } catch (_) {}
       }
     } catch (_) {}
   }
 
+  static void _invalidate(ChatPreviewScope scope) {
+    final key = debugKeyFor(scope);
+    _generations[key] = (_generations[key] ?? 0) + 1;
+    _writeVersions[key] = (_writeVersions[key] ?? 0) + 1;
+    _latestEncoded.remove(key);
+    _latestAdmissions.remove(key);
+  }
+
   @visibleForTesting
-  static void resetForTesting() => _generations.clear();
+  static void resetForTesting() {
+    _generations.clear();
+    _profileGenerations.clear();
+    _connectionGenerations.clear();
+    _sessionGenerations.clear();
+    _writeVersions.clear();
+    _latestEncoded.clear();
+    _latestAdmissions.clear();
+  }
 }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/services/chat_preview_store.dart';
@@ -7,11 +9,15 @@ void main() {
 
   final secure = <String, String>{};
   String? delayedWriteKey;
+  Completer<void>? heldRead;
+  Completer<void>? readStarted;
   var failWrites = false;
 
   setUp(() {
     secure.clear();
     delayedWriteKey = null;
+    heldRead = null;
+    readStarted = null;
     failWrites = false;
     TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
@@ -29,7 +35,14 @@ void main() {
                 secure[key!] = args['value'] as String;
                 return null;
               case 'read':
-                return secure[key];
+                final value = secure[key];
+                final gate = heldRead;
+                heldRead = null;
+                if (gate != null) {
+                  readStarted?.complete();
+                  await gate.future;
+                }
+                return value;
               case 'readAll':
                 return Map<String, String>.from(secure);
               case 'delete':
@@ -114,7 +127,7 @@ void main() {
       await ChatPreviewStore.clear(scope);
       await lateSave;
 
-      expect(await ChatPreviewStore.load(scope), isEmpty);
+      expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
     },
   );
 
@@ -131,4 +144,56 @@ void main() {
       expect(saved.messages.map((message) => message['message_id']), ['m-2']);
     },
   );
+
+  test('empty accepted projection retires the prior encrypted preview', () async {
+    await ChatPreviewStore.save(scope, [row(1)]);
+    await ChatPreviewStore.save(scope, const []);
+
+    expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
+  });
+
+  test('profile cleanup fences a first write not yet visible to readAll', () async {
+    delayedWriteKey = ChatPreviewStore.debugKeyFor(scope);
+    final pending = ChatPreviewStore.save(scope, [row(1)]);
+    await Future<void>.delayed(Duration.zero);
+
+    await ChatPreviewStore.deleteForProfile('conn-a', 'profile-a');
+    await pending;
+
+    expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
+  });
+
+  test('scope clear fences a held secure read before it can publish', () async {
+    await ChatPreviewStore.save(scope, [row(1)]);
+    heldRead = Completer<void>();
+    readStarted = Completer<void>();
+    final release = heldRead!;
+    final pending = ChatPreviewStore.load(scope);
+    await readStarted!.future;
+
+    await ChatPreviewStore.clear(scope);
+    release.complete();
+
+    expect((await pending).isEmpty, isTrue);
+  });
+
+  test('newer publication wins when an older secure write finishes last', () async {
+    delayedWriteKey = ChatPreviewStore.debugKeyFor(scope);
+    final older = ChatPreviewStore.save(scope, [row(1, text: 'old')]);
+    await Future<void>.delayed(Duration.zero);
+    await ChatPreviewStore.save(scope, [row(1, text: 'new')]);
+    await older;
+
+    expect((await ChatPreviewStore.load(scope)).messages.single['content'], 'new 1');
+  });
+
+  test('keeps integer canonical row identities through a safe round trip', () async {
+    await ChatPreviewStore.save(scope, [
+      {'row_id': 1, 'role': 'user', 'content': 'one'},
+      {'row_id': 2, 'role': 'assistant', 'content': 'two'},
+    ]);
+
+    final saved = await ChatPreviewStore.load(scope);
+    expect(saved.messages.map((row) => row['row_id']), [1, 2]);
+  });
 }
