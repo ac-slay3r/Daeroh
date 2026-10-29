@@ -8470,13 +8470,20 @@ class ActiveChat {
     ),
   );
 
-  /// Applies the already-loaded local privacy and Stop-tombstone display vetoes
-  /// to a non-authoritative device preview. This never updates chat state.
+  /// Applies already-loaded local privacy and Stop-tombstone display vetoes to a
+  /// non-authoritative device preview. This is deliberately side-effect-free:
+  /// cached rows cannot bind, revise, or persist durable Stop metadata.
   List<Map<String, dynamic>> projectCachedPreviewForDisplay(
     List<Map<String, dynamic>> newestFirst,
-  ) => _applyCancelledTurnTombstonesForDisplay(
-    newestFirst,
-    incomingTranscriptComplete: false,
+  ) => _projectTranscriptForInternalState(
+    _applyDurablePrivateTranscriptVetoes(
+      projectCancelledTurnTombstones(
+        existingNewestFirst: const <Map<String, dynamic>>[],
+        incomingNewestFirst: newestFirst,
+        durableTombstones: _cancelledTurnTombstones,
+        incomingTranscriptComplete: false,
+      ),
+    ),
   );
 
   void _persistUpdatedTombstone(CancelledTurnTombstone tombstone) {

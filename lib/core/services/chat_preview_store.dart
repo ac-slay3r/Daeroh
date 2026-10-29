@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -29,9 +30,11 @@ final class ChatPreviewSnapshot {
 
 /// Encrypted, bounded display cache for remote chat only.
 ///
-/// This deliberately stores a small allowlist rather than an ActiveChat message.
-/// It is never consumed by ActiveChat and therefore cannot affect turn state,
-/// queueing, retries, completion, or agent context.
+/// All platform storage operations share one FIFO. A cleanup advances its
+/// in-process publication admission synchronously, then waits for earlier native
+/// work before physically deleting keys. Generation state is deliberately not
+/// persisted: it fences this process's UI work only; durable deletion is the
+/// secure-storage delete itself and valid previews survive an app restart.
 final class ChatPreviewStore {
   static const _prefix = 'hermes.chat-preview.v1.';
   static const _maxMessages = 100;
@@ -39,16 +42,14 @@ final class ChatPreviewStore {
   static const _maxSessionBytes = 96 * 1024;
   static const _maxGlobalBytes = 1024 * 1024;
   static final _storage = sharedSecureStorage;
+
   static final Map<String, int> _generations = <String, int>{};
   static final Map<String, int> _profileGenerations = <String, int>{};
   static final Map<String, int> _connectionGenerations = <String, int>{};
   static final Map<String, int> _sessionGenerations = <String, int>{};
-  static final Map<String, int> _writeVersions = <String, int>{};
-  static final Map<String, String?> _latestEncoded = <String, String?>{};
-  static final Map<String, int> _inFlightWrites = <String, int>{};
-  static final Map<String, ({int scope, int profile, int connection, int session})>
-  _latestAdmissions =
-      <String, ({int scope, int profile, int connection, int session})>{};
+  static final Map<String, int> _revisions = <String, int>{};
+  static final Map<String, int> _completedRevisions = <String, int>{};
+  static Future<void> _tail = Future<void>.value();
 
   static String _hex(String value) => value.codeUnits
       .map((unit) => unit.toRadixString(16).padLeft(4, '0'))
@@ -72,15 +73,34 @@ final class ChatPreviewStore {
     );
   }
 
+  static bool _sameAdmission(
+    ({int scope, int profile, int connection, int session}) a,
+    ({int scope, int profile, int connection, int session}) b,
+  ) =>
+      a.scope == b.scope &&
+      a.profile == b.profile &&
+      a.connection == b.connection &&
+      a.session == b.session;
+
   static bool _stillAdmitted(
     ChatPreviewScope scope,
     ({int scope, int profile, int connection, int session}) admission,
-  ) {
-    final now = _admission(scope);
-    return now.scope == admission.scope &&
-        now.profile == admission.profile &&
-        now.connection == admission.connection &&
-        now.session == admission.session;
+  ) => _sameAdmission(_admission(scope), admission);
+
+  static int _nextRevision(String key) {
+    final revision = (_revisions[key] ?? 0) + 1;
+    _revisions[key] = revision;
+    return revision;
+  }
+
+  /// Serializes reads, writes, enumeration, cleanup and eviction. Operations
+  /// swallow storage faults at their boundary so a failed native operation never
+  /// stalls later preview work.
+  static Future<T> _enqueue<T>(Future<T> Function() operation) {
+    final prior = _tail;
+    final queued = prior.catchError((Object _) {}).then<T>((_) => operation());
+    _tail = queued.then<void>((_) {}, onError: (Object _, StackTrace stackTrace) {});
+    return queued;
   }
 
   static String _identity(Map<String, dynamic> row) {
@@ -144,24 +164,39 @@ final class ChatPreviewStore {
     return List<Map<String, dynamic>>.unmodifiable(result);
   }
 
-  static Future<ChatPreviewSnapshot> load(ChatPreviewScope scope) async {
-    final admission = _admission(scope);
-    try {
-      final raw = await _storage.read(key: debugKeyFor(scope));
-      if (!_stillAdmitted(scope, admission) || raw == null || raw.isEmpty) {
-        return const ChatPreviewSnapshot([]);
-      }
-      final decoded = jsonDecode(raw);
-      if (decoded is! Map ||
-          decoded['version'] != 1 ||
-          decoded['messages'] is! List) {
-        return const ChatPreviewSnapshot([]);
-      }
-      return ChatPreviewSnapshot(_bound(decoded['messages'] as List), admission);
-    } catch (_) {
-      // Storage availability must not break normal network chat.
-      return const ChatPreviewSnapshot([]);
+  static String _encodeBounded(Iterable<Map<String, dynamic>> rows) {
+    final messages = _bound(rows).toList(growable: true);
+    String encode() => jsonEncode(<String, dynamic>{
+      'version': 1,
+      'saved_at_ms': DateTime.now().millisecondsSinceEpoch,
+      'messages': messages,
+    });
+    while (messages.isNotEmpty && utf8.encode(encode()).length > _maxSessionBytes) {
+      messages.removeAt(0);
     }
+    return encode();
+  }
+
+  static Future<ChatPreviewSnapshot> load(ChatPreviewScope scope) {
+    final admission = _admission(scope);
+    final key = debugKeyFor(scope);
+    return _enqueue(() async {
+      try {
+        final raw = await _storage.read(key: key);
+        if (!_stillAdmitted(scope, admission) || raw == null || raw.isEmpty) {
+          return const ChatPreviewSnapshot([]);
+        }
+        final decoded = jsonDecode(raw);
+        if (decoded is! Map ||
+            decoded['version'] != 1 ||
+            decoded['messages'] is! List) {
+          return const ChatPreviewSnapshot([]);
+        }
+        return ChatPreviewSnapshot(_bound(decoded['messages'] as List), admission);
+      } catch (_) {
+        return const ChatPreviewSnapshot([]);
+      }
+    });
   }
 
   /// Verifies that a completed device read still belongs to its captured owner.
@@ -173,127 +208,75 @@ final class ChatPreviewStore {
   static Future<void> save(
     ChatPreviewScope scope,
     Iterable<Map<String, dynamic>> chronologicalRows,
-  ) async {
+  ) {
     final key = debugKeyFor(scope);
     final admission = _admission(scope);
-    final version = (_writeVersions[key] ?? 0) + 1;
-    _writeVersions[key] = version;
-    final savedAtMs = DateTime.now().millisecondsSinceEpoch;
-    String encode(List<Map<String, dynamic>> messages) => jsonEncode({
-      'version': 1,
-      'saved_at_ms': savedAtMs,
-      'messages': messages,
-    });
-    final rows = _bound(chronologicalRows).toList(growable: true);
-    while (rows.isNotEmpty && utf8.encode(encode(rows)).length > _maxSessionBytes) {
-      rows.removeAt(0);
-    }
-    final encoded = rows.isEmpty ? null : encode(rows);
-    _latestEncoded[key] = encoded;
-    _latestAdmissions[key] = admission;
-    _inFlightWrites[key] = (_inFlightWrites[key] ?? 0) + 1;
-    try {
-      if (!_stillAdmitted(scope, admission) || _writeVersions[key] != version) {
-        return;
-      }
-      if (encoded == null) {
-        await _storage.delete(key: key);
-        return;
-      }
-      await _storage.write(key: key, value: encoded);
-      if (!_stillAdmitted(scope, admission) || _writeVersions[key] != version) {
-        await _restoreLatest(scope, key);
-        return;
-      }
-      await _evictOldestUntilBound(key);
-    } catch (_) {
-      // No prompt, identity, endpoint, or storage error is logged here.
-    } finally {
-      final remaining = (_inFlightWrites[key] ?? 1) - 1;
-      if (remaining <= 0) {
-        _inFlightWrites.remove(key);
-        _latestEncoded.remove(key);
-        _latestAdmissions.remove(key);
-      } else {
-        _inFlightWrites[key] = remaining;
-      }
-    }
-  }
-
-  /// Restores the newest admitted value after a stale platform write finishes.
-  /// Re-check after each awaited storage call: a clear or newer publication may
-  /// arrive while the platform channel is held.
-  static Future<void> _restoreLatest(ChatPreviewScope scope, String key) async {
-    final expectedVersion = _writeVersions[key];
-    final latest = _latestEncoded[key];
-    final latestAdmission = _latestAdmissions[key];
-    try {
-      if (expectedVersion == null ||
-          latest == null ||
-          latestAdmission == null ||
-          !_stillAdmitted(scope, latestAdmission)) {
-        await _storage.delete(key: key);
-      } else {
-        await _storage.write(key: key, value: latest);
-      }
-      if (_writeVersions[key] != expectedVersion) {
-        await _restoreLatest(scope, key);
-      }
-    } catch (_) {
-      // A later accepted publication can retry; storage failures stay non-fatal.
-    }
-  }
-
-  static Future<void> _evictOldestUntilBound(String protectedKey) async {
-    try {
-      final all = await _storage.readAll();
-      var bytes = all.entries
-          .where((entry) => entry.key.startsWith(_prefix))
-          .fold<int>(0, (sum, entry) => sum + utf8.encode(entry.value).length);
-      final keys = all.keys.where((key) => key.startsWith(_prefix)).toList()
-        ..sort((a, b) {
-          int timestamp(String key) {
-            try {
-              final decoded = jsonDecode(all[key]!);
-              return decoded is Map && decoded['saved_at_ms'] is num
-                  ? (decoded['saved_at_ms'] as num).toInt()
-                  : 0;
-            } catch (_) {
-              return 0;
-            }
+    final revision = _nextRevision(key);
+    final rows = chronologicalRows.toList(growable: false);
+    final boundedRows = _bound(rows);
+    final encoded = _encodeBounded(boundedRows);
+    return _enqueue(() async {
+      if (!_stillAdmitted(scope, admission) || _revisions[key] != revision) return;
+      try {
+        if (boundedRows.isEmpty) {
+          await _storage.delete(key: key);
+        } else {
+          await _storage.write(key: key, value: encoded);
+          _completedRevisions[key] = revision;
+          if (_stillAdmitted(scope, admission) && _revisions[key] == revision) {
+            await _evictOldestUntilBoundInternal(key);
           }
-
-          return timestamp(a).compareTo(timestamp(b));
-        });
-      for (final key in keys) {
-        if (bytes <= _maxGlobalBytes) break;
-        if (key == protectedKey) continue;
-        bytes -= utf8.encode(all[key]!).length;
-        await _storage.delete(key: key);
+        }
+      } catch (_) {
+        // Storage availability must not affect canonical chat.
       }
-    } catch (_) {}
+    });
   }
 
-  static Future<void> clear(ChatPreviewScope scope) async {
-    _invalidate(scope);
+  /// Runs inside [_enqueue]; it must not enqueue nested operations.
+  static Future<void> _evictOldestUntilBoundInternal(String protectedKey) async {
+    final all = await _storage.readAll();
+    var bytes = all.entries
+        .where((entry) => entry.key.startsWith(_prefix))
+        .fold<int>(0, (sum, entry) => sum + utf8.encode(entry.value).length);
+    final keys = all.keys.where((key) => key.startsWith(_prefix)).toList()
+      ..sort((a, b) => _savedAt(all[a]!).compareTo(_savedAt(all[b]!)));
+    for (final key in keys) {
+      if (bytes <= _maxGlobalBytes) return;
+      final revision = _revisions[key] ?? 0;
+      if (key == protectedKey ||
+          (_completedRevisions[key] ?? revision) != revision) {
+        continue;
+      }
+      bytes -= utf8.encode(all[key]!).length;
+      _nextRevision(key);
+      await _storage.delete(key: key);
+    }
+  }
+
+  static int _savedAt(String raw) {
     try {
-      await _storage.delete(key: debugKeyFor(scope));
-    } catch (_) {}
+      final decoded = jsonDecode(raw);
+      return decoded is Map && decoded['saved_at_ms'] is num
+          ? (decoded['saved_at_ms'] as num).toInt()
+          : 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  static Future<void> clear(ChatPreviewScope scope) {
+    _invalidate(scope);
+    _nextRevision(debugKeyFor(scope));
+    return _enqueue(() => _deleteScopeInternal(scope));
   }
 
   static Future<void> deleteForProfile(String connectionId, String profile) {
     final profileKey = '$connectionId\u0000$profile';
     _profileGenerations[profileKey] = (_profileGenerations[profileKey] ?? 0) + 1;
-    return _deleteWhere(
-      (scope) =>
-          scope.connectionId == connectionId && scope.profile == profile,
-    );
+    return _deleteWhere((scope) =>
+        scope.connectionId == connectionId && scope.profile == profile);
   }
-
-  /// Dashboard profile removal has no stable connection id; clear matching
-  /// persisted owners across connections after remote success.
-  static Future<void> deleteForProfileEverywhere(String profile) =>
-      _deleteWhere((scope) => scope.profile == profile);
 
   static Future<void> deleteForConnection(String connectionId) {
     _connectionGenerations[connectionId] =
@@ -302,44 +285,58 @@ final class ChatPreviewStore {
   }
 
   /// Deletes every local preview that names a remotely deleted durable id.
-  /// A caller without a connection binding must fail closed across owners.
   static Future<void> deleteForSession(String sessionId) {
     _sessionGenerations[sessionId] = (_sessionGenerations[sessionId] ?? 0) + 1;
     return _deleteWhere((scope) => scope.sessionId == sessionId);
   }
 
-  static Future<void> _deleteWhere(
-    bool Function(ChatPreviewScope scope) matches,
-  ) async {
-    try {
-      final all = await _storage.readAll();
-      for (final key in all.keys.where((key) => key.startsWith(_prefix))) {
-        final pieces = key.substring(_prefix.length).split('.');
-        if (pieces.length != 3) continue;
-        String decode(String value) => String.fromCharCodes([
-          for (var offset = 0; offset < value.length; offset += 4)
-            int.parse(value.substring(offset, offset + 4), radix: 16),
-        ]);
-        try {
-          final scope = ChatPreviewScope(
-            connectionId: decode(pieces[0]),
-            profile: decode(pieces[1]),
-            sessionId: decode(pieces[2]),
-          );
-          if (!matches(scope)) continue;
-          _invalidate(scope);
-          await _storage.delete(key: key);
-        } catch (_) {}
+  static Future<void> _deleteWhere(bool Function(ChatPreviewScope scope) matches) {
+    return _enqueue(() async {
+      try {
+        final all = await _storage.readAll();
+        for (final key in all.keys.where((key) => key.startsWith(_prefix))) {
+          final scope = _scopeFromKey(key);
+          if (scope != null && matches(scope)) {
+            _nextRevision(key);
+            _completedRevisions.remove(key);
+            await _storage.delete(key: key);
+          }
+        }
+      } catch (_) {
+        // Admission fencing remains immediate; callers retain remote-success truth.
       }
-    } catch (_) {}
+    });
+  }
+
+  static Future<void> _deleteScopeInternal(ChatPreviewScope scope) async {
+    try {
+      await _storage.delete(key: debugKeyFor(scope));
+    } catch (_) {
+      // Storage availability must not affect canonical chat.
+    }
+  }
+
+  static ChatPreviewScope? _scopeFromKey(String key) {
+    try {
+      final pieces = key.substring(_prefix.length).split('.');
+      if (pieces.length != 3) return null;
+      String decode(String value) => String.fromCharCodes([
+        for (var offset = 0; offset < value.length; offset += 4)
+          int.parse(value.substring(offset, offset + 4), radix: 16),
+      ]);
+      return ChatPreviewScope(
+        connectionId: decode(pieces[0]),
+        profile: decode(pieces[1]),
+        sessionId: decode(pieces[2]),
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   static void _invalidate(ChatPreviewScope scope) {
     final key = debugKeyFor(scope);
     _generations[key] = (_generations[key] ?? 0) + 1;
-    _writeVersions[key] = (_writeVersions[key] ?? 0) + 1;
-    _latestEncoded.remove(key);
-    _latestAdmissions.remove(key);
   }
 
   @visibleForTesting
@@ -348,8 +345,8 @@ final class ChatPreviewStore {
     _profileGenerations.clear();
     _connectionGenerations.clear();
     _sessionGenerations.clear();
-    _writeVersions.clear();
-    _latestEncoded.clear();
-    _latestAdmissions.clear();
+    _revisions.clear();
+    _completedRevisions.clear();
+    _tail = Future<void>.value();
   }
 }

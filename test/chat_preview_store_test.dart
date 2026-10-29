@@ -13,13 +13,22 @@ void main() {
 
   final secure = <String, String>{};
   String? delayedWriteKey;
+  Completer<void>? heldWrite;
+  Completer<void>? writeStarted;
+  Completer<void>? heldDelete;
+  Completer<void>? deleteStarted;
   Completer<void>? heldRead;
   Completer<void>? readStarted;
   var failWrites = false;
 
   setUp(() {
+    ChatPreviewStore.resetForTesting();
     secure.clear();
     delayedWriteKey = null;
+    heldWrite = null;
+    writeStarted = null;
+    heldDelete = null;
+    deleteStarted = null;
     heldRead = null;
     readStarted = null;
     failWrites = false;
@@ -33,6 +42,12 @@ void main() {
             switch (call.method) {
               case 'write':
                 if (failWrites) throw PlatformException(code: 'write-failed');
+                final writeGate = heldWrite;
+                heldWrite = null;
+                if (writeGate != null) {
+                  writeStarted?.complete();
+                  await writeGate.future;
+                }
                 if (key == delayedWriteKey) {
                   await Future<void>.delayed(const Duration(milliseconds: 20));
                 }
@@ -50,6 +65,12 @@ void main() {
               case 'readAll':
                 return Map<String, String>.from(secure);
               case 'delete':
+                final deleteGate = heldDelete;
+                heldDelete = null;
+                if (deleteGate != null) {
+                  deleteStarted?.complete();
+                  await deleteGate.future;
+                }
                 secure.remove(key);
                 return null;
             }
@@ -175,8 +196,13 @@ void main() {
     final pending = ChatPreviewStore.load(scope);
     await readStarted!.future;
 
-    await ChatPreviewStore.clear(scope);
+    var clearFinished = false;
+    final clear = ChatPreviewStore.clear(scope).whenComplete(() => clearFinished = true);
+    await Future<void>.delayed(Duration.zero);
+    expect(clearFinished, isFalse);
     release.complete();
+
+    await clear;
 
     expect((await pending).isEmpty, isTrue);
   });
@@ -223,6 +249,7 @@ void main() {
       host: 'fixture.invalid',
       useHttps: true,
       manualToken: 'fixture',
+      connectionId: scope.connectionId,
       httpClientOverride: MockClient((_) async => http.Response('', 204)),
     );
 
@@ -231,43 +258,119 @@ void main() {
     expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
   });
 
-  test('remote session deletion clears preview after draft cleanup fails', () async {
-    await ChatPreviewStore.save(scope, [row(1)]);
-    SharedPreferences.setMockInitialValues({});
-    TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(
-          const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
-          (call) async {
-            final args =
-                (call.arguments as Map?)?.cast<String, dynamic>() ?? const {};
-            final key = args['key'] as String?;
-            if (call.method == 'read' && key?.startsWith('chat_draft_v3.') == true) {
-              throw PlatformException(code: 'draft-read-failed');
-            }
-            switch (call.method) {
-              case 'read':
-                return secure[key];
-              case 'readAll':
-                return Map<String, String>.from(secure);
-              case 'write':
-                secure[key!] = args['value'] as String;
-                return null;
-              case 'delete':
-                secure.remove(key);
-                return null;
-            }
-            return null;
-          },
-        );
-    final api = ApiClient(
-      baseUrl: 'https://fixture.invalid',
-      apiKey: 'fixture',
-      httpClient: MockClient(
-        (_) async => http.Response('{"deleted":true}', 200),
-      ),
-    );
+  test(
+    'remote session deletion clears preview after draft cleanup fails',
+    () async {
+      await ChatPreviewStore.save(scope, [row(1)]);
+      SharedPreferences.setMockInitialValues({});
+      TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
+            (call) async {
+              final args =
+                  (call.arguments as Map?)?.cast<String, dynamic>() ?? const {};
+              final key = args['key'] as String?;
+              if (call.method == 'read' && key?.startsWith('chat_draft_v3.') == true) {
+                throw PlatformException(code: 'draft-read-failed');
+              }
+              switch (call.method) {
+                case 'read':
+                  return secure[key];
+                case 'readAll':
+                  return Map<String, String>.from(secure);
+                case 'write':
+                  secure[key!] = args['value'] as String;
+                  return null;
+                case 'delete':
+                  secure.remove(key);
+                  return null;
+              }
+              return null;
+            },
+          );
+      final api = ApiClient(
+        baseUrl: 'https://fixture.invalid',
+        apiKey: 'fixture',
+        connectionId: scope.connectionId,
+        httpClient: MockClient(
+          (_) async => http.Response('{"deleted":true}', 200),
+        ),
+      );
 
-    expect(await api.deleteSession('session-a', profile: 'profile-a'), isTrue);
+      expect(await api.deleteSession('session-a', profile: 'profile-a'), isTrue);
+      expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
+    },
+  );
+
+  test('completed cleanup never exposes a stale held write', () async {
+    heldWrite = Completer<void>();
+    writeStarted = Completer<void>();
+    final releaseWrite = heldWrite!;
+    final staleSave = ChatPreviewStore.save(scope, [row(1, text: 'private')]);
+    await writeStarted!.future;
+
+    final cleanup = ChatPreviewStore.deleteForProfile(scope.connectionId, scope.profile);
+    await Future<void>.delayed(Duration.zero);
+    releaseWrite.complete();
+    await Future.wait([staleSave, cleanup]);
+
+    final snapshot = await ChatPreviewStore.load(scope);
+    expect(snapshot.messages, isEmpty);
+  });
+
+  test('a queued empty delete cannot erase a later accepted preview', () async {
+    await ChatPreviewStore.save(scope, [row(1, text: 'seed')]);
+    heldDelete = Completer<void>();
+    deleteStarted = Completer<void>();
+    final releaseDelete = heldDelete!;
+    final staleEmpty = ChatPreviewStore.save(scope, const []);
+    await deleteStarted!.future;
+
+    final validLater = ChatPreviewStore.save(scope, [row(1, text: 'valid-later')]);
+    releaseDelete.complete();
+    await Future.wait([staleEmpty, validLater]);
+
+    expect(
+      (await ChatPreviewStore.load(scope)).messages.single['content'],
+      'valid-later 1',
+    );
+  });
+
+  test('profile cleanup waits for a held native write then deletes raw storage', () async {
+    heldWrite = Completer<void>();
+    writeStarted = Completer<void>();
+    final releaseWrite = heldWrite!;
+    final pendingSave = ChatPreviewStore.save(scope, [row(1, text: 'private')]);
+    await writeStarted!.future;
+
+    var cleanupFinished = false;
+    final cleanup = ChatPreviewStore.deleteForProfile(scope.connectionId, scope.profile)
+        .whenComplete(() => cleanupFinished = true);
+    await Future<void>.delayed(Duration.zero);
+    expect(cleanupFinished, isFalse);
+
+    releaseWrite.complete();
+    await Future.wait([pendingSave, cleanup]);
+    expect(secure.containsKey(ChatPreviewStore.debugKeyFor(scope)), isFalse);
     expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
+  });
+
+  test('profile cleanup keeps the same profile on a neighboring connection', () async {
+    const neighboring = ChatPreviewScope(
+      connectionId: 'conn-b',
+      profile: 'profile-a',
+      sessionId: 'session-b',
+    );
+    await ChatPreviewStore.save(scope, [row(1, text: 'remove')]);
+    await ChatPreviewStore.save(neighboring, [row(2, text: 'keep')]);
+
+    await ChatPreviewStore.deleteForProfile(scope.connectionId, scope.profile);
+    ChatPreviewStore.resetForTesting(); // Simulated process recreation.
+
+    expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
+    expect(
+      (await ChatPreviewStore.load(neighboring)).messages.single['content'],
+      'keep 2',
+    );
   });
 }

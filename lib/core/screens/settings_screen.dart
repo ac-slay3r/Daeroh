@@ -1635,14 +1635,30 @@ class _HistoryCleanupSectionState extends State<HistoryCleanupSection> {
             ).deleteForProfile(targetConnection.id, profile);
           },
           clearTranscripts: ({required String profile}) async {
-            final removed = await LocalTranscriptStore.deleteForProfile(
-              targetConnection.id,
-              profile,
+            Object? transcriptError;
+            StackTrace? transcriptStack;
+            var removed = 0;
+            try {
+              removed = await LocalTranscriptStore.deleteForProfile(
+                targetConnection.id,
+                profile,
+              );
+            } catch (error, stackTrace) {
+              transcriptError = error;
+              transcriptStack = stackTrace;
+            }
+            // Preview retirement is independent: a transcript-store failure must
+            // not leave display-only encrypted rows readable after history clear.
+            // Do not hold the completed remote/local cleanup notice behind the
+            // non-authoritative cache's best-effort secure-storage queue.
+            unawaited(
+              ChatPreviewStore.deleteForProfile(targetConnection.id, profile),
             );
-            await ChatPreviewStore.deleteForProfile(
-              targetConnection.id,
-              profile,
-            );
+            final error = transcriptError;
+            final stackTrace = transcriptStack;
+            if (error != null && stackTrace != null) {
+              Error.throwWithStackTrace(error, stackTrace);
+            }
             return removed;
           },
           clearOutbox: ({required String profile}) =>

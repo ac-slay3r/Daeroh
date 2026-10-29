@@ -2480,6 +2480,7 @@ class DashboardClient {
 
   final http.Client _http;
   final String _baseUrl;
+  final String? _connectionId;
   final DateTime Function() _now;
   String? _manualToken;
   String? _basicUser;
@@ -2534,6 +2535,7 @@ class DashboardClient {
     int port = 9119,
     bool useHttps = false,
     String? manualToken,
+    String? connectionId,
     String? basicUser,
     String? basicPass,
     http.Client? httpClientOverride,
@@ -2542,6 +2544,7 @@ class DashboardClient {
          '${useHttps ? 'https' : 'http'}://$host:$port',
        ),
        _manualToken = manualToken,
+       _connectionId = connectionId,
        _basicUser = basicUser,
        _basicPass = basicPass,
        _http = PrivateHttpClient(httpClientOverride ?? http.Client()),
@@ -2558,6 +2561,7 @@ class DashboardClient {
       host: conn.dashboardHost,
       port: conn.dashboardPort,
       useHttps: conn.dashboardUseHttps,
+      connectionId: conn.id,
       httpClientOverride: httpClientOverride,
     );
     if (conn.dashboardAuthMode == AuthMode.sessionToken ||
@@ -2612,6 +2616,7 @@ class DashboardClient {
       host: conn.dashboardHost,
       port: conn.dashboardPort,
       useHttps: conn.dashboardUseHttps,
+      connectionId: conn.id,
       manualToken: conn.dashboardAuthMode == AuthMode.sessionToken
           ? secrets?.sessionToken
           : null,
@@ -3822,9 +3827,12 @@ class DashboardClient {
   /// DELETE /api/profiles/{name} — elimina el perfil.
   Future<void> deleteProfile(String name) async {
     await apiDelete('profiles/$name');
-    // Dashboard callers do not always retain a SavedConnection identity. Clear
-    // every matching local owner after confirmed remote profile removal.
-    await ChatPreviewStore.deleteForProfileEverywhere(name);
+    // Only a client bound to a SavedConnection can retire a local owner.
+    // A matching profile name on another server is unrelated private history.
+    final connectionId = _connectionId;
+    if (connectionId != null && connectionId.isNotEmpty) {
+      await ChatPreviewStore.deleteForProfile(connectionId, name);
+    }
   }
 
   /// GET /api/profiles/{name}/soul → {content, exists}.

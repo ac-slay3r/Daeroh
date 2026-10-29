@@ -83,6 +83,7 @@ import 'package:hermes_android/core/services/approval_policy.dart';
 import 'package:hermes_android/core/services/attachment_uploader.dart';
 import 'package:hermes_android/core/services/bridge_manager.dart';
 import 'package:hermes_android/core/services/chat_preference_store.dart';
+import 'package:hermes_android/core/services/chat_preview_store.dart';
 import 'package:hermes_android/core/services/chat_draft_store.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/utils/byte_bounded_lru_cache.dart';
@@ -2507,6 +2508,53 @@ void main() {
     });
     return chat;
   }
+
+  testWidgets(
+    'encrypted preview is render-only before canonical history and never submits',
+    (tester) async {
+      ChatPreviewStore.resetForTesting();
+      final connection = _remoteConn('preview-render-only');
+      final session = _session().copyWith(id: 'preview-session');
+      await ChatPreviewStore.save(
+        ChatPreviewScope(
+          connectionId: connection.id,
+          profile: 'default',
+          sessionId: session.id,
+        ),
+        const [
+          {
+            'message_id': 'preview-row',
+            'role': 'assistant',
+            'content': 'SYNTHETIC_RENDER_ONLY_PREVIEW',
+          },
+        ],
+      );
+      final canonical = Completer<List<Map<String, dynamic>>>();
+      final gateway = _UiRewindGateway();
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        desktopGateway: gateway,
+        messagesLoaded: false,
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        storedMessageLoader: (_, _) => canonical.future,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('SYNTHETIC_RENDER_ONLY_PREVIEW'), findsOneWidget);
+      expect(chat.messages, isEmpty);
+      expect(gateway.submissions, isEmpty);
+
+      canonical.complete(const []);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('SYNTHETIC_RENDER_ONLY_PREVIEW'), findsNothing);
+      expect(gateway.submissions, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   void mockCompanionStorage() {
     final support = Directory.systemTemp.createTempSync(
