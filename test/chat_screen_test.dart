@@ -2337,6 +2337,8 @@ void main() {
     bool registerActiveChatsTearDown = true,
     int transcriptPageSizeForTesting = 120,
     int Function()? wallClockMs,
+    List<CancelledTurnTombstone> initialCancelledTurnTombstones = const [],
+    Future<void> Function(CancelledTurnTombstone)? onCancelledTurn,
   }) async {
     // Forzar locale español para que las cadenas i18n de ChatScreen coincidan
     // con las expectativas del test (el test fue escrito en español).
@@ -2410,6 +2412,9 @@ void main() {
         disableForegroundKeepAlive: desktopGateway != null,
         transcriptPageSizeForTesting: transcriptPageSizeForTesting,
         wallClockMsForTesting: wallClockMs,
+        initialCancelledTurnTombstonesForTesting:
+            initialCancelledTurnTombstones,
+        onCancelledTurnForTesting: onCancelledTurn,
       );
       chat.internalMessagesForTesting = List<Map<String, dynamic>>.from(
         messages,
@@ -2552,6 +2557,122 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
       expect(find.text('SYNTHETIC_RENDER_ONLY_PREVIEW'), findsNothing);
       expect(gateway.submissions, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'canonical nonempty history replaces the cached preview without changing submission authority',
+    (tester) async {
+      ChatPreviewStore.resetForTesting();
+      final connection = _remoteConn('preview-canonical-replacement');
+      final session = _session().copyWith(id: 'preview-canonical-session');
+      final scope = ChatPreviewScope(
+        connectionId: connection.id,
+        profile: 'default',
+        sessionId: session.id,
+      );
+      await ChatPreviewStore.save(scope, const [
+        {
+          'message_id': 'cached-row',
+          'role': 'assistant',
+          'content': 'CACHED_BEFORE_CANONICAL',
+        },
+      ]);
+      final canonical = Completer<List<Map<String, dynamic>>>();
+      final gateway = _UiRewindGateway();
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        desktopGateway: gateway,
+        messagesLoaded: false,
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        storedMessageLoader: (_, _) => canonical.future,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('CACHED_BEFORE_CANONICAL'), findsOneWidget);
+      expect(chat.messages, isEmpty);
+      expect(gateway.submissions, isEmpty);
+
+      canonical.complete(const [
+        {
+          'message_id': 'canonical-row',
+          'role': 'assistant',
+          'content': 'CANONICAL_REPLACES_PREVIEW',
+        },
+      ]);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('CACHED_BEFORE_CANONICAL'), findsNothing);
+      expect(find.text('CANONICAL_REPLACES_PREVIEW'), findsOneWidget);
+      expect(chat.messages.single['message_id'], 'canonical-row');
+      expect(gateway.submissions, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'cached preview applies Stop suppression without mutating durable authority',
+    (tester) async {
+      ChatPreviewStore.resetForTesting();
+      final connection = _remoteConn('preview-stop-render-only');
+      final session = _session().copyWith(id: 'preview-stop-session');
+      final scope = ChatPreviewScope(
+        connectionId: connection.id,
+        profile: 'default',
+        sessionId: session.id,
+      );
+      const rows = <Map<String, dynamic>>[
+        {
+          'message_id': 'preview-anchor',
+          'role': 'assistant',
+          'content': 'SAFE_ANCHOR',
+        },
+        {
+          'message_id': 'preview-cancelled-user',
+          'role': 'user',
+          'content': 'CANCELLED_CACHED_USER',
+        },
+        {
+          'message_id': 'preview-cancelled-reply',
+          'role': 'assistant',
+          'content': 'CANCELLED_CACHED_REPLY',
+        },
+      ];
+      await ChatPreviewStore.save(scope, rows);
+      final canonical = Completer<List<Map<String, dynamic>>>();
+      var durableWrites = 0;
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        desktopGateway: _UiRewindGateway(),
+        messagesLoaded: false,
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        storedMessageLoader: (_, _) => canonical.future,
+        initialCancelledTurnTombstones: const [
+          CancelledTurnTombstone(
+            content: 'CANCELLED_CACHED_USER',
+            anchorMessageId: 'preview-anchor',
+            cancelledMessageId: 'preview-cancelled-user',
+          ),
+        ],
+        onCancelledTurn: (_) async => durableWrites++,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('SAFE_ANCHOR'), findsOneWidget);
+      expect(find.text('CANCELLED_CACHED_REPLY'), findsNothing);
+      expect(chat.messages, isEmpty);
+      expect(durableWrites, 0);
+
+      canonical.complete(rows);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(durableWrites, 0);
       expect(tester.takeException(), isNull);
     },
   );
