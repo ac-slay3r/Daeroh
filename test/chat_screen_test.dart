@@ -61,6 +61,7 @@ import 'package:hermes_android/core/models/desktop_control_center.dart';
 import 'package:hermes_android/core/models/desktop_model_catalog.dart';
 import 'package:hermes_android/core/models/desktop_session_config.dart';
 import 'package:hermes_android/core/models/desktop_session_snapshot.dart';
+import 'package:hermes_android/core/models/transcript_privacy_state.dart';
 import 'package:hermes_android/core/services/recovery_proof.dart';
 import 'package:hermes_android/core/services/replay_coordinator.dart';
 import 'package:hermes_android/core/services/session_config_reducer.dart';
@@ -2903,6 +2904,85 @@ void main() {
         reason:
             'cache preview must not change queued recovery, authority, or media trace',
       );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'actual LocalTranscript privacy checkpoint excludes a revoked cached preview row',
+    (tester) async {
+      ChatPreviewStore.resetForTesting();
+      final connection = _remoteConn('preview-privacy-checkpoint');
+      final session = _session().copyWith(
+        id: 'preview-privacy-checkpoint-session',
+      );
+      final scope = ChatPreviewScope(
+        connectionId: connection.id,
+        profile: 'default',
+        sessionId: session.id,
+      );
+      await ChatPreviewStore.save(scope, const [
+        {
+          'message_id': 'revoked-cached-row',
+          'role': 'assistant',
+          'content': 'REVOKED_CACHED_PREVIEW_MUST_NOT_RENDER',
+        },
+      ]);
+      // `savePrivacyCheckpoint` serializes via an async native-storage tail.
+      // Calling it before the first widget pump deadlocks this FakeAsync test;
+      // seed its exact encrypted-storage envelope immediately before mounting,
+      // as the production reader receives it. The held real read below proves
+      // Chat actually loads this checkpoint before the assertion.
+      final checkpoint = TranscriptPrivacyCheckpoint(
+        connectionId: connection.id,
+        profile: 'default',
+        storedSessionId: session.id,
+        revision: 1,
+        coverage: TranscriptPrivacyCoverage.partial,
+        suppressedWindow: false,
+        facts: [
+          TranscriptPrivacyObservation(
+            messageId: 'revoked-cached-row',
+            negative: true,
+          ),
+        ],
+      );
+      String scopeKey(String value) => value.codeUnits
+          .map((unit) => unit.toRadixString(16).padLeft(4, '0'))
+          .join();
+      final transcriptKey =
+          'hermes.transcript.v3.${scopeKey(connection.id)}.${scopeKey('default')}.${scopeKey(session.id)}';
+      heldPreviewPrivacyRead = Completer<void>();
+      previewPrivacyReadStarted = Completer<void>();
+      final privacyGate = heldPreviewPrivacyRead!;
+      final canonical = Completer<List<Map<String, dynamic>>>();
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        desktopGateway: _UiRewindGateway(),
+        messagesLoaded: false,
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        beforeChatPush: () {
+          secureStore[transcriptKey] = jsonEncode({
+            'version': 2,
+            'older_history_truncated': false,
+            'messages': const <Object>[],
+            'privacy_checkpoint': checkpoint.toJson(),
+          });
+        },
+        storedMessageLoader: (_, _) => canonical.future,
+      );
+      await previewPrivacyReadStarted!.future;
+      expect(secureStore.containsKey(transcriptKey), isTrue);
+      expect(secureStore.containsKey(ChatPreviewStore.debugKeyFor(scope)), isTrue);
+      privacyGate.complete();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('REVOKED_CACHED_PREVIEW_MUST_NOT_RENDER'), findsNothing);
+      expect(chat.messagesLoaded, isFalse);
+      expect(chat.messages, isEmpty);
       expect(tester.takeException(), isNull);
     },
   );
