@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -109,6 +110,10 @@ void main() {
 
       expect(secure.keys, hasLength(1));
       final raw = secure.values.single;
+      final envelope = jsonDecode(raw) as Map<String, dynamic>;
+      expect(utf8.encode(raw).length, lessThanOrEqualTo(96 * 1024));
+      expect(envelope['version'], 1);
+      expect(envelope['messages'], isA<List>());
       expect(raw, isNot(contains('must-not-persist')));
       expect(raw, isNot(contains('token@example.invalid')));
 
@@ -116,6 +121,38 @@ void main() {
       expect(saved.messages, hasLength(100));
       expect(saved.messages.first['message_id'], 'm-1');
       expect(saved.messages.last['message_id'], 'm-100');
+    },
+  );
+
+  test(
+    'global bound evicts the oldest saved preview without touching the newest',
+    () async {
+      final largeText = List<String>.filled(4096, 'x').join();
+      final scopes = <ChatPreviewScope>[];
+      for (var index = 0; index < 12; index++) {
+        final candidate = ChatPreviewScope(
+          connectionId: 'global-conn-$index',
+          profile: 'profile-a',
+          sessionId: 'global-session-$index',
+        );
+        scopes.add(candidate);
+        await ChatPreviewStore.save(candidate, [
+          for (var message = 0; message < 100; message++)
+            {
+              'role': 'assistant',
+              'content': '$largeText-$index-$message',
+              'message_id': 'global-$index-$message',
+            },
+        ]);
+        await Future<void>.delayed(const Duration(milliseconds: 2));
+      }
+
+      final storedBytes = secure.entries
+          .where((entry) => entry.key.startsWith('hermes.chat-preview.v1.'))
+          .fold<int>(0, (sum, entry) => sum + utf8.encode(entry.value).length);
+      expect(storedBytes, lessThanOrEqualTo(1024 * 1024));
+      expect((await ChatPreviewStore.load(scopes.first)).isEmpty, isTrue);
+      expect((await ChatPreviewStore.load(scopes.last)).isEmpty, isFalse);
     },
   );
 

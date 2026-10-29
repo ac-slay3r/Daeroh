@@ -2729,6 +2729,169 @@ void main() {
     },
   );
 
+  testWidgets(
+    'queued recovery has identical no-side-effect trace with or without cached preview',
+    (tester) async {
+      Future<({
+        bool previewVisible,
+        int sendAttempts,
+        int materializations,
+        int tombstoneWrites,
+        int promptSubmissions,
+        int statusCalls,
+        int attachmentUploads,
+      })> runCase({required bool cacheOn}) async {
+        ChatPreviewStore.resetForTesting();
+        final suffix = cacheOn ? 'on' : 'off';
+        final connection = _remoteConn('preview-queued-trace-$suffix');
+        final session = _session().copyWith(id: 'preview-queued-session-$suffix');
+        final scope = ChatPreviewScope(
+          connectionId: connection.id,
+          profile: 'default',
+          sessionId: session.id,
+        );
+        const previewText = 'CACHED_MEDIA_DISPLAY_METADATA_ONLY';
+        if (cacheOn) {
+          await ChatPreviewStore.save(scope, const [
+            {
+              'message_id': 'preview-queued-media',
+              'role': 'assistant',
+              'content': previewText,
+              'timestamp': 1,
+            },
+          ]);
+        }
+        final now = DateTime.now().millisecondsSinceEpoch;
+        final queuedAttachment = AttachmentDraft(
+          localId: 'queued-media-$suffix',
+          type: AttachmentType.image,
+          name: 'queued-media.png',
+          mimeType: 'image/png',
+          sizeBytes: 1,
+          localPath: '/device-only/queued-media.png',
+        );
+        final ambiguous = PreparedTurn(
+          connectionId: connection.id,
+          sessionId: session.id,
+          clientTurnId: 'preview-ambiguous-$suffix',
+          createdAtMs: now,
+          updatedAtMs: now,
+          text: 'ambiguous turn must reconcile first',
+          attachments: const [],
+          model: 'hermes-agent',
+          profile: '',
+          state: PreparedTurnState.ambiguous,
+          restoresComposer: false,
+        );
+        final queued = PreparedTurn(
+          connectionId: connection.id,
+          sessionId: session.id,
+          clientTurnId: 'preview-queued-$suffix',
+          createdAtMs: now + 1,
+          updatedAtMs: now + 1,
+          queueOrder: 1,
+          text: 'queued turn must not drain from preview',
+          fullText: 'queued turn must not drain from preview',
+          attachments: [queuedAttachment],
+          model: 'hermes-agent',
+          profile: '',
+          queued: true,
+          restoresComposer: false,
+        );
+        secureStore['chat_turn_outbox_v1'] = jsonEncode({
+          ambiguous.storageId: ambiguous.toJson(),
+          queued.storageId: queued.toJson(),
+        });
+        final canonical = Completer<List<Map<String, dynamic>>>();
+        final statusGate = Completer<DesktopTurnStatus>();
+        final gateway = _RecoverableSubmissionGateway()
+          ..statusGate = statusGate;
+        var sendAttempts = 0;
+        var materializations = 0;
+        var tombstoneWrites = 0;
+        final chat = await pumpChat(
+          tester,
+          connection: connection,
+          session: session,
+          desktopGateway: gateway,
+          messagesLoaded: false,
+          attachDesktopRuntimeOnLoad: false,
+          allowUnownedDesktopSnapshotForTesting: false,
+          storedMessageLoader: (_, _) => canonical.future,
+          initialStoredSessionId: session.id,
+          turnIdempotencyCapability: () async => true,
+          sendAttemptObserver: () => sendAttempts++,
+          attachmentMaterializer: (attachment) async {
+            materializations++;
+            return attachment;
+          },
+          onCancelledTurn: (_) async => tombstoneWrites++,
+        );
+        for (var frame = 0; frame < 40; frame++) {
+          await tester.pump(const Duration(milliseconds: 10));
+        }
+        expect(gateway.statusCalls, 1);
+        final previewVisible = find.text(previewText).evaluate().isNotEmpty;
+        expect(previewVisible, cacheOn);
+        expect(chat.messages, isEmpty);
+        expect(sendAttempts, 0);
+        expect(materializations, 0);
+        expect(tombstoneWrites, 0);
+        expect(gateway.submissions, isEmpty);
+        expect(gateway.imageAttachCalls + gateway.fileAttachCalls, 0);
+        expect(tester.takeException(), isNull);
+
+        // Let the fixture settle before the paired mount. The trace is captured
+        // before canonical publication, so only preview admission differs.
+        statusGate.complete(
+          DesktopTurnStatus(
+            known: true,
+            clientTurnId: ambiguous.clientTurnId,
+            serverTurnId: 'server-${ambiguous.clientTurnId}',
+            state: DesktopTurnState.terminal,
+          ),
+        );
+        canonical.complete(const []);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        return (
+          previewVisible: previewVisible,
+          sendAttempts: sendAttempts,
+          materializations: materializations,
+          tombstoneWrites: tombstoneWrites,
+          promptSubmissions: gateway.submissions.length,
+          statusCalls: gateway.statusCalls,
+          attachmentUploads: gateway.imageAttachCalls + gateway.fileAttachCalls,
+        );
+      }
+
+      final cacheOn = await runCase(cacheOn: true);
+      final cacheOff = await runCase(cacheOn: false);
+      expect(cacheOn.previewVisible, isTrue);
+      expect(cacheOff.previewVisible, isFalse);
+      expect(
+        (
+          sendAttempts: cacheOn.sendAttempts,
+          materializations: cacheOn.materializations,
+          tombstoneWrites: cacheOn.tombstoneWrites,
+          promptSubmissions: cacheOn.promptSubmissions,
+          statusCalls: cacheOn.statusCalls,
+          attachmentUploads: cacheOn.attachmentUploads,
+        ),
+        (
+          sendAttempts: cacheOff.sendAttempts,
+          materializations: cacheOff.materializations,
+          tombstoneWrites: cacheOff.tombstoneWrites,
+          promptSubmissions: cacheOff.promptSubmissions,
+          statusCalls: cacheOff.statusCalls,
+          attachmentUploads: cacheOff.attachmentUploads,
+        ),
+        reason: 'cache preview must not change queued recovery, authority, or media trace',
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   for (final lane in ['scope', 'profile', 'connection']) {
     testWidgets('late privacy await cannot publish a retired $lane preview', (
       tester,
