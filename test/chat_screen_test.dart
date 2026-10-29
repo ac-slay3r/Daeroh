@@ -2614,6 +2614,47 @@ void main() {
   );
 
   testWidgets(
+    'cached preview remains render-only when canonical history fails offline',
+    (tester) async {
+      ChatPreviewStore.resetForTesting();
+      final connection = _remoteConn('preview-offline');
+      final session = _session().copyWith(id: 'preview-offline-session');
+      await ChatPreviewStore.save(
+        ChatPreviewScope(
+          connectionId: connection.id,
+          profile: 'default',
+          sessionId: session.id,
+        ),
+        const [
+          {
+            'message_id': 'offline-preview',
+            'role': 'assistant',
+            'content': 'OFFLINE_PREVIEW_REMAINS_VISIBLE',
+          },
+        ],
+      );
+      final gateway = _UiRewindGateway();
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        desktopGateway: gateway,
+        messagesLoaded: false,
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        storedMessageLoader: (_, _) =>
+            Future<List<Map<String, dynamic>>>.error(StateError('offline')),
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('OFFLINE_PREVIEW_REMAINS_VISIBLE'), findsOneWidget);
+      expect(chat.messages, isEmpty);
+      expect(gateway.submissions, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'cached preview applies Stop suppression without mutating durable authority',
     (tester) async {
       ChatPreviewStore.resetForTesting();
