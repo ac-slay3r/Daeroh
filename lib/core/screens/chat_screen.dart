@@ -14008,6 +14008,7 @@ class _ChatScreenState extends State<ChatScreen>
       }
       return _UserMessage(
         content: content,
+        savedPreview: _showingSavedPreview,
         verbose: _devDiagnostics,
         metadata: unit.primary,
         compact: compact,
@@ -15815,6 +15816,7 @@ class _MessageBubble extends StatelessWidget {
     final message = isUser
         ? _UserMessage(
             content: content,
+            savedPreview: savedPreview,
             verbose: verbose,
             metadata: metadata,
             onEdit: onEdit,
@@ -16334,6 +16336,7 @@ class _TimelineSystemEventRow extends StatelessWidget {
 
 class _UserMessage extends StatelessWidget {
   final String content;
+  final bool savedPreview;
   final bool verbose;
   final Map<String, dynamic> metadata;
   final List<String> supplements;
@@ -16348,6 +16351,7 @@ class _UserMessage extends StatelessWidget {
 
   const _UserMessage({
     required this.content,
+    this.savedPreview = false,
     this.verbose = false,
     this.metadata = const {},
     this.supplements = const [],
@@ -16411,6 +16415,14 @@ class _UserMessage extends StatelessWidget {
     // Los blobs de sistema (cron/skill/compactación) los intercepta el
     // renderizador central (_buildRenderUnit → _SystemBlobChip), antes de llegar
     // aquí, así que en este punto `content` ya es un mensaje real del usuario.
+    // Retained device-only text must bypass Markdown, attachment parsing,
+    // filesystem probes and interactive attachment widgets entirely.
+    if (savedPreview) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(56, 11, 12, 3),
+        child: Text(content, style: theme.textTheme.bodyMedium),
+      );
+    }
     final List<String> metaLines = _buildMetaLines(verbose, metadata);
     final timestamp = _formatMessageTimestamp(metadata);
     final parsed = _parseUserContent(content);
@@ -17070,7 +17082,9 @@ class _AssistantMessage extends StatelessWidget {
         // a retained MEDIA: directive or attachment metadata into a canonical
         // renderer that can authenticate or fetch a managed server file.
         final text = GeneratedMediaService.stripDirectives(answer);
-        if (text.trim().isNotEmpty) yield markdownWidget(text);
+        if (text.trim().isNotEmpty) {
+          yield Text(text.trim(), style: Theme.of(context).textTheme.bodyMedium);
+        }
         return;
       }
       final projected = terminalProjection;

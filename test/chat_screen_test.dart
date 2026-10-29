@@ -22,6 +22,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+
 import 'package:crypto/crypto.dart' as crypto;
 
 import 'package:flutter/material.dart';
@@ -2015,6 +2016,21 @@ Future<void> _openActivityPanel(WidgetTester tester) async {
   await tester.pump(const Duration(milliseconds: 300));
 }
 
+// Framework image requests bypass package:http mocks.
+class _PreviewImageHttpClient implements HttpClient {
+  final List<String> requests;
+  _PreviewImageHttpClient(this.requests);
+
+  @override
+  Future<HttpClientRequest> getUrl(Uri url) {
+    requests.add(url.toString());
+    return Completer<HttpClientRequest>().future;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   var secureStore = <String, String>{};
@@ -2589,6 +2605,103 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  for (final role in ['user', 'assistant']) {
+    testWidgets(
+      'saved $role markdown is inert before canonical rich image rendering',
+      (tester) async {
+        final requests = <String>[];
+        await HttpOverrides.runZoned(() async {
+          Future<List<String>> runCase(bool cached) async {
+            ChatPreviewStore.resetForTesting();
+            final scope = ChatPreviewScope(
+              connectionId: 'preview-markdown-$role',
+              profile: 'default',
+              sessionId: 'sess-test',
+            );
+            final row = <String, dynamic>{
+              'message_id': 'preview-image-$role',
+              'role': role,
+              'content':
+                  '${role == 'user' ? '[📎 saved.png · 1 KB]\n⟦img:0:/preview-only/missing.png⟧\n' : ''}'
+                  'SAVED_MARKDOWN_$role\n![saved](https://preview-only.invalid/$role-$cached.png)',
+            };
+            if (cached) await ChatPreviewStore.save(scope, [row]);
+            final canonical = Completer<List<Map<String, dynamic>>>();
+            final chat = await pumpChat(
+              tester,
+              connection: _remoteConn(scope.connectionId),
+              desktopGateway: _UiRewindGateway(),
+              messagesLoaded: false,
+              attachDesktopRuntimeOnLoad: false,
+              allowUnownedDesktopSnapshotForTesting: false,
+              storedMessageLoader: (_, _) => canonical.future,
+            );
+            for (var i = 0; i < 20; i++) {
+              await tester.pump(const Duration(milliseconds: 20));
+            }
+            expect(chat.messagesLoaded, isFalse);
+            expect(chat.messages, isEmpty);
+            expect(
+              find.textContaining('SAVED_MARKDOWN_$role', findRichText: true),
+              cached ? findsOneWidget : findsNothing,
+            );
+            final observed = List<String>.of(requests);
+            expect(
+              find.byType(MarkdownBody),
+              findsNothing,
+              reason: 'saved content must remain plain inert text',
+            );
+            expect(
+              find.byType(AttachmentCard),
+              findsNothing,
+              reason:
+                  'saved attachments must not instantiate operational cards',
+            );
+            canonical.complete([row]);
+            for (var i = 0; i < 20; i++) {
+              await tester.pump(const Duration(milliseconds: 20));
+            }
+            expect(chat.messagesLoaded, isTrue);
+            expect(
+              find.byType(MarkdownBody),
+              findsWidgets,
+              reason: 'canonical $role retains rich Markdown rendering',
+            );
+            if (role == 'user') {
+              expect(
+                find.byType(AttachmentCard),
+                findsOneWidget,
+                reason: 'canonical attachments keep their normal renderer',
+              );
+            }
+            if (role == 'user' && !cached) {
+              expect(
+                requests.length,
+                greaterThan(observed.length),
+                reason: 'canonical user image still requests its source',
+              );
+            }
+            await tester.pumpWidget(const SizedBox.shrink());
+            await tester.pump();
+            await ChatPreviewStore.load(scope); // Drain before the next seed.
+            requests.clear();
+            return observed;
+          }
+
+          final off = await runCase(false);
+          final on = await runCase(true);
+          expect(off, isEmpty);
+          expect(
+            on,
+            off,
+            reason:
+                'saved $role display must not attempt HttpClient image fetches',
+          );
+        }, createHttpClient: (_) => _PreviewImageHttpClient(requests));
+      },
+    );
+  }
 
   testWidgets(
     'canonical nonempty history replaces the cached preview without changing submission authority',

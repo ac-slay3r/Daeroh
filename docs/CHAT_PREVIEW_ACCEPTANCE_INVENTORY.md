@@ -7,6 +7,12 @@ integration, or distribution approval.
 
 ## Commands and observed results
 
+The 553-pass feature result and five mutation controls below are retained
+historical evidence for prior candidate `bfd618de`. The current correction adds
+two image-boundary controls and replaces the near-cap payload; final exact-head
+counts and logs are on this card's review transition, not inferred from that prior
+run. Current production changes are confined to saved-preview rendering.
+
 All commands use the approved local launcher:
 
 ```sh
@@ -27,10 +33,10 @@ export HERMES_LOCAL_AGENT=true
 # review handoff, with candidate commit/tree and logs. No release approval implied.
 ```
 
-## Mutation sensitivity observed during this batch
+## Retained mutation sensitivity from prior candidate bfd618de
 
-Each temporary production mutation was restored immediately; the final patch
-contains tests/documentation only. Each command used the matching isolated
+Each temporary production mutation was restored immediately in that prior batch;
+its patch contained tests/documentation only. Each command used the matching isolated
 `--plain-name` above and exited 1 on its substantive assertion:
 
 - bypass saved-preview inert renderer: generated-media-card exclusion fails;
@@ -100,19 +106,23 @@ synthetic failure diagnostics; these are not Android notification acceptance.
 
   Global HTTP MockClient intercepts Dashboard token-page/file requests (no real endpoint traffic); Gateway records status, submissions and image/file upload calls. Test-local send/materialization/authority counters and a pre-Chat-screen event subscription record done/queue events. Frozen paired trace includes HTTP requests, done count (zero), queue-change count, in-memory queue IDs, drain suspension, durable outbox IDs/state/queued flags, authority bytes/writes, transcript revision and pipeline state. No media download request, send, materialization, authority write, prompt submission/retry or upload is permitted; both cases have the same single status lookup. Scalars/lists/maps are copied **before** either held lane is released; later legitimate recovery is excluded from comparison. Durable queued presence is not misreported as an already-hydrated in-memory queue.
 
+- `test/chat_screen_test.dart` — `saved user markdown is inert before canonical rich image rendering` and `saved assistant markdown is inert before canonical rich image rendering`: paired actual Chat cache-off/cache-on with canonical history held, visible preview text, empty authoritative messages and `messagesLoaded=false`. A `dart:io HttpOverrides` client intercepts framework `HttpClient.getUrl` image requests missed by package:http. Both frozen pre-canonical traces must be empty; saved rows instantiate neither MarkdownBody nor AttachmentCard. The user fixture includes an attachment marker and legacy local-image path. After canonical publication both roles retain MarkdownBody; canonical user content retains its attachment card and the cache-off canonical image attempts a request. Separate image URLs avoid Flutter's process image cache masking the saved-row control. Baseline user rendering fails with one intercepted image request (an ATTEMPT only, no downloaded bytes); baseline user and assistant rendering also fail the plain-text renderer assertion.
+
 ## 7. Canonical aliases, content/metadata/count/complete envelope, global and obsolete-retention bounds
 
 - `test/chat_preview_store_test.dart` — `keeps integer canonical row identities through a safe round trip` and `keeps desktop canonical aliases through a safe round trip`.
 - `test/chat_preview_store_test.dart` — `dedupes canonical identity and accepts newer render metadata`, `rejects rows without canonical identity or private render state`, and `oversized text is clipped and a storage failure stays non-fatal`.
-- `test/chat_preview_store_test.dart` — `complete near-cap envelope remains within the encrypted session bound`: a retained multi-row payload exceeds 80 KiB while the complete serialized envelope remains at or below 96 KiB; removing envelope-aware trimming fails this control.
+- `test/chat_preview_store_test.dart` — `complete near-cap envelope remains within the encrypted session bound`: exact header-crossing list payload is 98,288 bytes, only 16 bytes below the 98,304-byte cap. Current envelope-aware trimming passes. A surgical overlay removing ONLY the complete-envelope trim loop (list-byte trimming unchanged) fails the byte assertion with 98,341 bytes. The previous near-cap payload did not detect that mutation; this replacement does. Production storage remains byte-identical to the prior candidate.
 - `test/chat_preview_store_test.dart` — `global bound evicts the oldest saved preview without touching the newest` (1 MiB global bound and oldest-saved eviction), and `newer publication wins when an older secure write finishes last` (obsolete publication retention).
 
 ## Acceptance boundary / limits
 
 The seven sections map named shipping assertions to specific source/host contracts;
 they are not blanket seven-group approval. Independent exact-head complete-feature
-review remains required. This batch introduces no production algorithm changes and
-preserves earlier privacy, automatic cleanup, owner, FIFO, bounds and envelope tests.
+review remains required. This correction changes only saved-preview rendering and
+permanent regressions/inventory; canonical rich rendering, storage, recovery and
+delivery algorithms are unchanged. Earlier privacy, automatic cleanup, owner,
+FIFO and bounds controls remain in place.
 
 Host-widget/store evidence does not establish Android runtime acceptance. No APK
 build, Android Keystore/ciphertext check, emulator, physical-device update, signer,

@@ -127,16 +127,20 @@ void main() {
   test(
     'complete near-cap envelope remains within the encrypted session bound',
     () async {
-      final payload = List<String>.filled(4096, 'x').join();
-      await ChatPreviewStore.save(scope, [
-        for (var index = 0; index < 100; index++)
+      final rows = <Map<String, dynamic>>[
+        for (var i = 0; i < 23; i++)
           {
-            'message_id': 'near-cap-$index',
             'role': 'assistant',
-            'content': '$payload-$index',
-            'timestamp': index,
+            'content': 'x' * 4096,
+            'message_id': 'boundary-$i',
           },
-      ]);
+        {'role': 'assistant', 'content': '', 'message_id': 'boundary-last'},
+      ];
+      final remaining = 96 * 1024 - 16 - utf8.encode(jsonEncode(rows)).length;
+      expect(remaining, inInclusiveRange(1, 4096));
+      rows.last['content'] = 'y' * remaining;
+      expect(utf8.encode(jsonEncode(rows)).length, 98288);
+      await ChatPreviewStore.save(scope, rows);
 
       final raw = secure[ChatPreviewStore.debugKeyFor(scope)]!;
       final bytes = utf8.encode(raw).length;
