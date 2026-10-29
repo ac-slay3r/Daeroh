@@ -1649,15 +1649,27 @@ class _HistoryCleanupSectionState extends State<HistoryCleanupSection> {
             }
             // Preview retirement is independent: a transcript-store failure must
             // not leave display-only encrypted rows readable after history clear.
-            // Do not hold the completed remote/local cleanup notice behind the
-            // non-authoritative cache's best-effort secure-storage queue.
-            unawaited(
-              ChatPreviewStore.deleteForProfile(targetConnection.id, profile),
-            );
+            // Its physical delete is part of this action's completion contract:
+            // waiting preserves truthful busy/partial-failure UI for held native
+            // writes and surfaces secure-storage failure through the coordinator.
+            Object? previewError;
+            StackTrace? previewStack;
+            try {
+              await ChatPreviewStore.deleteForProfile(
+                targetConnection.id,
+                profile,
+              );
+            } catch (error, stackTrace) {
+              previewError = error;
+              previewStack = stackTrace;
+            }
             final error = transcriptError;
             final stackTrace = transcriptStack;
             if (error != null && stackTrace != null) {
               Error.throwWithStackTrace(error, stackTrace);
+            }
+            if (previewError != null && previewStack != null) {
+              Error.throwWithStackTrace(previewError, previewStack);
             }
             return removed;
           },

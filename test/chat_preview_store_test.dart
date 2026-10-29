@@ -20,6 +20,7 @@ void main() {
   Completer<void>? heldRead;
   Completer<void>? readStarted;
   var failWrites = false;
+  var failDeletes = false;
 
   setUp(() {
     ChatPreviewStore.resetForTesting();
@@ -32,6 +33,7 @@ void main() {
     heldRead = null;
     readStarted = null;
     failWrites = false;
+    failDeletes = false;
     TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
           const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
@@ -65,6 +67,9 @@ void main() {
               case 'readAll':
                 return Map<String, String>.from(secure);
               case 'delete':
+                if (failDeletes) {
+                  throw PlatformException(code: 'delete-failed');
+                }
                 final deleteGate = heldDelete;
                 heldDelete = null;
                 if (deleteGate != null) {
@@ -372,5 +377,23 @@ void main() {
       (await ChatPreviewStore.load(neighboring)).messages.single['content'],
       'keep 2',
     );
+  });
+
+  test('failed physical profile cleanup is reported and does not poison FIFO', () async {
+    await ChatPreviewStore.save(scope, [row(1, text: 'private')]);
+    final key = ChatPreviewStore.debugKeyFor(scope);
+    failDeletes = true;
+
+    await expectLater(
+      ChatPreviewStore.deleteForProfile(scope.connectionId, scope.profile),
+      throwsA(isA<PlatformException>()),
+    );
+    expect(secure.containsKey(key), isTrue);
+    expect((await ChatPreviewStore.load(scope)).messages, isNotEmpty);
+
+    failDeletes = false;
+    await ChatPreviewStore.deleteForProfile(scope.connectionId, scope.profile);
+    expect(secure.containsKey(key), isFalse);
+    expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
   });
 }

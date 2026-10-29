@@ -50,6 +50,7 @@ final class ChatPreviewStore {
   static final Map<String, int> _revisions = <String, int>{};
   static final Map<String, int> _completedRevisions = <String, int>{};
   static Future<void> _tail = Future<void>.value();
+  static bool _tailIdle = true;
 
   static String _hex(String value) => value.codeUnits
       .map((unit) => unit.toRadixString(16).padLeft(4, '0'))
@@ -93,13 +94,23 @@ final class ChatPreviewStore {
     return revision;
   }
 
-  /// Serializes reads, writes, enumeration, cleanup and eviction. Operations
-  /// swallow storage faults at their boundary so a failed native operation never
-  /// stalls later preview work.
+  /// Serializes reads, writes, enumeration, cleanup and eviction. A completed
+  /// tail is recreated by the next caller so its continuation belongs to that
+  /// caller's zone; active native work is never reset. Failed operations leave
+  /// later work usable while their own caller still receives the real failure.
   static Future<T> _enqueue<T>(Future<T> Function() operation) {
+    if (_tailIdle) _tail = Future<void>.value();
+    _tailIdle = false;
     final prior = _tail;
     final queued = prior.catchError((Object _) {}).then<T>((_) => operation());
-    _tail = queued.then<void>((_) {}, onError: (Object _, StackTrace stackTrace) {});
+    final settled = queued.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    _tail = settled;
+    settled.whenComplete(() {
+      if (identical(_tail, settled)) _tailIdle = true;
+    });
     return queued;
   }
 
@@ -292,28 +303,20 @@ final class ChatPreviewStore {
 
   static Future<void> _deleteWhere(bool Function(ChatPreviewScope scope) matches) {
     return _enqueue(() async {
-      try {
-        final all = await _storage.readAll();
-        for (final key in all.keys.where((key) => key.startsWith(_prefix))) {
-          final scope = _scopeFromKey(key);
-          if (scope != null && matches(scope)) {
-            _nextRevision(key);
-            _completedRevisions.remove(key);
-            await _storage.delete(key: key);
-          }
+      final all = await _storage.readAll();
+      for (final key in all.keys.where((key) => key.startsWith(_prefix))) {
+        final scope = _scopeFromKey(key);
+        if (scope != null && matches(scope)) {
+          _nextRevision(key);
+          _completedRevisions.remove(key);
+          await _storage.delete(key: key);
         }
-      } catch (_) {
-        // Admission fencing remains immediate; callers retain remote-success truth.
       }
     });
   }
 
   static Future<void> _deleteScopeInternal(ChatPreviewScope scope) async {
-    try {
-      await _storage.delete(key: debugKeyFor(scope));
-    } catch (_) {
-      // Storage availability must not affect canonical chat.
-    }
+    await _storage.delete(key: debugKeyFor(scope));
   }
 
   static ChatPreviewScope? _scopeFromKey(String key) {
@@ -348,5 +351,6 @@ final class ChatPreviewStore {
     _revisions.clear();
     _completedRevisions.clear();
     _tail = Future<void>.value();
+    _tailIdle = true;
   }
 }

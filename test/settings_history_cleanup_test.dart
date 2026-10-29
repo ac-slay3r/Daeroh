@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:hermes_android/core/screens/settings_screen.dart';
 import 'package:hermes_android/core/services/chat_draft_store.dart';
+import 'package:hermes_android/core/services/chat_preview_store.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/local_transcript_store.dart';
 import 'package:hermes_android/core/services/session_deletion.dart';
@@ -28,6 +29,7 @@ void main() {
   Completer<void>? blockedWriteEntered;
   Completer<void>? releaseBlockedWrite;
   bool Function(String key)? shouldBlockWrite;
+  bool Function(String key)? shouldFailDelete;
 
   setUp(() {
     SharedPreferences.setMockInitialValues({});
@@ -37,6 +39,7 @@ void main() {
     blockedWriteEntered = null;
     releaseBlockedWrite = null;
     shouldBlockWrite = null;
+    shouldFailDelete = null;
     TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(secureChannel, (call) async {
           final args = call.arguments is Map
@@ -56,6 +59,9 @@ void main() {
             case 'readAll':
               return Map<String, String>.of(secureValues);
             case 'delete':
+              if (shouldFailDelete?.call(args['key'] as String) ?? false) {
+                throw PlatformException(code: 'preview-delete-failed');
+              }
               secureValues.remove(args['key']);
               return null;
           }
@@ -1298,5 +1304,153 @@ void main() {
       expect(text, contains(s.chaStatusCancelled));
       expect(text, contains(s.crnCleanupPartial(1, 2)));
     });
+
+    testWidgets(
+      'espera la retirada cifrada antes de informar limpieza completada',
+      (tester) async {
+        ChatPreviewStore.resetForTesting();
+        final prefs = await SharedPreferences.getInstance();
+        final manager = await ConnectionManager.create(prefs);
+        final connection = connectionWith('instance-a');
+        await manager.setActiveProfile(connection.id, 'profile-a');
+        const scope = ChatPreviewScope(
+          connectionId: 'instance-a',
+          profile: 'profile-a',
+          sessionId: 'held-preview',
+        );
+        final key = ChatPreviewStore.debugKeyFor(scope);
+        await ChatPreviewStore.save(scope, const [
+          {
+            'role': 'assistant',
+            'content': 'private preview',
+            'message_id': 'private-preview',
+          },
+        ]);
+        blockedWriteEntered = Completer<void>();
+        releaseBlockedWrite = Completer<void>();
+        shouldBlockWrite = (candidate) => candidate == key;
+        final heldWrite = ChatPreviewStore.save(scope, const [
+          {
+            'role': 'assistant',
+            'content': 'held private preview',
+            'message_id': 'held-preview',
+          },
+        ]);
+        await blockedWriteEntered!.future;
+        final remote = ApiClient(
+          baseUrl: connection.baseUrl,
+          apiKey: connection.apiKey,
+          connectionId: connection.id,
+          httpClient: MockClient(
+            (_) async => http.Response(jsonEncode({'data': <Object>[]}), 200),
+          ),
+        );
+        addTearDown(remote.close);
+
+        await tester.pumpWidget(
+          wrap(
+            HistoryCleanupSection(
+              connection: connection,
+              connManager: manager,
+              verifyHistoryCleanupForTesting: () async => true,
+              remoteClientOverride: remote,
+            ),
+          ),
+        );
+        await tester.tap(find.byKey(const ValueKey('history-cleanup-normal')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.tap(
+          find.byKey(const ValueKey('history-cleanup-scope-confirm')),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        expect(secureValues.containsKey(key), isTrue);
+        expect(
+          tester
+              .widget<HistoryCleanupActionList>(
+                find.byType(HistoryCleanupActionList),
+              )
+              .clearingNormal,
+          isTrue,
+        );
+        expect(find.byType(HermesNoticeCard), findsNothing);
+
+        shouldBlockWrite = null;
+        releaseBlockedWrite!.complete();
+        await heldWrite;
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.pump(const Duration(milliseconds: 300));
+
+        expect(secureValues.containsKey(key), isFalse);
+        expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
+        expect(await snackBarText(tester), isNotEmpty);
+      },
+    );
+
+    testWidgets(
+      'informa fallo parcial cuando no puede retirar la vista previa cifrada',
+      (tester) async {
+        ChatPreviewStore.resetForTesting();
+        final prefs = await SharedPreferences.getInstance();
+        final manager = await ConnectionManager.create(prefs);
+        final connection = connectionWith('instance-a');
+        await manager.setActiveProfile(connection.id, 'profile-a');
+        const scope = ChatPreviewScope(
+          connectionId: 'instance-a',
+          profile: 'profile-a',
+          sessionId: 'failed-preview',
+        );
+        final key = ChatPreviewStore.debugKeyFor(scope);
+        await ChatPreviewStore.save(scope, const [
+          {
+            'role': 'assistant',
+            'content': 'retained private preview',
+            'message_id': 'retained-preview',
+          },
+        ]);
+        shouldFailDelete = (candidate) => candidate == key;
+        final remote = ApiClient(
+          baseUrl: connection.baseUrl,
+          apiKey: connection.apiKey,
+          connectionId: connection.id,
+          httpClient: MockClient(
+            (_) async => http.Response(jsonEncode({'data': <Object>[]}), 200),
+          ),
+        );
+        addTearDown(remote.close);
+
+        await tester.pumpWidget(
+          wrap(
+            HistoryCleanupSection(
+              connection: connection,
+              connManager: manager,
+              verifyHistoryCleanupForTesting: () async => true,
+              remoteClientOverride: remote,
+            ),
+          ),
+        );
+        final strings = Strings.of(
+          tester.element(find.byType(HistoryCleanupSection)),
+        );
+        await tester.tap(find.byKey(const ValueKey('history-cleanup-normal')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.tap(
+          find.byKey(const ValueKey('history-cleanup-scope-confirm')),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.pump(const Duration(milliseconds: 300));
+
+        expect(secureValues.containsKey(key), isTrue);
+        expect(
+          await snackBarText(tester),
+          contains(strings.setLocalClearFailures(1)),
+        );
+      },
+    );
   });
 }

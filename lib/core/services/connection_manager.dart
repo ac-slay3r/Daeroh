@@ -1786,7 +1786,14 @@ class ApiClient {
   }) async {
     final connectionId = _connectionId;
     if (connectionId == null || connectionId.isEmpty) {
-      await ChatPreviewStore.deleteForSession(sessionId);
+      // An unbound transport cannot identify a preview owner. Preserve the
+      // confirmed remote-delete result while recording the local cleanup fault;
+      // bound Settings/profile cleanup awaits and reports its own durable error.
+      try {
+        await ChatPreviewStore.deleteForSession(sessionId);
+      } catch (error) {
+        debugPrint('[connection] preview cleanup failed (${error.runtimeType})');
+      }
       return;
     }
     final ownerProfile = Session.profileOwner(profile);
