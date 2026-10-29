@@ -20,8 +20,9 @@ final class ChatPreviewScope {
 /// Safe, non-authoritative rows rendered while canonical history is loading.
 final class ChatPreviewSnapshot {
   final List<Map<String, dynamic>> messages;
+  final ({int scope, int profile, int connection, int session})? _admission;
 
-  const ChatPreviewSnapshot(this.messages);
+  const ChatPreviewSnapshot(this.messages, [this._admission]);
 
   bool get isEmpty => messages.isEmpty;
 }
@@ -44,6 +45,7 @@ final class ChatPreviewStore {
   static final Map<String, int> _sessionGenerations = <String, int>{};
   static final Map<String, int> _writeVersions = <String, int>{};
   static final Map<String, String?> _latestEncoded = <String, String?>{};
+  static final Map<String, int> _inFlightWrites = <String, int>{};
   static final Map<String, ({int scope, int profile, int connection, int session})>
   _latestAdmissions =
       <String, ({int scope, int profile, int connection, int session})>{};
@@ -82,8 +84,9 @@ final class ChatPreviewStore {
   }
 
   static String _identity(Map<String, dynamic> row) {
-    final messageId = row['message_id']?.toString();
-    final rowId = row['row_id']?.toString();
+    final messageId =
+        (row['message_id'] ?? row['_desktopMessageId'])?.toString();
+    final rowId = (row['row_id'] ?? row['_desktopRowId'])?.toString();
     if (messageId != null && messageId.isNotEmpty) return 'm:$messageId';
     if (rowId != null && rowId.isNotEmpty) return 'r:$rowId';
     return '';
@@ -111,8 +114,12 @@ final class ChatPreviewStore {
       'role': role,
       'content': clipped,
       if (row['message_id'] is String) 'message_id': row['message_id'],
+      if (row['_desktopMessageId'] is String)
+        '_desktopMessageId': row['_desktopMessageId'],
       if (row['row_id'] is String || row['row_id'] is int)
         'row_id': row['row_id'],
+      if (row['_desktopRowId'] is String || row['_desktopRowId'] is int)
+        '_desktopRowId': row['_desktopRowId'],
       if (row['timestamp'] is num) 'timestamp': row['timestamp'],
       if (displayKind == 'process_complete' ||
           displayKind == 'async_delegation_complete')
@@ -150,11 +157,17 @@ final class ChatPreviewStore {
           decoded['messages'] is! List) {
         return const ChatPreviewSnapshot([]);
       }
-      return ChatPreviewSnapshot(_bound(decoded['messages'] as List));
+      return ChatPreviewSnapshot(_bound(decoded['messages'] as List), admission);
     } catch (_) {
       // Storage availability must not break normal network chat.
       return const ChatPreviewSnapshot([]);
     }
+  }
+
+  /// Verifies that a completed device read still belongs to its captured owner.
+  static bool isCurrent(ChatPreviewScope scope, ChatPreviewSnapshot snapshot) {
+    final admission = snapshot._admission;
+    return admission != null && _stillAdmitted(scope, admission);
   }
 
   static Future<void> save(
@@ -178,6 +191,7 @@ final class ChatPreviewStore {
     final encoded = rows.isEmpty ? null : encode(rows);
     _latestEncoded[key] = encoded;
     _latestAdmissions[key] = admission;
+    _inFlightWrites[key] = (_inFlightWrites[key] ?? 0) + 1;
     try {
       if (!_stillAdmitted(scope, admission) || _writeVersions[key] != version) {
         return;
@@ -188,20 +202,45 @@ final class ChatPreviewStore {
       }
       await _storage.write(key: key, value: encoded);
       if (!_stillAdmitted(scope, admission) || _writeVersions[key] != version) {
-        final latest = _latestEncoded[key];
-        final latestAdmission = _latestAdmissions[key];
-        if (latest == null ||
-            latestAdmission == null ||
-            !_stillAdmitted(scope, latestAdmission)) {
-          await _storage.delete(key: key);
-        } else {
-          await _storage.write(key: key, value: latest);
-        }
+        await _restoreLatest(scope, key);
         return;
       }
       await _evictOldestUntilBound(key);
     } catch (_) {
       // No prompt, identity, endpoint, or storage error is logged here.
+    } finally {
+      final remaining = (_inFlightWrites[key] ?? 1) - 1;
+      if (remaining <= 0) {
+        _inFlightWrites.remove(key);
+        _latestEncoded.remove(key);
+        _latestAdmissions.remove(key);
+      } else {
+        _inFlightWrites[key] = remaining;
+      }
+    }
+  }
+
+  /// Restores the newest admitted value after a stale platform write finishes.
+  /// Re-check after each awaited storage call: a clear or newer publication may
+  /// arrive while the platform channel is held.
+  static Future<void> _restoreLatest(ChatPreviewScope scope, String key) async {
+    final expectedVersion = _writeVersions[key];
+    final latest = _latestEncoded[key];
+    final latestAdmission = _latestAdmissions[key];
+    try {
+      if (expectedVersion == null ||
+          latest == null ||
+          latestAdmission == null ||
+          !_stillAdmitted(scope, latestAdmission)) {
+        await _storage.delete(key: key);
+      } else {
+        await _storage.write(key: key, value: latest);
+      }
+      if (_writeVersions[key] != expectedVersion) {
+        await _restoreLatest(scope, key);
+      }
+    } catch (_) {
+      // A later accepted publication can retry; storage failures stay non-fatal.
     }
   }
 
@@ -250,6 +289,11 @@ final class ChatPreviewStore {
           scope.connectionId == connectionId && scope.profile == profile,
     );
   }
+
+  /// Dashboard profile removal has no stable connection id; clear matching
+  /// persisted owners across connections after remote success.
+  static Future<void> deleteForProfileEverywhere(String profile) =>
+      _deleteWhere((scope) => scope.profile == profile);
 
   static Future<void> deleteForConnection(String connectionId) {
     _connectionGenerations[connectionId] =

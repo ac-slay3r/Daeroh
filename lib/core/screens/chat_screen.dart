@@ -1373,19 +1373,26 @@ class _ChatScreenState extends State<ChatScreen>
     final privacy = await privacyFuture;
     final checkpoint = privacy.privacyCheckpoint;
     final graph = checkpoint == null ? null : TranscriptPrivacyGraph(checkpoint.facts);
+    final previewNewestFirst = preview.messages.reversed.toList(growable: false);
     final safeRows = checkpoint?.suppressedWindow == true
         ? const <Map<String, dynamic>>[]
-        : preview.messages
-            .where((row) => graph == null || !graph.excludes(TranscriptPrivacyObservation.fromRaw(row)))
+        : _chat
+            .projectCachedPreviewForDisplay(previewNewestFirst)
+            .where(
+              (row) =>
+                  graph == null ||
+                  !graph.excludes(TranscriptPrivacyObservation.fromRaw(row)),
+            )
             .toList(growable: false);
     if (!_disposed &&
         mounted &&
         generation == _savedPreviewGeneration &&
+        ChatPreviewStore.isCurrent(scope, preview) &&
         !_chat.messagesLoaded &&
         _chat.messages.isEmpty &&
         safeRows.isNotEmpty) {
-      // Store is chronological; the reverse ListView's source contract is newest-first.
-      setState(() => _savedPreviewMessages = safeRows.reversed.toList());
+      // ActiveChat's renderer source contract is newest-first.
+      setState(() => _savedPreviewMessages = safeRows);
     }
   }
 

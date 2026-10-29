@@ -3,6 +3,10 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/services/chat_preview_store.dart';
+import 'package:hermes_android/core/services/connection_manager.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -195,5 +199,75 @@ void main() {
 
     final saved = await ChatPreviewStore.load(scope);
     expect(saved.messages.map((row) => row['row_id']), [1, 2]);
+  });
+
+  test('keeps desktop canonical aliases through a safe round trip', () async {
+    await ChatPreviewStore.save(scope, [
+      {
+        '_desktopMessageId': 'desktop-message-1',
+        '_desktopRowId': 7,
+        'role': 'assistant',
+        'content': 'alias-only',
+      },
+    ]);
+
+    final saved = await ChatPreviewStore.load(scope);
+    expect(saved.messages, hasLength(1));
+    expect(saved.messages.single['_desktopMessageId'], 'desktop-message-1');
+    expect(saved.messages.single['_desktopRowId'], 7);
+  });
+
+  test('confirmed profile deletion removes matching preview owners', () async {
+    await ChatPreviewStore.save(scope, [row(1)]);
+    final dashboard = DashboardClient(
+      host: 'fixture.invalid',
+      useHttps: true,
+      manualToken: 'fixture',
+      httpClientOverride: MockClient((_) async => http.Response('', 204)),
+    );
+
+    await dashboard.deleteProfile('profile-a');
+
+    expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
+  });
+
+  test('remote session deletion clears preview after draft cleanup fails', () async {
+    await ChatPreviewStore.save(scope, [row(1)]);
+    SharedPreferences.setMockInitialValues({});
+    TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
+          (call) async {
+            final args =
+                (call.arguments as Map?)?.cast<String, dynamic>() ?? const {};
+            final key = args['key'] as String?;
+            if (call.method == 'read' && key?.startsWith('chat_draft_v3.') == true) {
+              throw PlatformException(code: 'draft-read-failed');
+            }
+            switch (call.method) {
+              case 'read':
+                return secure[key];
+              case 'readAll':
+                return Map<String, String>.from(secure);
+              case 'write':
+                secure[key!] = args['value'] as String;
+                return null;
+              case 'delete':
+                secure.remove(key);
+                return null;
+            }
+            return null;
+          },
+        );
+    final api = ApiClient(
+      baseUrl: 'https://fixture.invalid',
+      apiKey: 'fixture',
+      httpClient: MockClient(
+        (_) async => http.Response('{"deleted":true}', 200),
+      ),
+    );
+
+    expect(await api.deleteSession('session-a', profile: 'profile-a'), isTrue);
+    expect((await ChatPreviewStore.load(scope)).isEmpty, isTrue);
   });
 }

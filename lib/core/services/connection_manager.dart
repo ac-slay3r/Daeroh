@@ -1790,16 +1790,26 @@ class ApiClient {
       return;
     }
     final ownerProfile = Session.profileOwner(profile);
+    // The server has already confirmed deletion. Each local store is independent
+    // so a draft/outbox failure cannot retain a private rendered preview.
     try {
       final prefs = await SharedPreferences.getInstance();
       await ChatDraftStore(
         prefs,
       ).clear(connectionId, sessionId, profile: ownerProfile);
+    } catch (error) {
+      debugPrint('[connection] draft cleanup failed (${error.runtimeType})');
+    }
+    try {
       await TurnOutboxStore().deleteForChat(
         connectionId,
         sessionId,
         profile: ownerProfile,
       );
+    } catch (error) {
+      debugPrint('[connection] outbox cleanup failed (${error.runtimeType})');
+    }
+    try {
       await ChatPreviewStore.clear(
         ChatPreviewScope(
           connectionId: connectionId,
@@ -1808,11 +1818,7 @@ class ApiClient {
         ),
       );
     } catch (error) {
-      // El servidor ya confirmó el borrado: un fallo local de Keystore no debe
-      // convertir esa operación remota correcta en un falso error de UI.
-      debugPrint(
-        '[connection] session recovery cleanup failed (${error.runtimeType})',
-      );
+      debugPrint('[connection] preview cleanup failed (${error.runtimeType})');
     }
   }
 
@@ -3814,7 +3820,12 @@ class DashboardClient {
       apiPatch('profiles/$name', body: {'new_name': newName});
 
   /// DELETE /api/profiles/{name} — elimina el perfil.
-  Future<void> deleteProfile(String name) => apiDelete('profiles/$name');
+  Future<void> deleteProfile(String name) async {
+    await apiDelete('profiles/$name');
+    // Dashboard callers do not always retain a SavedConnection identity. Clear
+    // every matching local owner after confirmed remote profile removal.
+    await ChatPreviewStore.deleteForProfileEverywhere(name);
+  }
 
   /// GET /api/profiles/{name}/soul → {content, exists}.
   Future<Map<String, dynamic>> getProfileSoul(String name) =>

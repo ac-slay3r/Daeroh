@@ -18,6 +18,7 @@ import '../../l10n/app_localizations.dart';
 import '../../main.dart';
 import '../models/agent_profile.dart';
 import '../models/dock_config.dart';
+import '../services/chat_preview_store.dart';
 import '../services/connection_manager.dart';
 import '../services/dock_preferences_store.dart';
 import '../services/tui_gateway_client.dart';
@@ -244,6 +245,11 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
         await widget.connManager.setActiveProfile(widget.connection.id, '');
       }
       await _client.deleteProfile(p.name);
+      // Remote deletion succeeded. Local cleanup is independently best-effort:
+      // a Keystore failure must not misreport the successful remote operation.
+      try {
+        await ChatPreviewStore.deleteForProfile(widget.connection.id, p.name);
+      } catch (_) {}
       _snack(str.prfDeleted(p.name));
       await _load();
     } catch (e) {

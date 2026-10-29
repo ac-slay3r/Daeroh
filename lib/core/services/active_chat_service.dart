@@ -8470,6 +8470,15 @@ class ActiveChat {
     ),
   );
 
+  /// Applies the already-loaded local privacy and Stop-tombstone display vetoes
+  /// to a non-authoritative device preview. This never updates chat state.
+  List<Map<String, dynamic>> projectCachedPreviewForDisplay(
+    List<Map<String, dynamic>> newestFirst,
+  ) => _applyCancelledTurnTombstonesForDisplay(
+    newestFirst,
+    incomingTranscriptComplete: false,
+  );
+
   void _persistUpdatedTombstone(CancelledTurnTombstone tombstone) {
     final persist = _onCancelledTurn;
     if (persist == null) return;
