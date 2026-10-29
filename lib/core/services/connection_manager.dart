@@ -28,6 +28,7 @@ import '../models/session.dart';
 import 'chat_draft_store.dart';
 import 'bridge_client.dart';
 import 'local_transcript_store.dart';
+import 'chat_preview_store.dart';
 import 'mission_bot_chat_store.dart';
 import 'secure_storage.dart';
 import 'turn_outbox_store.dart';
@@ -1071,6 +1072,9 @@ class ConnectionManager {
     );
     await bestEffortCleanup(
       () async => LocalTranscriptStore.deleteForConnection(id),
+    );
+    await bestEffortCleanup(
+      () async => ChatPreviewStore.deleteForConnection(id),
     );
     await bestEffortCleanup(
       () async => MissionBotChatStore(prefs).deleteForConnection(id),

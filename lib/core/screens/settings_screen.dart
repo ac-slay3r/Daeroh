@@ -19,6 +19,7 @@ import '../services/diagnostics_consent_store.dart';
 
 import '../services/font_size_service.dart';
 import '../services/local_transcript_store.dart';
+import '../services/chat_preview_store.dart';
 import '../services/session_deletion.dart';
 import '../services/turn_outbox_store.dart';
 import '../theme/app_theme.dart';
@@ -1633,11 +1634,17 @@ class _HistoryCleanupSectionState extends State<HistoryCleanupSection> {
               prefs,
             ).deleteForProfile(targetConnection.id, profile);
           },
-          clearTranscripts: ({required String profile}) =>
-              LocalTranscriptStore.deleteForProfile(
-                targetConnection.id,
-                profile,
-              ),
+          clearTranscripts: ({required String profile}) async {
+            final removed = await LocalTranscriptStore.deleteForProfile(
+              targetConnection.id,
+              profile,
+            );
+            await ChatPreviewStore.deleteForProfile(
+              targetConnection.id,
+              profile,
+            );
+            return removed;
+          },
           clearOutbox: ({required String profile}) =>
               TurnOutboxStore().deleteForProfile(targetConnection.id, profile),
           clearGlobalActivity:
@@ -2803,10 +2810,7 @@ class _MaintenanceSectionState extends State<_MaintenanceSection> {
           value: false,
           style: HermesDialogActionStyle.cancel,
         ),
-        HermesDialogAction(
-          label: Strings.of(context).setUpdate,
-          value: true,
-        ),
+        HermesDialogAction(label: Strings.of(context).setUpdate, value: true),
       ],
     );
     if (confirm != true || !mounted) return;

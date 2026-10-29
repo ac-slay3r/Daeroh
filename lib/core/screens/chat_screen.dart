@@ -91,6 +91,7 @@ import '../services/bridge_client.dart';
 import '../services/bridge_update_service.dart';
 import '../services/chat_draft_store.dart';
 import '../services/chat_preference_store.dart';
+import '../services/chat_preview_store.dart';
 import '../services/desktop_gateway_capabilities.dart';
 import '../services/mission_bot_chat_store.dart';
 import '../services/notifications/notification_service.dart';
@@ -1296,6 +1297,22 @@ class _ChatScreenState extends State<ChatScreen>
   bool _editingRewriteSubmitted = false;
   List<Map<String, dynamic>>? _editingMessagesSnapshot;
   ChatPipelineState? _editingPipelineSnapshot;
+  List<Map<String, dynamic>>? _savedPreviewMessages;
+  bool _authoritativeTranscriptPublished = false;
+  int _savedPreviewGeneration = 0;
+
+  bool get _showingSavedPreview =>
+      !_authoritativeTranscriptPublished &&
+      _savedPreviewMessages != null &&
+      _savedPreviewMessages!.isNotEmpty;
+
+  ChatPreviewScope get _savedPreviewScope => ChatPreviewScope(
+    connectionId: widget.connection.id,
+    profile: _effectiveSessionProfile.isEmpty
+        ? 'default'
+        : _effectiveSessionProfile,
+    sessionId: _chat.serverSessionId,
+  );
 
   /// Congela la proyección visual mientras el editor está abierto. El agente
   /// puede avanzar en segundo plano, pero su respuesta no aparece mientras se
@@ -1303,7 +1320,12 @@ class _ChatScreenState extends State<ChatScreen>
   List<Map<String, dynamic>> get _messages {
     final probe = widget.performanceProbe;
     if (probe != null) probe.publicTranscriptReads += 1;
-    return _editingMessagesSnapshot ?? _chat.messages;
+    if (_editingMessagesSnapshot != null) return _editingMessagesSnapshot!;
+    // Saved preview is a separate UI projection. It never enters ActiveChat.
+    if (_showingSavedPreview && _chat.messages.isEmpty) {
+      return _savedPreviewMessages!;
+    }
+    return _chat.messages;
   }
 
   bool get _editingTranscriptChanged {
@@ -1329,6 +1351,52 @@ class _ChatScreenState extends State<ChatScreen>
     _editingRewriteSubmitted = false;
     _editingMessagesSnapshot = null;
     _editingPipelineSnapshot = null;
+  }
+
+  Future<void> _loadSavedPreviewThenFetch({required bool passiveOnly}) async {
+    // Start the original network loader immediately. A held/offline loader leaves
+    // enough time for the encrypted device preview to paint, while a successful
+    // canonical reply still wins without being delayed by storage I/O.
+    if (widget.connection.kind == InstanceKind.localhost) {
+      await _fetchMessages(passiveOnly: passiveOnly);
+      return;
+    }
+    final generation = ++_savedPreviewGeneration;
+    final previewFuture = ChatPreviewStore.load(_savedPreviewScope);
+    unawaited(_fetchMessages(passiveOnly: passiveOnly));
+    final preview = await previewFuture;
+    if (!_disposed &&
+        mounted &&
+        generation == _savedPreviewGeneration &&
+        !_chat.messagesLoaded &&
+        _chat.messages.isEmpty &&
+        preview.messages.isNotEmpty) {
+      setState(() => _savedPreviewMessages = preview.messages);
+    }
+  }
+
+  void _replaceSavedPreviewWithAuthoritativeTranscript() {
+    if (_authoritativeTranscriptPublished) return;
+    _authoritativeTranscriptPublished = true;
+    _savedPreviewMessages = null;
+    _renderProjection = null;
+    _listEntriesProjection = null;
+    _listEntries = null;
+  }
+
+  void _saveAuthoritativePreview() {
+    if (widget.connection.kind == InstanceKind.localhost ||
+        _chat.messages.isEmpty) {
+      return;
+    }
+    // ActiveChat already applies its privacy/tombstone display vetoes. Copy the
+    // canonical server rows newest-first into a bounded chronological preview.
+    unawaited(
+      ChatPreviewStore.save(
+        _savedPreviewScope,
+        _chat.messages.reversed.map(Map<String, dynamic>.from),
+      ),
+    );
   }
 
   ChatPipelineState get _pipelineState =>
@@ -4262,7 +4330,7 @@ class _ChatScreenState extends State<ChatScreen>
         // A screen created while the app is already backgrounded may perform
         // its one durable read, but it must not connect to or acquire a live
         // runtime until it becomes the owning foreground route.
-        _fetchMessages(passiveOnly: !_appInForeground);
+        _loadSavedPreviewThenFetch(passiveOnly: !_appInForeground);
       }
       // Fase G: comprueba (una vez) si el bridge de esta instancia está
       // desactualizado y, según el ajuste, lo auto-actualiza o avisa.
@@ -5251,6 +5319,12 @@ class _ChatScreenState extends State<ChatScreen>
     _syncTurnActivityClock();
     _syncCompaction();
     _syncSubagentPolling();
+    if (event == ActiveChatEvent.messagesHydrated) {
+      // A canonical loader publication, including an empty authoritative page,
+      // replaces saved device-only history; it is not merged into ActiveChat.
+      _replaceSavedPreviewWithAuthoritativeTranscript();
+      _saveAuthoritativePreview();
+    }
     final passiveTerminalEvent =
         event == ActiveChatEvent.done ||
         event == ActiveChatEvent.error ||
@@ -13680,7 +13754,39 @@ class _ChatScreenState extends State<ChatScreen>
       onDismissError: () => setState(() => _refreshErrorNoticeDismissed = true),
       // Bajo el botón «cargar anteriores» (8 + 48 + 8) cuando está a la vista.
       errorTopInset: _chat.hasEarlierMessages ? 64 : 8,
-      child: transcript,
+      child: Stack(
+        children: [
+          transcript,
+          if (_showingSavedPreview)
+            Align(
+              alignment: Alignment.topCenter,
+              child: SafeArea(
+                bottom: false,
+                child: Semantics(
+                  label: 'Saved device-only history; updating from server',
+                  child: Container(
+                    margin: const EdgeInsets.only(top: 8),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: colors.surface,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      'Saved on this device · updating',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: colors.textSecondary,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 
