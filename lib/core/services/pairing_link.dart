@@ -60,15 +60,18 @@ class PairingLink {
     final text = raw.trim();
     if (text.isEmpty) return null;
     Uri uri;
+    Map<String, String> q;
     try {
       uri = Uri.parse(text);
-    } catch (e) {
-      debugPrint('[pairing] excepción silenciada (se devuelve null): $e');
+      if (uri.scheme.toLowerCase() != scheme) return null;
+      if (uri.host.toLowerCase() != authority) return null;
+      // queryParameters decodes lazily and can throw on malformed UTF-8.
+      q = uri.queryParameters;
+    } catch (_) {
+      // Parser errors can embed the raw URI, including pairing credentials.
+      debugPrint('[pairing] malformed URI (redacted)');
       return null;
     }
-    if (uri.scheme.toLowerCase() != scheme) return null;
-    if (uri.host.toLowerCase() != authority) return null;
-    final q = uri.queryParameters;
     final host = (q['host'] ?? '').trim();
     final token = (q['token'] ?? '').trim();
     if (host.isEmpty || token.isEmpty) return null;

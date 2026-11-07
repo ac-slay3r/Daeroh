@@ -24,8 +24,10 @@ import '../services/global_activity_aggregate.dart';
 import '../services/home_widget_publisher.dart';
 import '../services/platform/android_apps.dart';
 import '../services/local_transcript_store.dart';
+import '../services/chat_preview_store.dart';
 import '../services/session_archive.dart';
 import '../services/session_deletion.dart';
+import '../services/session_library_diagnostics.dart';
 import '../services/turn_outbox_store.dart';
 import '../services/tui_gateway_client.dart';
 import '../services/shared_gateway_pool.dart';
@@ -44,6 +46,7 @@ import '../widgets/home_prompt_composer.dart';
 import '../../main.dart';
 import '../companion/models/companion_presence_level.dart';
 import '../companion/render/companion_home_mascot.dart';
+import '../companion/render/companion_empty_state_presence.dart';
 import '../companion/render/companion_roaming_overlay.dart';
 import 'companion/mascotas_screen.dart';
 import '../widgets/hermes_spark_mascot.dart';
@@ -100,6 +103,8 @@ class HomeDashboardScreen extends StatefulWidget {
   State<HomeDashboardScreen> createState() => _HomeDashboardScreenState();
 }
 
+enum _HomeHistoryState { current, unavailable, deviceCache }
+
 class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     with WidgetsBindingObserver, RouteAware {
   static const String _activeKey = 'last_connection_id';
@@ -109,6 +114,8 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
   bool _healthOk = false;
   bool _checking = false;
   List<Session> _recentSessions = [];
+  _HomeHistoryState _historyState = _HomeHistoryState.current;
+  String? _sessionLibraryStatus;
   SessionArchive? _archive;
   final Map<String, ({double activityAt, String? user, String? assistant})>
   _turnPreviews = {};
@@ -701,6 +708,14 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
       if (!removed) return;
     }
     if (!mounted || !removed) return;
+    await ChatPreviewStore.clear(
+      ChatPreviewScope(
+        connectionId: conn.id,
+        profile: ownerProfile,
+        sessionId: session.id,
+      ),
+    );
+    if (!mounted) return;
     final aggregate = _activeChats?.globalActivity;
     aggregate?.clearSession(conn.id, ownerProfile, session.id);
     await aggregate?.flushJournal();
@@ -932,6 +947,8 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     );
     if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
     bool ok = false;
+    var historyState = _HomeHistoryState.current;
+    String? sessionLibraryStatus;
     List<Session> sessions = [];
     List<ChatDraftEntry> drafts = [];
     // Los borradores viven en el Keystore. Un fallo puntual al desbloquearlo no
@@ -959,45 +976,69 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         ok = await LocalTermuxAgentProvider(
           apps: const AndroidApps(),
         ).isAgentRunning();
-        if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
+      } else {
+        ok = await client.healthCheck(
+          profile: ownerProfile,
+          verifySessionAccess: false,
+        );
+      }
+    } catch (e) {
+      debugPrint('[home-dashboard] health check failed: $e');
+      ok = false;
+    }
+    if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
+
+    if (ok && conn.kind != InstanceKind.localhost && !appLockEnabled) {
+      // La comprobación del bridge ya no depende de abrir Chat/Ajustes.
+      // Con App Lock activo no iniciamos una mutación automática que el
+      // usuario no acaba de autorizar; la acción manual permanece visible.
+      unawaited(BridgeUpdateService.maintainIfEnabled(conn));
+    }
+
+    try {
+      if (conn.kind == InstanceKind.localhost) {
+        // El bridge local no expone /api/sessions — usamos el transcript
+        // guardado en SharedPreferences por LocalTranscriptStore.
         if (ok) {
-          // Tras actualizar el APK, el bridge desplegado en el dispositivo puede
-          // ser uno VIEJO que sirve endpoints antiguos → modelos/skills/info del
-          // servidor salen vacíos. Si el agente está vivo, auto-actualizamos el
-          // bridge a la versión esperada (en segundo plano, una vez por sesión).
           _ensureLocalBridgeFresh(conn);
-          // El bridge local no expone /api/sessions — usamos el transcript
-          // guardado en SharedPreferences por LocalTranscriptStore.
           sessions = await LocalTranscriptStore.listForConnection(
             conn.id,
             profile: ownerProfile,
           );
-          if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
+          historyState = _HomeHistoryState.deviceCache;
         }
-      } else {
-        ok = await client.healthCheck();
-        if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
-        if (ok) {
-          sessions = await client.getSessions(profile: ownerProfile);
-          if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
-          sessions.sort((a, b) => b.lastActivityAt.compareTo(a.lastActivityAt));
-          // La comprobación del bridge ya no depende de abrir Chat/Ajustes.
-          // Con App Lock activo no iniciamos una mutación automática que el
-          // usuario no acaba de autorizar; la acción manual permanece visible.
-          if (!appLockEnabled) {
-            unawaited(BridgeUpdateService.maintainIfEnabled(conn));
-          }
-        }
+      } else if (ok) {
+        sessions = await client.getSessions(profile: ownerProfile);
+        sessions.sort((a, b) => b.lastActivityAt.compareTo(a.lastActivityAt));
       }
-    } catch (e) {
+    } on Object catch (error) {
+      // Session history is auxiliary to the agent transport. Do not turn a
+      // successful health probe into a false offline state because it fails.
+      final diagnostic = SessionLibraryDiagnostic.fromError(error);
       debugPrint(
-        '[home-dashboard] excepción silenciada (fallback: ok = false): $e',
+        '[home-dashboard] session library unavailable: ${diagnostic.label}',
       );
-      ok = false;
+      sessionLibraryStatus = diagnostic.label;
+      historyState = _HomeHistoryState.unavailable;
     } finally {
       client.close();
     }
     if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
+
+    if (historyState != _HomeHistoryState.current || !ok) {
+      try {
+        final deviceHistory = await LocalTranscriptStore.listForConnection(
+          conn.id,
+          profile: ownerProfile,
+        );
+        if (deviceHistory.isNotEmpty) {
+          sessions = deviceHistory;
+          historyState = _HomeHistoryState.deviceCache;
+        }
+      } catch (e) {
+        debugPrint('[home-dashboard] device history unavailable: $e');
+      }
+    }
     if (!mounted) return;
     final merged = <String, Session>{};
     for (final session in sessions) {
@@ -1044,6 +1085,8 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
       _healthOk = ok;
       _checking = false;
       _archive = archive;
+      _historyState = historyState;
+      _sessionLibraryStatus = sessionLibraryStatus;
       _recentSessions = recentSessions;
     });
     await _refreshRemoteActivity(conn, ownerProfile);
@@ -1326,26 +1369,31 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
 
   void _openChat(
     Session session, {
+    SavedConnection? launchConnection,
     String? initialPrompt,
     AttachmentSourceChoice? initialAttachmentSource,
+    String? initialAttachmentDraftText,
+    VoidCallback? onInitialAttachmentDraftRetained,
     bool initialDictation = false,
     bool initialVoiceMode = false,
   }) {
-    final conn = _active;
+    final conn = launchConnection ?? _active;
     if (conn == null) return;
-    openChatWithParent<void>(
+    openChatFromHome<void>(
       context,
-      parentBuilder: (_) =>
-          SessionListScreen(connection: conn, connManager: widget.connManager),
       builder: (_) => ChatScreen(
         connection: conn,
         session: session,
         initialPrompt: initialPrompt,
         initialAttachmentSource: initialAttachmentSource,
+        initialAttachmentDraftText: initialAttachmentDraftText,
+        onInitialAttachmentDraftRetained: onInitialAttachmentDraftRetained,
         initialDictation: initialDictation,
         initialVoiceMode: initialVoiceMode,
       ),
-    ).then((_) => _refreshStatus());
+    ).then((_) {
+      if (mounted) _refreshStatus();
+    });
   }
 
   ({String connectionId, String profile})? _homeDraftTarget() {
@@ -1440,11 +1488,21 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
   }
 
   void _newChat({
+    SavedConnection? launchConnection,
+    String? launchProfile,
     String? initialPrompt,
     AttachmentSourceChoice? initialAttachmentSource,
+    String? initialAttachmentDraftText,
+    VoidCallback? onInitialAttachmentDraftRetained,
     bool initialDictation = false,
     bool initialVoiceMode = false,
   }) {
+    final connection = launchConnection ?? _active;
+    if (connection == null) return;
+    final profile = Session.profileOwner(
+      launchProfile,
+      fallback: widget.connManager.activeProfileFor(connection.id),
+    );
     _openChat(
       Session(
         id: GatewayChatClient.generateSessionId(),
@@ -1457,17 +1515,43 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         isActive: true,
         preview: '',
         startedAt: DateTime.now().millisecondsSinceEpoch.toDouble() / 1000,
+        profile: profile,
       ),
+      launchConnection: connection,
       initialPrompt: initialPrompt,
       initialAttachmentSource: initialAttachmentSource,
+      initialAttachmentDraftText: initialAttachmentDraftText,
+      onInitialAttachmentDraftRetained: onInitialAttachmentDraftRetained,
       initialDictation: initialDictation,
       initialVoiceMode: initialVoiceMode,
     );
   }
 
-  void _selectHomeAttachment(AttachmentSourceChoice source) {
+  void _selectHomeAttachment(AttachmentSourceChoice source, String draftText) {
+    final target = _homeDraftTarget();
+    final connection = _active;
+    if (target == null || connection == null) return;
     FocusManager.instance.primaryFocus?.unfocus();
-    _newChat(initialAttachmentSource: source);
+    _newChat(
+      launchConnection: connection,
+      launchProfile: target.profile,
+      initialAttachmentSource: source,
+      initialAttachmentDraftText: draftText,
+      onInitialAttachmentDraftRetained: () {
+        if (!mounted) return;
+        final current = _homeDraftTarget();
+        if (current == null ||
+            current.connectionId != target.connectionId ||
+            current.profile != target.profile) {
+          return;
+        }
+        // El chat ya confirmó su snapshot cifrado en el mismo scope; ahora sí
+        // se puede retirar la copia de Inicio sin cruzar perfil/conexión.
+        _homeDraftRestoredText = null;
+        _onHomeDraftChanged('');
+        setState(() => _homeDraftEpoch++);
+      },
+    );
   }
 
   void _openSessions() {
@@ -1572,7 +1656,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     final composer = Opacity(
       opacity: dimmed ? 0.55 : 1,
       child: HomePromptComposer(
-        key: ValueKey('home-prompt-composer-${_homeDraftScope ?? ''}'),
+        key: ValueKey(
+          'home-prompt-composer-${_homeDraftScope ?? ''}-$_homeDraftEpoch',
+        ),
         restoredText: _homeDraftRestoredText,
         onTextChanged: _onHomeDraftChanged,
         hintText: Strings.of(context).homeAskHermes,
@@ -1842,7 +1928,10 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
               // un margen de aire adicional para que no quede pegado.
               final dockBottomClearance =
                   48 + 12 + 6 + MediaQuery.paddingOf(context).bottom + 16;
-              final showChat = !kLocalAgentEnabled || !isLocalAndOffline;
+              final showChat =
+                  !kLocalAgentEnabled ||
+                  !isLocalAndOffline ||
+                  _recentSessions.isNotEmpty;
               final banners = <Widget>[
                 if (kLocalAgentEnabled &&
                     (_installInProgress || _uninstallInProgress))
@@ -1889,6 +1978,12 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
                     onRetry: _refreshStatus,
                     onEditInstance: _openInstances,
                   ),
+                if (!_checking && _historyState != _HomeHistoryState.current)
+                  _HomeHistoryNotice(
+                    colors: colors,
+                    deviceCache: _historyState == _HomeHistoryState.deviceCache,
+                    sessionLibraryStatus: _sessionLibraryStatus,
+                  ),
               ];
               // El compositor y los avisos de estado viven fuera del área que
               // scrollea: solo la lista de conversaciones recientes se mueve
@@ -1926,8 +2021,8 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
                               ? Duration.zero
                               : const Duration(milliseconds: 220),
                           child: _buildPromptStage(
-                            enabled: !isRemoteAndOffline,
-                            dimmed: isRemoteAndOffline,
+                            enabled: !isRemoteAndOffline && !isLocalAndOffline,
+                            dimmed: isRemoteAndOffline || isLocalAndOffline,
                           ),
                         ),
                       ],
@@ -2079,6 +2174,62 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
             },
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _HomeHistoryNotice extends StatelessWidget {
+  final HermesThemeColors colors;
+  final bool deviceCache;
+  final String? sessionLibraryStatus;
+
+  const _HomeHistoryNotice({
+    required this.colors,
+    required this.deviceCache,
+    this.sessionLibraryStatus,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final s = Strings.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: colors.surfaceVariant.withValues(alpha: 0.22),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              Icon(
+                deviceCache
+                    ? Icons.phone_android_rounded
+                    : Icons.sync_problem_rounded,
+                size: 18,
+                color: colors.textSecondary,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  deviceCache
+                      ? sessionLibraryStatus == null
+                            ? s.homeDeviceHistoryNotice
+                            : s.homeDeviceHistoryServerUnavailable(
+                                sessionLibraryStatus!,
+                              )
+                      : s.homeSessionLibraryUnavailable(
+                          sessionLibraryStatus ?? 'unknown',
+                        ),
+                  key: const ValueKey('home-history-notice'),
+                  style: TextStyle(fontSize: 12.5, color: colors.textSecondary),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -2880,22 +3031,9 @@ class _EmptyHomeState extends StatelessWidget {
                     .findAncestorStateOfType<HermesAppState>()
                     ?.companion;
                 if (controller == null) return const SizedBox.shrink();
-                return AnimatedBuilder(
-                  animation: controller,
-                  builder: (context, _) {
-                    if (!controller.isInitialized ||
-                        !controller.enabled ||
-                        !controller.presenceLevel.isVisible) {
-                      return const SizedBox.shrink();
-                    }
-                    return const Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        HermesSparkMascot(mood: HermesSparkMood.idle, size: 48),
-                        SizedBox(height: 14),
-                      ],
-                    );
-                  },
+                return CompanionEmptyStatePresence(
+                  controller: controller,
+                  onHome: true,
                 );
               },
             ),

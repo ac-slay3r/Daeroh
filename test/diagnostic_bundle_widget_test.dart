@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/diagnostic_bundle_service.dart';
+import 'package:hermes_android/core/services/diagnostics_consent_store.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
 import 'package:hermes_android/core/widgets/diagnostic_bundle_tile.dart';
 import 'package:hermes_android/l10n/app_localizations.dart';
@@ -151,5 +152,37 @@ void main() {
     expect(existedDuringShare, isTrue);
     expect(shared?.parent.path, cache.path);
     expect(await shared!.exists(), isFalse);
+  });
+
+  testWidgets('el consentimiento remoto empieza apagado y persiste el cambio', (
+    tester,
+  ) async {
+    final prefs = await SharedPreferences.getInstance();
+    final consent = DiagnosticsConsentStore(prefs);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        locale: const Locale('es'),
+        theme: AppTheme.fromId('dark'),
+        localizationsDelegates: Strings.localizationsDelegates,
+        supportedLocales: Strings.supportedLocales,
+        home: Scaffold(
+          body: DiagnosticsConsentTile(consent: consent, isAvailable: true),
+        ),
+      ),
+    );
+
+    final toggle = find.byKey(const ValueKey('diagnostics-remote-opt-in'));
+    expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
+
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+    expect(consent.enabled, isTrue);
+
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
+    expect(consent.enabled, isFalse);
   });
 }

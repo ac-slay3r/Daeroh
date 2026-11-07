@@ -152,6 +152,8 @@ SavedConnection conn(String id, {bool readOnly = false}) =>
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  // The official-gateway fixture upgrades a real loopback WebSocket.
+  HttpOverrides.global = null;
 
   group('P1-1 Bot Chat inline reply on the official gateway', () {
     late _OfficialGateway gateway;
@@ -898,6 +900,7 @@ void main() {
         prefs: prefs,
         presenter: _Presenter(seen),
         claim: (_, _, _) async => true,
+        release: (_, _, _) async {},
         pageLimit: 2,
         maxPagesPerTick: 1,
       );

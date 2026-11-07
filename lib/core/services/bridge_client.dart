@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart'
     show Uint8List, debugPrint, immutable, visibleForTesting;
 import 'package:http/http.dart' as http;
+import '../utils/private_http_client.dart';
 
 import '../utils/transport_privacy.dart';
 import 'profile_chat_mode.dart';
@@ -155,6 +156,7 @@ class BridgeCapabilities {
   final bool soulWrite;
   final bool cronWrite;
   final bool cronDelete;
+  final bool fallbackWrite;
   final bool selfUpdate;
   final bool skillsInstall;
   final bool skillsRemove;
@@ -176,6 +178,7 @@ class BridgeCapabilities {
     this.soulWrite = false,
     this.cronWrite = false,
     this.cronDelete = false,
+    this.fallbackWrite = false,
     this.selfUpdate = false,
     this.skillsInstall = false,
     this.skillsRemove = false,
@@ -185,6 +188,10 @@ class BridgeCapabilities {
     this.version,
   });
 
+  /// The bridge fallback endpoint edits global config, not a profile.
+  bool canEditGlobalFallback(String profile) =>
+      online && authValid && !readOnly && fallbackWrite && profile.isEmpty;
+
   /// ¿Se puede escribir [target] (memory/user/soul/persona/cron…)?
   bool canWriteTarget(String target) => writableTargets[target] ?? false;
 
@@ -192,7 +199,12 @@ class BridgeCapabilities {
   static const offline = BridgeCapabilities();
 
   bool get anyWrite =>
-      memoryWrite || soulWrite || selfUpdate || skillsInstall || skillsRemove;
+      memoryWrite ||
+      soulWrite ||
+      fallbackWrite ||
+      selfUpdate ||
+      skillsInstall ||
+      skillsRemove;
 
   factory BridgeCapabilities.fromJson(
     Map<String, dynamic> json, {
@@ -217,6 +229,7 @@ class BridgeCapabilities {
       soulWrite: op('soul_write'),
       cronWrite: op('cron_write'),
       cronDelete: op('cron_delete'),
+      fallbackWrite: op('fallback_write'),
       selfUpdate: op('self_update'),
       skillsInstall: op('skills_install'),
       skillsRemove: op('skills_remove'),
@@ -281,7 +294,7 @@ class BridgeClient {
              ? baseUrl.substring(0, baseUrl.length - 1)
              : baseUrl,
        ),
-       _http = httpClient ?? http.Client();
+       _http = PrivateHttpClient(httpClient ?? http.Client());
 
   Map<String, String> get _headers => {
     'Authorization': 'Bearer $token',
@@ -526,7 +539,7 @@ class BridgeClient {
         BridgeProvisionFailure.missingApiKey,
       );
     }
-    final client = httpClient ?? http.Client();
+    final client = PrivateHttpClient(httpClient ?? http.Client());
     try {
       final res = await client
           .post(
@@ -637,7 +650,7 @@ class BridgeClient {
     } on ArgumentError {
       return null;
     }
-    final client = httpClient ?? http.Client();
+    final client = PrivateHttpClient(httpClient ?? http.Client());
     try {
       final res = await client
           .get(Uri.parse('$base/bridge/health'))
@@ -976,25 +989,20 @@ class BridgeClient {
     return _decode(res);
   }
 
-  /// POST /bridge/dashboard/credentials {username?, password} → fija la
-  /// contraseña del Dashboard (hash scrypt en el servidor) y lo reinicia.
-  /// Devuelve {ok, username, restarted}. Scope: config.
+  static bool get dashboardPasswordRotationAvailable => false;
+
+  /// Disabled until server authority, login verification, and recovery are
+  /// transactional. A config-only bridge write can report success while the
+  /// live Dashboard still uses an overriding service environment password.
   Future<Map<String, dynamic>> setDashboardCredentials({
     String? username,
     required String password,
   }) async {
-    final res = await _http
-        .post(
-          Uri.parse('$baseUrl/bridge/dashboard/credentials'),
-          headers: _headers,
-          body: jsonEncode({
-            if (username != null && username.trim().isNotEmpty)
-              'username': username.trim(),
-            'password': password,
-          }),
-        )
-        .timeout(_standardTimeout);
-    return _decode(res);
+    throw const BridgeException(
+      'dashboard_rotation_unavailable',
+      'Dashboard password changes via bridge are unavailable. Change the '
+          'password in Dashboard/server administration, then enter it in Daeroh.',
+    );
   }
 
   /// GET /bridge/diag/local → diagnóstico de extremo a extremo del agente local

@@ -92,19 +92,11 @@ class LocalSoulRepository implements SoulRepository {
 
 class _SoulTemplate {
   final String id;
-  final String label;
-  final String description;
-  final String content;
 
-  const _SoulTemplate({
-    required this.id,
-    required this.label,
-    required this.description,
-    required this.content,
-  });
+  const _SoulTemplate(this.id);
 }
 
-/// Etiqueta localizada de una plantilla SOUL (el `content` se deja tal cual).
+/// Localized template name, description and content are resolved at use time.
 String _soulTplLabel(Strings s, _SoulTemplate t) => switch (t.id) {
   'tech' => s.soulTplTechName,
   'homelab' => s.soulTplHomelabName,
@@ -119,69 +111,18 @@ String _soulTplDesc(Strings s, _SoulTemplate t) => switch (t.id) {
   _ => s.soulTplEmptyDesc,
 };
 
+String _soulTplContent(Strings s, _SoulTemplate t) => switch (t.id) {
+  'tech' => s.soulTplTechContent,
+  'homelab' => s.soulTplHomelabContent,
+  'minimal' => s.soulTplMinimalContent,
+  _ => '',
+};
+
 const _kTemplates = [
-  _SoulTemplate(
-    id: 'tech',
-    label: 'Technical assistant',
-    description: 'Profile for programming and sysadmin tasks.',
-    content: '''# Identidad
-
-Soy un asistente técnico especializado en programación, infraestructura y
-administración de sistemas. Respondo de forma concisa y directa, con código
-funcional cuando corresponde.
-
-## Estilo
-
-- Respuestas cortas y precisas; expansión solo si se pide
-- Código funcional sobre explicaciones largas
-- Señalo problemas sin rodeos
-- Prefiero soluciones estándar a inventar algo propio
-
-## Valores
-
-- Honestidad sobre limitaciones
-- Reproducibilidad y documentación mínima necesaria
-- Seguridad por defecto (no hardcodear secretos, no permisos excesivos)
-''',
-  ),
-  _SoulTemplate(
-    id: 'homelab',
-    label: 'Homelab operator',
-    description: 'Profile for home infrastructure management.',
-    content: '''# Identidad
-
-Soy el operador de esta instancia homelab. Gestiono servicios, automatizo tareas
-repetitivas y mantengo la infraestructura personal segura y eficiente.
-
-## Contexto
-
-- Red privada Tailscale, nodo local
-- Servicios: Docker, Nginx, backup offsite
-- Prioridad: disponibilidad > automatización > coste cero
-
-## Comportamiento
-
-- Aviso proactivamente de cambios con impacto en servicios activos
-- Registro de decisiones en el log antes de ejecutar
-- Rollback plan siempre disponible antes de cambios disruptivos
-''',
-  ),
-  _SoulTemplate(
-    id: 'minimal',
-    label: 'Minimalist agent',
-    description: 'No extra instructions; just the base model.',
-    content: '''# Identidad
-
-Responde con la menor cantidad de palabras que transmita la información completa.
-Sin preámbulos, sin despedidas, sin confirmaciones innecesarias.
-''',
-  ),
-  _SoulTemplate(
-    id: 'empty',
-    label: 'Empty',
-    description: 'Blank document to start from scratch.',
-    content: '',
-  ),
+  _SoulTemplate('tech'),
+  _SoulTemplate('homelab'),
+  _SoulTemplate('minimal'),
+  _SoulTemplate('empty'),
 ];
 
 /// Cómo se aplica una plantilla cuando ya hay contenido en el borrador.
@@ -484,10 +425,11 @@ class _SoulScreenState extends State<SoulScreen>
   /// restaurable. Si el borrador está vacío, la inserta sin preguntar.
   Future<void> _applyTemplate(_SoulTemplate template) async {
     final s = Strings.of(context);
+    final content = _soulTplContent(s, template);
     final current = _controller.text;
     final hasContent = current.trim().isNotEmpty;
     if (!hasContent) {
-      _setText(template.content);
+      _setText(content);
       await _forceSave();
       return;
     }
@@ -499,11 +441,11 @@ class _SoulScreenState extends State<SoulScreen>
     if (mounted) setState(() => _hasBackup = true);
 
     if (mode == _SoulApplyMode.append) {
-      if (template.content.trim().isEmpty) return; // nada que añadir
+      if (content.trim().isEmpty) return; // nada que añadir
       final sep = current.endsWith('\n') ? '\n---\n\n' : '\n\n---\n\n';
-      _setText(current + sep + template.content);
+      _setText(current + sep + content);
     } else {
-      _setText(template.content);
+      _setText(content);
     }
     await _forceSave();
     _toast(s.soulPrevSaved);

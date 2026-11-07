@@ -31,6 +31,7 @@ Future<({CapabilityMatrix matrix, List<http.Request> requests})> _run(
   int status,
   String body, {
   List<(int, String)>? responses,
+  bool dashboardSkills = false,
 }) async {
   final requests = <http.Request>[];
   final diagnostics = ConnectionDiagnostics(
@@ -51,7 +52,13 @@ Future<({CapabilityMatrix matrix, List<http.Request> requests})> _run(
   );
   final matrix = diagnostics.buildMatrix(
     gateway,
-    const [],
+    dashboardSkills
+        ? const [
+            ProbeResult(name: 'status', status: ProbeStatus.ok),
+            ProbeResult(name: 'auth', status: ProbeStatus.ok),
+            ProbeResult(name: 'skills', status: ProbeStatus.ok),
+          ]
+        : const [],
     version,
     serverCaps: serverCaps,
   );
@@ -61,6 +68,92 @@ Future<({CapabilityMatrix matrix, List<http.Request> requests})> _run(
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test(
+    'authenticated Dashboard skills beats a false Gateway toggle flag',
+    () async {
+      final result = await _run(200, _caps(toggle: false));
+      final both = await _run(200, _caps(toggle: false), dashboardSkills: true);
+      expect(result.matrix.skillsToggle, CapState.no);
+      expect(both.matrix.skillsToggle, CapState.yes);
+    },
+  );
+
+  test(
+    'named Dashboard profile scopes only skills; default stays unscoped',
+    () async {
+      for (final profile in ['ops-2_alpha', 'default', '']) {
+        final requests = <http.Request>[];
+        final diagnostics = ConnectionDiagnostics(
+          httpClient: MockClient((request) async {
+            requests.add(request);
+            return http.Response('{}', 200);
+          }),
+        );
+        await diagnostics.probeDashboard(
+          _connection.copyWith(dashboardAuthMode: AuthMode.sessionToken),
+          const DashboardSecrets(sessionToken: 'session'),
+          profile: profile,
+        );
+        diagnostics.close();
+        final skills = requests.singleWhere((r) => r.url.path == '/api/skills');
+        expect(
+          skills.url.queryParameters['profile'],
+          profile == 'ops-2_alpha' ? profile : null,
+        );
+        expect(
+          requests
+              .where((r) => r.url.path != '/api/skills')
+              .every((r) => r.url.query.isEmpty),
+          isTrue,
+        );
+      }
+    },
+  );
+
+  test(
+    'profile-scoped gateway diagnostics never probe unscoped routes',
+    () async {
+      for (final (profile, prefix) in const [
+        ('android', '/p/android'),
+        ('', ''),
+        ('default', ''),
+      ]) {
+        final requests = <http.Request>[];
+        final diagnostics = ConnectionDiagnostics(
+          httpClient: MockClient((request) async {
+            requests.add(request);
+            if (request.url.path == '/health') {
+              return http.Response('{"version":"0.20.4"}', 200);
+            }
+            return http.Response('{}', 200);
+          }),
+        );
+
+        await diagnostics.probeGateway(_connection, profile: profile);
+        diagnostics.close();
+
+        final paths = requests.map((request) => request.url.path).toSet();
+        expect(paths, contains('/health'), reason: 'health stays public');
+        for (final route in const [
+          '/api/sessions',
+          '/v1/models',
+          '/v1/capabilities',
+          '/v1/skills',
+          '/v1/toolsets',
+          '/v1/plugins',
+        ]) {
+          expect(paths, contains('$prefix$route'), reason: 'profile=$profile');
+        }
+        if (prefix.isNotEmpty) {
+          expect(
+            paths.where((p) => p != '/health'),
+            everyElement(startsWith(prefix)),
+          );
+        }
+      }
+    },
+  );
 
   test('declared capabilities are authoritative', () async {
     for (final declared in [true, false]) {
@@ -124,6 +217,97 @@ void main() {
       }
 
       expect(output.join('\n'), isNot(contains(marker)));
+    },
+  );
+
+  test(
+    'an endpoint inventory without plugins is authoritative: no probe, no failure',
+    () async {
+      // Shape of a real hermes-agent 0.22 document: endpoints are enumerated,
+      // plugins is absent, and plugins_api is not declared either way.
+      final body = jsonEncode({
+        'object': 'hermes.api_server.capabilities',
+        'features': {'skills_api': true},
+        'endpoints': {
+          'skills': {'method': 'GET', 'path': '/v1/skills'},
+          'toolsets': {'method': 'GET', 'path': '/v1/toolsets'},
+        },
+      });
+      for (final (profile, prefix) in const [
+        ('', ''),
+        ('android', '/p/android'),
+      ]) {
+        final requests = <http.Request>[];
+        final diagnostics = ConnectionDiagnostics(
+          httpClient: MockClient((request) async {
+            requests.add(request);
+            if (request.url.path == '/health') {
+              return http.Response('{"version":"0.22.5"}', 200);
+            }
+            if (request.url.path == '$prefix/v1/capabilities') {
+              return http.Response(body, 200);
+            }
+            if (request.url.path.endsWith('/plugins')) {
+              return http.Response('{}', 404);
+            }
+            return http.Response('{}', 200);
+          }),
+        );
+        final (gateway, version, serverCaps) = await diagnostics.probeGateway(
+          _connection,
+          profile: profile,
+        );
+        final matrix = diagnostics.buildMatrix(
+          gateway,
+          const [],
+          version,
+          serverCaps: serverCaps,
+        );
+        diagnostics.close();
+
+        expect(
+          requests.map((r) => r.url.path).where((p) => p.contains('plugins')),
+          isEmpty,
+          reason: 'profile=$profile: undeclared plugins must not be probed',
+        );
+        expect(gateway.map((r) => r.name), isNot(contains('plugins')));
+        expect(
+          gateway.where((r) => r.name != 'health').map((r) => r.status),
+          everyElement(ProbeStatus.ok),
+          reason: 'a healthy server must not show a failing check',
+        );
+        expect(matrix.pluginsSupported, CapState.no);
+        expect(matrix.isServerSourced('pluginsSupported'), isTrue);
+      }
+    },
+  );
+
+  test(
+    'a declared plugins_api flag wins over the inventory without probing',
+    () async {
+      for (final declared in [true, false]) {
+        final body = jsonEncode({
+          'object': 'hermes.api_server.capabilities',
+          'features': {'plugins_api': declared},
+          'endpoints': {
+            'skills': {'method': 'GET', 'path': '/v1/skills'},
+          },
+        });
+        final result = await _run(200, body);
+        expect(
+          result.requests
+              .map((r) => r.url.path)
+              .where((p) => p.contains('plugins')),
+          isEmpty,
+          reason: 'plugins_api=$declared',
+        );
+        expect(
+          result.matrix.pluginsSupported,
+          declared ? CapState.yes : CapState.no,
+          reason: 'plugins_api=$declared',
+        );
+        expect(result.matrix.isServerSourced('pluginsSupported'), isTrue);
+      }
     },
   );
 

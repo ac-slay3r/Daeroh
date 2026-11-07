@@ -129,6 +129,10 @@ class _DashboardSetupScreenState extends State<DashboardSetupScreen> {
 
   Future<void> _apply() async {
     final s = Strings.of(context);
+    if (!BridgeClient.dashboardPasswordRotationAvailable) {
+      _snack(s.ieDashRotationUnavailable);
+      return;
+    }
     final user = _userCtrl.text.trim();
     final pass = _passCtrl.text;
     if (pass.length < 4) {
@@ -186,6 +190,8 @@ class _DashboardSetupScreenState extends State<DashboardSetupScreen> {
               padding: const EdgeInsets.all(16),
               children: [
                 Text(Strings.of(context).dashIntro),
+                const SizedBox(height: 8),
+                Text(Strings.of(context).ieDashRotationUnavailable),
                 if (_publicUrl.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   Text(

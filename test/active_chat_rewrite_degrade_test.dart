@@ -193,8 +193,9 @@ class _RewriteGateway
 SavedConnection _connection() => SavedConnection(
   id: 'conn-rewrite',
   label: 'Remoto',
-  host: 'hermes.local',
+  host: '127.0.0.1',
   port: 8642,
+  kind: InstanceKind.homelab,
   apiKey: 'test-key',
 );
 

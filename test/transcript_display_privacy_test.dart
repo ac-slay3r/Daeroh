@@ -356,14 +356,14 @@ void main() {
         connection: SavedConnection(
           id: 'private-state-probe',
           label: 'Private state probe',
-          host: 'hermes.local',
+          host: '127.0.0.1',
           port: 8642,
           apiKey: 'probe-key',
         ),
         sessionId: 'private-state-session',
         sessionTitle: 'Private state probe',
         api: ApiClient(
-          baseUrl: 'http://hermes.local:8642',
+          baseUrl: 'http://127.0.0.1:8642',
           apiKey: 'probe-key',
           httpClient: MockClient((_) async => http.Response('not found', 404)),
         ),

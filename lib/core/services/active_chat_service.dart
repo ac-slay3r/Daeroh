@@ -1,5 +1,6 @@
 import '../models/bot_mention.dart';
 import 'bot_mention_roster.dart';
+import 'secure_storage_policy.dart';
 // Servicio singleton que posee el streaming SSE de los chats. Vive por encima
 // del Navigator (en HermesAppState), así que la respuesta/ejecución del agente
 // CONTINÚA aunque el usuario salga de la pantalla del chat. La pantalla del chat
@@ -77,6 +78,7 @@ import 'session_reconciler.dart';
 import 'transcript_publication_coordinator.dart';
 import 'subagent_activity_reducer.dart';
 import 'subagent_transcript_projection.dart';
+import 'voice/voice_lang.dart';
 import 'terminal_transcript_authority.dart';
 import 'tui_gateway_client.dart';
 import 'turn_outbox_store.dart';
@@ -97,15 +99,23 @@ const _activeChatRewindBusyRetryInterval = Duration(milliseconds: 150);
 const _activeChatRewindBusyRetryTimeout = Duration(seconds: 6);
 
 @visibleForTesting
-String activeChatDesktopRecoveryUiMessage(Object _) =>
-    'No se pudo recuperar el turno. Inténtalo de nuevo.';
+String activeChatDesktopRecoveryUiMessage(
+  Object? _, {
+  String languageCode = 'es',
+}) => languageCode.toLowerCase().startsWith('en')
+    ? 'The turn could not be recovered. Try again.'
+    : 'No se pudo recuperar el turno. Inténtalo de nuevo.';
 
 @visibleForTesting
-String activeChatDesktopSnapshotFailureUiMessage(String? _) =>
-    'No se pudo recuperar el turno. Inténtalo de nuevo.';
+String activeChatDesktopSnapshotFailureUiMessage(
+  String? rawError, {
+  String languageCode = 'es',
+}) => activeChatDesktopRecoveryUiMessage(rawError, languageCode: languageCode);
 
 const _activeChatDesktopFailureFallback =
     'No se pudo completar la respuesta. Inténtalo de nuevo.';
+const _activeChatDesktopFailureFallbackEn =
+    'The response could not be completed. Try again.';
 
 /// Longitud de causa que llega a la UI.
 const _activeChatDesktopFailureCauseLimit = 180;
@@ -118,7 +128,14 @@ const _activeChatDesktopFailureCauseScanLimit = 4096;
 /// Projects only the Gateway's official `message` cause. Free-form sibling
 /// fields can contain partial output, provider payloads, paths, or credentials.
 @visibleForTesting
-String activeChatDesktopEventFailureUiMessage(Object? rawMessage) {
+String activeChatDesktopEventFailureUiMessage(
+  Object? rawMessage, {
+  String languageCode = 'es',
+}) {
+  final english = languageCode.toLowerCase().startsWith('en');
+  final fallback = english
+      ? _activeChatDesktopFailureFallbackEn
+      : _activeChatDesktopFailureFallback;
   // Se inspecciona una ventana mucho mayor que la proyectada: acotar primero
   // partiría un identificador opaco justo en el límite y el fragmento restante
   // ya no alcanzaría `{24,}`, colándose como si fuera prosa.
@@ -126,19 +143,21 @@ String activeChatDesktopEventFailureUiMessage(Object? rawMessage) {
     rawMessage,
     _activeChatDesktopFailureCauseScanLimit,
   );
-  if (scanned == null) return _activeChatDesktopFailureFallback;
+  if (scanned == null) return fallback;
   final normalized = scanned.replaceAll(RegExp(r'\s+'), ' ').trim();
   final sensitive = RegExp(
     r'''(?:^|\s)(?:~[/\\]|/(?:home|users|root|data|storage|sdcard|private|var|tmp|etc)(?:[/\\]|\b))|[a-z]:[/\\]|https?://|\b(?:authorization|bearer|api[_ -]?key|token|password|passwd|secret|cookie|session[_ -]?id)\b|\b[A-Za-z0-9_+/=-]{24,}\b''',
     caseSensitive: false,
   );
   if (normalized.isEmpty || sensitive.hasMatch(normalized)) {
-    return _activeChatDesktopFailureFallback;
+    return fallback;
   }
   final projected = normalized.length <= _activeChatDesktopFailureCauseLimit
       ? normalized
       : normalized.substring(0, _activeChatDesktopFailureCauseLimit);
-  return 'No se pudo completar la respuesta: $projected';
+  return english
+      ? 'The response could not be completed: $projected'
+      : 'No se pudo completar la respuesta: $projected';
 }
 
 @visibleForTesting
@@ -148,23 +167,38 @@ String activeChatDesktopRecoveryDiagnostic(Object error) {
 }
 
 @visibleForTesting
-String activeChatBridgeErrorUiMessage(Object error) {
+String activeChatBridgeErrorUiMessage(
+  Object error, {
+  String languageCode = 'es',
+}) {
   final low = error.toString().toLowerCase();
+  final english = languageCode.toLowerCase().startsWith('en');
   if (low.contains('connection closed') ||
       low.contains('before full header') ||
       low.contains('connection reset') ||
       low.contains('connection refused') ||
       low.contains('socketexception')) {
+    if (english) {
+      return 'The local agent stopped during the response (often due to low '
+          'memory). Restart it and try again. If this repeats, use a smaller '
+          'model or give the device more RAM.';
+    }
     return 'El agente local se detuvo durante la respuesta (el proceso se '
         'cerró, normalmente por falta de memoria). Vuelve a arrancar el '
         'agente local y reintenta. Si se repite, usa un modelo más pequeño o '
         'da más RAM al dispositivo/emulador.';
   }
   if (low.contains('timeout') || low.contains('timed out')) {
+    if (english) {
+      return 'The local agent took too long to respond. The model may still '
+          'be loading; wait a few seconds and try again.';
+    }
     return 'El agente local tardó demasiado en responder. El modelo puede '
         'estar cargándose; espera unos segundos y reintenta.';
   }
-  return 'No se pudo completar la respuesta local. Reintenta.';
+  return english
+      ? 'The local response could not be completed. Try again.'
+      : 'No se pudo completar la respuesta local. Reintenta.';
 }
 
 const _sessionNotOwnedReason = 'SESSION_NOT_OWNED';
@@ -1956,7 +1990,7 @@ class CancelledTurnTombstoneStore {
        _nowMs = nowMs ?? (() => DateTime.now().millisecondsSinceEpoch);
 
   factory CancelledTurnTombstoneStore.secure({
-    FlutterSecureStorage secureStorage = const FlutterSecureStorage(),
+    FlutterSecureStorage secureStorage = sharedSecureStorage,
   }) => CancelledTurnTombstoneStore(
     read: () => secureStorage.read(key: _storageKey),
     write: (value) => secureStorage.write(key: _storageKey, value: value),
@@ -2496,6 +2530,13 @@ class ActiveTurnDelivery {
     }
     _current = _current.copyWith(queueOrder: queueOrder);
     return true;
+  }
+
+  void freezeReplyLanguage(String language) {
+    if (_discarded || _transportStarted || _current.replyLanguage != null) {
+      return;
+    }
+    _current = _current.copyWith(replyLanguage: language);
   }
 
   Future<bool> persistPrepared() => _serializeMutation(() async {
@@ -3092,12 +3133,14 @@ class _QueuedTextTurn {
     this.queueOrder, {
     required this.id,
     required this.allowTransportFallback,
+    this.replyLanguage,
   });
 
   final String id;
   final String text;
   final int queueOrder;
   final bool allowTransportFallback;
+  final String? replyLanguage;
 }
 
 /// Estados del pipeline del chat — solo estados respaldados por señales reales.
@@ -3425,17 +3468,27 @@ enum _SessionMessagesPageAction {
 enum _SessionMessagesPageProjectionDisposition { publish, preserve, reject }
 
 final class _NativeSessionHistoryPage extends SessionMessagesPage {
-  _NativeSessionHistoryPage(SessionMessagesPage page, {bool? hasEarlier})
-    : super(
-        messages: page.messages,
-        pagination: null,
-        paginationProvided: false,
-        rawMessageCount: page.rawMessageCount,
-        messagesFullyParsed: page.messagesFullyParsed,
-        resolvedTipId: page.resolvedTipId,
-        coverage: page.coverage,
-        hasEarlier: hasEarlier ?? page.hasEarlier,
-      );
+  _NativeSessionHistoryPage(
+    SessionMessagesPage page, {
+    bool? hasEarlier,
+    this.needsCanonicalRestVerification = false,
+    this.requiresExactBoundaryProbe = false,
+  }) : super(
+         messages: page.messages,
+         pagination: null,
+         paginationProvided: false,
+         rawMessageCount: page.rawMessageCount,
+         messagesFullyParsed: page.messagesFullyParsed,
+         resolvedTipId: page.resolvedTipId,
+         coverage: page.coverage,
+         hasEarlier: hasEarlier ?? page.hasEarlier,
+       );
+
+  /// The Gateway transcript is safe to render, but its unpaginated RPC shape
+  /// cannot establish REST scrollback boundaries. Repair it after first paint.
+  final bool needsCanonicalRestVerification;
+
+  final bool requiresExactBoundaryProbe;
 }
 
 final class _SessionMessagesPageReadContext {
@@ -3967,6 +4020,10 @@ class ActiveChat {
   static const Duration _voiceBargeHandoffRetention = Duration(seconds: 30);
   static const Duration _desktopRecoveryDelayCap = Duration(seconds: 15);
   static const Duration _desktopRecoveryFallbackDelay = Duration(seconds: 1);
+  // A restored socket with no authoritative proof is not a network outage.
+  // Keep the transcript and remote run untouched, but don't strand the user
+  // in an endless reconnect state after repeated exact recovery reads.
+  static const int _maxUnprovenConnectedRecoveryAttempts = 3;
   static const Duration _compressionRestoreRpcBudget = Duration(seconds: 10);
 
   static List<Duration> _normalizeDesktopRecoveryBackoff(
@@ -4048,6 +4105,8 @@ class ActiveChat {
   }
 
   final ApprovalPolicyService? _policy;
+  final String Function()? _appLanguageCode;
+  String get _desktopLanguageCode => _appLanguageCode?.call() ?? 'es';
   final VoidCallback _onTerminal;
   final VoidCallback? _onUnused;
   final Future<void> Function()? _beforeTerminalNotification;
@@ -4663,6 +4722,7 @@ class ActiveChat {
 
   int get adaptiveRefreshEventRevision => _adaptiveRefreshEventRevision;
   int get adaptiveFullRefreshRevision => _adaptiveFullRefreshRevision;
+
   /// Bumped on every `sessions.changed` broadcast, regardless of runtime
   /// ownership or busy state — the screen reads this to reconcile the OPEN
   /// transcript against the durable store, the same trigger Desktop uses.
@@ -5041,6 +5101,7 @@ class ActiveChat {
 
   void _schedulePassiveActivityExpiry() {
     _cancelPassiveActivityExpiry();
+    if (_isDetachedIdle) return;
     final generation = _passiveActivityExpiryGeneration;
     _passiveActivityExpiryTimer = Timer(_passiveRemoteActivityWindow, () {
       _passiveActivityExpiryTimer = null;
@@ -6868,6 +6929,7 @@ class ActiveChat {
   bool _earlierMessagesAvailable = false;
   int _earlierMessagesNextOffset = 0;
   bool _earlierMessagesInFlight = false;
+  Future<void>? _earlierMessagesFlight;
   int _remainingInitialBackfillPages = _maxInitialBackfillPages;
 
   /// Solo se eleva a UI tras un intento real de backfill que no obtuvo una
@@ -7471,6 +7533,7 @@ class ActiveChat {
     @visibleForTesting Future<void> Function()? beforePrivacySnapshotLoad,
     @visibleForTesting Future<bool> Function()? historyHydrationAwaiter,
     ApprovalPolicyService? policy,
+    String Function()? appLanguageCode,
     void Function(String runId)? onRunStarted,
     Future<void> Function()? onForegroundKeepAlive,
     ValueChanged<int?>? onObservedFirstTokenLatency,
@@ -7525,6 +7588,7 @@ class ActiveChat {
        _transcriptPageSize = transcriptPageSizeForTesting,
        _notifications = notifications,
        _policy = policy,
+       _appLanguageCode = appLanguageCode,
        _onTerminal = onTerminal,
        _onUnused = onUnused,
        _beforeTerminalNotification = beforeTerminalNotification,
@@ -7748,9 +7812,19 @@ class ActiveChat {
   }
 
   void _markAttached() {
+    final wasDetachedIdle = _isDetachedIdle;
     _releaseRequested = false;
     if (_detachedIdleParked.isCompleted) {
       _detachedIdleParked = Completer<void>();
+    }
+    if (wasDetachedIdle &&
+        _passiveActivityVisible &&
+        _passiveRemoteActivityState == DesktopPassiveActivityState.unknown) {
+      _schedulePassiveActivityExpiry();
+    }
+    final restoredCompression = _restoredCompression;
+    if (restoredCompression != null && !_restoredCompressionProbeInFlight) {
+      unawaited(_probeRestoredCompression(restoredCompression));
     }
   }
 
@@ -7778,6 +7852,10 @@ class ActiveChat {
   void _parkDetachedIdleLifecycle({bool terminalJustCompleted = false}) {
     if (_disposed || !_isDetachedIdle) return;
     if (!_detachedIdleParked.isCompleted) _detachedIdleParked.complete();
+    _cancelPassiveActivityExpiry();
+    _restoredCompressionProbeTimer?.cancel();
+    _restoredCompressionProbeTimer = null;
+    _clearDesktopCompactingIndicator();
     final terminalWasPending = _terminalTimer != null;
     _terminalTimer?.cancel();
     _terminalTimer = null;
@@ -8392,6 +8470,22 @@ class ActiveChat {
     ),
   );
 
+  /// Applies already-loaded local privacy and Stop-tombstone display vetoes to a
+  /// non-authoritative device preview. This is deliberately side-effect-free:
+  /// cached rows cannot bind, revise, or persist durable Stop metadata.
+  List<Map<String, dynamic>> projectCachedPreviewForDisplay(
+    List<Map<String, dynamic>> newestFirst,
+  ) => _projectTranscriptForInternalState(
+    _applyDurablePrivateTranscriptVetoes(
+      projectCancelledTurnTombstones(
+        existingNewestFirst: const <Map<String, dynamic>>[],
+        incomingNewestFirst: newestFirst,
+        durableTombstones: _cancelledTurnTombstones,
+        incomingTranscriptComplete: false,
+      ),
+    ),
+  );
+
   void _persistUpdatedTombstone(CancelledTurnTombstone tombstone) {
     final persist = _onCancelledTurn;
     if (persist == null) return;
@@ -8747,6 +8841,7 @@ class ActiveChat {
       List<Map<String, dynamic>>? prefetchedNewestFirst;
       var prefetchedTranscriptAccepted = false;
       var prefetchedTranscriptComplete = false;
+      _NativeSessionHistoryPage? prefetchedNativePage;
       int? prefetchedRawMessageCount;
       DesktopSessionSnapshot? resumedSnapshot;
       Object? prefetchError;
@@ -9077,6 +9172,9 @@ class ActiveChat {
         final privacyCheckpoint = privacySnapshot?.privacyCheckpoint;
         prefetchError = prefetch.error;
         if (prefetch.value case final page?) {
+          if (page is _NativeSessionHistoryPage) {
+            prefetchedNativePage = page;
+          }
           var normalized = const <Map<String, dynamic>>[];
           _RefreshedTranscriptGraft? graft;
           final transition = _consumeSessionMessagesPageEvidence(
@@ -9316,6 +9414,7 @@ class ActiveChat {
           onMessagesPublished?.call();
           _emit(ActiveChatEvent.messagesHydrated);
         }
+        _scheduleNativeHistoryCanonicalRepair(prefetchedNativePage);
         return;
       }
 
@@ -9362,6 +9461,7 @@ class ActiveChat {
           }
         }
         messagesLoaded = true;
+        _scheduleNativeHistoryCanonicalRepair(prefetchedNativePage);
         return;
       }
       if (prefetchError == null) {
@@ -9447,14 +9547,66 @@ class ActiveChat {
     // REST 8642 no trae display_metadata: igual que tras el terminal, una
     // fila editorial nueva se hidrata (una sola vez) desde session.history.
     unawaited(_hydrateEditorialDisplayMetadataFromDurableHistory());
+    // The current durable tail is safe to show now. Older-page traversal only
+    // improves the initial editorial window; making it part of this await chain
+    // left a chat blank behind up to 64 sequential REST reads.
+    onMessagesPublished?.call();
+    if (page is _NativeSessionHistoryPage &&
+        page.needsCanonicalRestVerification) {
+      _scheduleNativeHistoryCanonicalRepair(page);
+    } else {
+      unawaited(
+        _backfillInitialConversationWindow(
+          refreshedPageHadVisibleConversation:
+              _visibleConversationMessageCountIn(normalized) > 0,
+          verifyPotentialUserGenerationReplacement:
+              verifyPotentialUserGenerationReplacement,
+        ),
+      );
+    }
+  }
+
+  void _scheduleNativeHistoryCanonicalRepair(_NativeSessionHistoryPage? page) {
+    if (page == null || !page.needsCanonicalRestVerification) return;
+    // The native Gateway response is already rendered. A REST offset-zero read
+    // now establishes pagination or repairs it without gating first paint.
+    unawaited(_repairNativeHistoryCanonicalBoundary(page));
+  }
+
+  Future<void> _repairNativeHistoryCanonicalBoundary(
+    _NativeSessionHistoryPage page,
+  ) async {
+    final repairedTail = await _loadEarlierMessagesPage();
+    if (!repairedTail) return;
+
+    if (page.requiresExactBoundaryProbe && _earlierMessagesAvailable) {
+      // A native transcript that exactly fills the expected first REST page
+      // still needs an empty offset probe before it can be declared complete.
+      // Preserve the established transient-read retry without delaying first
+      // paint.
+      for (var attempt = 0;
+          attempt < 2 && !_disposed && _earlierMessagesAvailable;
+          attempt++) {
+        final previousOffset = _earlierMessagesNextOffset;
+        await _loadEarlierMessagesPage();
+        if (!_earlierMessagesAvailable ||
+            _earlierMessagesNextOffset != previousOffset) {
+          break;
+        }
+      }
+    }
+
+    // Canonical tail repair can itself yield only tool/system rows. Continue
+    // the same bounded, asynchronous initial-window traversal used for direct
+    // REST loads so a native first paint never strands an editorially empty
+    // transcript until the reader taps "load earlier".
+    if (_disposed) return;
     await _backfillInitialConversationWindow(
       refreshedPageHadVisibleConversation:
-          _visibleConversationMessageCountIn(normalized) > 0,
+          _visibleConversationMessageCountIn(_messages) > 0,
       verifyPotentialUserGenerationReplacement:
-          verifyPotentialUserGenerationReplacement,
+          _unconfirmedRetainedTranscriptIdentities.isNotEmpty,
     );
-    if (!loadStillAuthorized()) return;
-    onMessagesPublished?.call();
   }
 
   Future<List<Map<String, dynamic>>> _loadStoredMessages(String profile) async {
@@ -9621,6 +9773,23 @@ class ActiveChat {
         if (nativePage.rawMessageCount > requestedLimit ||
             (_transcriptIsComplete && _messages.isNotEmpty)) {
           return nativePage;
+        }
+        final nativePageHasUsableCurrentTranscript =
+            nativePage.messages.isNotEmpty &&
+            nativePage.messagesFullyParsed &&
+            _transcriptRowsHaveUnambiguousIdentityEvidence(nativePage.messages);
+        if (nativePageHasUsableCurrentTranscript) {
+          // `session.history` is sufficient for the current UI tail. Its
+          // unpaginated shape cannot prove the canonical REST boundary, so the
+          // caller schedules offset-zero REST repair after publication.
+          return _NativeSessionHistoryPage(
+            nativePage,
+            needsCanonicalRestVerification: true,
+            requiresExactBoundaryProbe:
+                readContext?.hardExpectedMessageCount ==
+                    nativePage.rawMessageCount &&
+                nativePage.rawMessageCount == requestedLimit,
+          );
         }
         try {
           final canonicalPage = await _getStoredMessagesRestPage(
@@ -11667,7 +11836,7 @@ class ActiveChat {
     while (!_disposed &&
         _earlierMessagesAvailable &&
         _remainingInitialBackfillPages > 0) {
-      final loaded = await loadEarlierMessages();
+      final loaded = await loadEarlierMessages(waitForInFlight: true);
       if (!loaded) return;
       _remainingInitialBackfillPages -= 1;
       final foundVisibleConversation = _messages.any((message) {
@@ -11688,13 +11857,20 @@ class ActiveChat {
   /// unidad conversacional visible. Una página puede contener exclusivamente
   /// filas internas (tools/system); en ese caso un único gesto debe atravesarla
   /// porque la lista no cambia de geometría y no generará otro evento de scroll.
-  Future<bool> loadEarlierMessages({bool continuePastInvisible = false}) async {
-    if (!continuePastInvisible) return _loadEarlierMessagesPage();
+  Future<bool> loadEarlierMessages({
+    bool continuePastInvisible = false,
+    bool waitForInFlight = true,
+  }) async {
+    if (!continuePastInvisible) {
+      return _loadEarlierMessagesPage(waitForInFlight: waitForInFlight);
+    }
     var visibleUnitCount = ChatRenderProjection.build(_messages).units.length;
     var loadedAnyPage = false;
     var remainingPages = _maxInitialBackfillPages;
     while (!_disposed && _earlierMessagesAvailable && remainingPages > 0) {
-      final loaded = await _loadEarlierMessagesPage();
+      final loaded = await _loadEarlierMessagesPage(
+        waitForInFlight: waitForInFlight,
+      );
       if (!loaded) return loadedAnyPage;
       loadedAnyPage = true;
       remainingPages -= 1;
@@ -11709,11 +11885,17 @@ class ActiveChat {
 
   /// Consume una página REST anterior. Una petición en vuelo por chat; un fallo
   /// no es fatal y el siguiente gesto puede reintentarlo.
-  Future<bool> _loadEarlierMessagesPage() async {
-    if (_disposed || !_earlierMessagesAvailable || _earlierMessagesInFlight) {
-      return false;
+  Future<bool> _loadEarlierMessagesPage({bool waitForInFlight = false}) async {
+    if (_disposed || !_earlierMessagesAvailable) return false;
+    if (_earlierMessagesInFlight) {
+      final flight = _earlierMessagesFlight;
+      if (!waitForInFlight || flight == null) return false;
+      await flight;
+      return _loadEarlierMessagesPage(waitForInFlight: true);
     }
     _earlierMessagesInFlight = true;
+    final flight = Completer<void>();
+    _earlierMessagesFlight = flight.future;
     final loadEpoch = _messageLoadEpoch;
     final requestedTailHydration = _needsTranscriptTailHydration;
     final requestedNextOffset = _earlierMessagesNextOffset;
@@ -11850,6 +12032,10 @@ class ActiveChat {
       return false;
     } finally {
       _earlierMessagesInFlight = false;
+      if (identical(_earlierMessagesFlight, flight.future)) {
+        _earlierMessagesFlight = null;
+      }
+      if (!flight.isCompleted) flight.complete();
     }
   }
 
@@ -12440,6 +12626,12 @@ class ActiveChat {
     bool? allowTransportFallbackOverride,
     Future<void> Function(String storedSessionId)? beforeDesktopPromptSubmit,
   }) {
+    // Freeze locale before admission awaits; retries inherit this turn's zone.
+    final configuredLanguage =
+        delivery?.current.replyLanguage ?? _appLanguageCode?.call();
+    final replyLanguage =
+        TuiGatewayClient.currentReplyLanguage ??
+        (configuredLanguage == 'es' ? 'es' : 'en');
     if (delivery != null) {
       final turn = delivery.current;
       // Unannotated legacy callers retain their separate prompt contract.
@@ -12482,21 +12674,24 @@ class ActiveChat {
       // también dejan al coordinador sin nada que gobernar. Sólo un Stop aún
       // vivo justifica esperar su ACK, y esa espera es acotada.
       if (stop != null && !stop.isFinal) {
-        return _sendAfterStopSettles(
-          fullText: fullText,
-          model: model,
-          history: history,
-          profile: profile,
-          serverSessionId: serverSessionId,
-          nativeAttachments: nativeAttachments,
-          desktopText: desktopText,
-          voicePlaybackInterrupted: voicePlaybackInterrupted,
-          queued: queued,
-          truncateBeforeUserOrdinal: truncateBeforeUserOrdinal,
-          delivery: delivery,
-          sessionConfig: sessionConfig,
-          allowTransportFallbackOverride: allowTransportFallbackOverride,
-          beforeDesktopPromptSubmit: beforeDesktopPromptSubmit,
+        return TuiGatewayClient.withReplyLanguage(
+          replyLanguage,
+          () => _sendAfterStopSettles(
+            fullText: fullText,
+            model: model,
+            history: history,
+            profile: profile,
+            serverSessionId: serverSessionId,
+            nativeAttachments: nativeAttachments,
+            desktopText: desktopText,
+            voicePlaybackInterrupted: voicePlaybackInterrupted,
+            queued: queued,
+            truncateBeforeUserOrdinal: truncateBeforeUserOrdinal,
+            delivery: delivery,
+            sessionConfig: sessionConfig,
+            allowTransportFallbackOverride: allowTransportFallbackOverride,
+            beforeDesktopPromptSubmit: beforeDesktopPromptSubmit,
+          ),
         );
       }
       _unparkQueueLease();
@@ -12536,23 +12731,26 @@ class ActiveChat {
           _OwnershipMutationAdmission.manualProbeInFlight;
       _emit(ActiveChatEvent.sessionInfo);
     }
-    final attempt = _send(
-      fullText: fullText,
-      model: model,
-      history: history,
-      profile: profile,
-      serverSessionId: serverSessionId,
-      nativeAttachments: nativeAttachments,
-      desktopText: desktopText,
-      voicePlaybackInterrupted: voicePlaybackInterrupted,
-      queued: queued,
-      truncateBeforeUserOrdinal: truncateBeforeUserOrdinal,
-      delivery: delivery,
-      sessionConfig: sessionConfig,
-      allowTransportFallbackOverride: allowTransportFallbackOverride,
-      beforeDesktopPromptSubmit: beforeDesktopPromptSubmit,
-      capturedLifecycle: transcriptLifecycle,
-      transcriptOperation: transcriptOperation,
+    final attempt = TuiGatewayClient.withReplyLanguage(
+      replyLanguage,
+      () => _send(
+        fullText: fullText,
+        model: model,
+        history: history,
+        profile: profile,
+        serverSessionId: serverSessionId,
+        nativeAttachments: nativeAttachments,
+        desktopText: desktopText,
+        voicePlaybackInterrupted: voicePlaybackInterrupted,
+        queued: queued,
+        truncateBeforeUserOrdinal: truncateBeforeUserOrdinal,
+        delivery: delivery,
+        sessionConfig: sessionConfig,
+        allowTransportFallbackOverride: allowTransportFallbackOverride,
+        beforeDesktopPromptSubmit: beforeDesktopPromptSubmit,
+        capturedLifecycle: transcriptLifecycle,
+        transcriptOperation: transcriptOperation,
+      ),
     );
     return manualOwnershipProbe
         ? _settleManualOwnershipProbe(attempt)
@@ -14421,6 +14619,7 @@ class ActiveChat {
 
   void _scheduleRestoredCompressionProbe(CompressionRestoreRecord record) {
     _restoredCompressionProbeTimer?.cancel();
+    if (_isDetachedIdle) return;
     _restoredCompressionProbeTimer = Timer(
       _compressionRestoreProbeInterval,
       () => unawaited(_probeRestoredCompression(record)),
@@ -16764,7 +16963,12 @@ class ActiveChat {
       if (!submissionAttempted && sessionConfig.allowTransportFallback) {
         return fallback();
       } else {
-        _failRun(activeChatPromptFailureUiMessage(error));
+        _failRun(
+          activeChatPromptFailureUiMessage(
+            error,
+            languageCode: _desktopLanguageCode,
+          ),
+        );
         return false;
       }
     }
@@ -17259,6 +17463,7 @@ class ActiveChat {
       // el usuario cancele, llegue un terminal o se destruya el chat.
       final epochInvalidated = _turnEpochInvalidated.future;
       var attempt = 0;
+      var unprovenConnectedAttempts = 0;
       Object lastError = originalError;
       while (_canRecoverTurn(turnEpoch)) {
         final delay = _atLeastGatewayBackoff(
@@ -17311,7 +17516,19 @@ class ActiveChat {
               ? status.state?.name ?? 'unknown'
               : 'unknown';
           debugPrint('[active-chat] result kind=$resultKind');
-          if (!status.known || status.state == null) continue;
+          if (!status.known || status.state == null) {
+            unprovenConnectedAttempts += 1;
+            if (unprovenConnectedAttempts >=
+                _maxUnprovenConnectedRecoveryAttempts) {
+              debugPrint(
+                '[active-chat] recovery gave up kind=unproven_connected '
+                'attempts=$unprovenConnectedAttempts',
+              );
+              _degradeLegacyTurnRecovery(turnEpoch, originalError);
+              return;
+            }
+            continue;
+          }
           switch (status.state!) {
             case DesktopTurnState.accepted:
               if (!_commitDesktopRecoverySnapshot(gateway, binding)) continue;
@@ -17344,6 +17561,16 @@ class ActiveChat {
                     gateway,
                     turnEpoch,
                   )) {
+                unprovenConnectedAttempts += 1;
+                if (unprovenConnectedAttempts >=
+                    _maxUnprovenConnectedRecoveryAttempts) {
+                  debugPrint(
+                    '[active-chat] recovery gave up kind=unproven_connected '
+                    'attempts=$unprovenConnectedAttempts',
+                  );
+                  _degradeLegacyTurnRecovery(turnEpoch, originalError);
+                  return;
+                }
                 continue;
               }
               // Durable ownership must exist before recovery authority is
@@ -17418,7 +17645,12 @@ class ActiveChat {
       }
       if (_canRecoverTurn(turnEpoch)) {
         debugPrint(activeChatDesktopRecoveryDiagnostic(lastError));
-        _failRun(activeChatDesktopRecoveryUiMessage(lastError));
+        _failRun(
+          activeChatDesktopRecoveryUiMessage(
+            lastError,
+            languageCode: _desktopLanguageCode,
+          ),
+        );
       }
     } finally {
       if (gateway.isConnected) {
@@ -17563,7 +17795,12 @@ class ActiveChat {
         '[active-chat] snapshot recovery gave up kind=terminal_error attempts=$attempt',
       );
       debugPrint(activeChatDesktopRecoveryDiagnostic(lastError));
-      _failRun(activeChatDesktopRecoveryUiMessage(lastError));
+      _failRun(
+        activeChatDesktopRecoveryUiMessage(
+          lastError,
+          languageCode: _desktopLanguageCode,
+        ),
+      );
     }
   }
 
@@ -17782,7 +18019,10 @@ class ActiveChat {
           StateError('desktop recovery snapshot reported failure');
       debugPrint(activeChatDesktopRecoveryDiagnostic(failure));
       _failRun(
-        activeChatDesktopSnapshotFailureUiMessage(snapshot.inflight?.error),
+        activeChatDesktopSnapshotFailureUiMessage(
+          snapshot.inflight?.error,
+          languageCode: _desktopLanguageCode,
+        ),
       );
       return;
     }
@@ -17872,7 +18112,10 @@ class ActiveChat {
       _tagLatestUserForLocalError(projectionId);
       _messages.insert(0, {
         'role': 'assistant_error',
-        'content': activeChatDesktopRecoveryUiMessage(originalError),
+        'content': activeChatDesktopRecoveryUiMessage(
+          originalError,
+          languageCode: _desktopLanguageCode,
+        ),
         '_prompt': lastPrompt,
         _awaitingDurableTurnRecoveryKey: true,
         'partial': true,
@@ -17885,7 +18128,10 @@ class ActiveChat {
       _tagLatestUserForLocalError(projectionId);
       _messages.first = {
         'role': 'assistant_error',
-        'content': activeChatDesktopRecoveryUiMessage(originalError),
+        'content': activeChatDesktopRecoveryUiMessage(
+          originalError,
+          languageCode: _desktopLanguageCode,
+        ),
         '_prompt': lastPrompt,
         _awaitingDurableTurnRecoveryKey: true,
         'recoverable': true,
@@ -18051,7 +18297,10 @@ class ActiveChat {
     }
     if (stillCurrent()) {
       _failRun(
-        activeChatDesktopRecoveryUiMessage(originalError),
+        activeChatDesktopRecoveryUiMessage(
+          originalError,
+          languageCode: _desktopLanguageCode,
+        ),
         failureMetadata: const {_awaitingDurableTurnRecoveryKey: true},
       );
     }
@@ -18785,7 +19034,10 @@ class ActiveChat {
         if ((payload['status'] ?? '').toString().trim().toLowerCase() ==
             'error') {
           _failRun(
-            activeChatDesktopEventFailureUiMessage(payload['message']),
+            activeChatDesktopEventFailureUiMessage(
+              payload['message'],
+              languageCode: _desktopLanguageCode,
+            ),
             terminalText: null,
             terminalTextIsPartial: false,
             authoritativeTerminalOverride: true,
@@ -18813,7 +19065,12 @@ class ActiveChat {
         );
       case 'error':
         _clearDesktopCompactingIndicator();
-        _failRun(activeChatDesktopEventFailureUiMessage(payload['message']));
+        _failRun(
+          activeChatDesktopEventFailureUiMessage(
+            payload['message'],
+            languageCode: _desktopLanguageCode,
+          ),
+        );
     }
   }
 
@@ -18983,6 +19240,10 @@ class ActiveChat {
 
   void _armAutoCompactionStaleTimer() {
     _autoCompactionStaleTimer?.cancel();
+    if (_isDetachedIdle) {
+      _clearDesktopCompactingIndicator();
+      return;
+    }
     _autoCompactionStaleTimer = Timer(_autoCompactionStaleAfter, () {
       _autoCompactionStaleTimer = null;
       if (_disposed) return;
@@ -20710,7 +20971,12 @@ class ActiveChat {
       }
     } catch (error) {
       if (_turnEpoch == turnEpoch) {
-        _failRun(activeChatBridgeErrorUiMessage(error));
+        _failRun(
+          activeChatBridgeErrorUiMessage(
+            error,
+            languageCode: _desktopLanguageCode,
+          ),
+        );
       }
     }
   }
@@ -20736,6 +21002,7 @@ class ActiveChat {
         ),
         queueOrder,
         id: 'text:$queueOrder',
+        replyLanguage: _appLanguageCode?.call() == 'es' ? 'es' : 'en',
         // Solo un turno vivo o en admisión puede transferir su policy. Una cola
         // creada en reposo no tiene autoridad para abrir un fallback REST nuevo.
         allowTransportFallback: capturedAllowTransportFallback,
@@ -20777,6 +21044,9 @@ class ActiveChat {
       return true;
     }
     if (_pendingPreparedTurnIds.contains(id)) return false;
+    delivery.freezeReplyLanguage(
+      _appLanguageCode?.call() == 'es' ? 'es' : 'en',
+    );
     final queueOrder = delivery.current.queueOrder ?? _nextQueueOrder;
     if (!delivery.assignQueueOrder(queueOrder)) return false;
     if (queueOrder >= _nextQueueOrder) _nextQueueOrder = queueOrder + 1;
@@ -21102,6 +21372,7 @@ class ActiveChat {
             promotedOrder,
             id: target.id,
             allowTransportFallback: target.allowTransportFallback,
+            replyLanguage: target.replyLanguage,
           ),
         )
         ..addAll(items.where((item) => !identical(item, target)));
@@ -21152,6 +21423,7 @@ class ActiveChat {
         target.queueOrder,
         id: target.id,
         allowTransportFallback: target.allowTransportFallback,
+        replyLanguage: target.replyLanguage,
       );
       final updated = [...textItems]..[textIndex] = replacement;
       _messageQueue
@@ -21632,14 +21904,17 @@ class ActiveChat {
     _preparedTurnDrainInFlight = true;
     final bool accepted;
     try {
-      accepted = await send(
-        mentionsFrozen: true,
-        fullText: next.text,
-        model: _lastModel,
-        history: _buildHistoryFromMessages(),
-        profile: _turnProfile,
-        queued: true,
-        allowTransportFallbackOverride: next.allowTransportFallback,
+      accepted = await TuiGatewayClient.withReplyLanguage(
+        next.replyLanguage ?? (_appLanguageCode?.call() == 'es' ? 'es' : 'en'),
+        () => send(
+          mentionsFrozen: true,
+          fullText: next.text,
+          model: _lastModel,
+          history: _buildHistoryFromMessages(),
+          profile: _turnProfile,
+          queued: true,
+          allowTransportFallbackOverride: next.allowTransportFallback,
+        ),
       );
     } finally {
       _preparedTurnDrainInFlight = false;
@@ -25975,6 +26250,7 @@ class ActiveChatService {
   final GlobalActivityAggregate globalActivity;
 
   final Map<String, ActiveChat> _chats = {};
+  final Set<String> _navigationReleaseRequested = <String>{};
   final Map<String, List<SteerProjection>> _steerProjectionCache = {};
   final Map<ActiveChat, _HomeWidgetChatMetadata> _homeWidgetMetadata = {};
   final LinkedHashMap<String, int> _observedFirstTokenLatencyCache =
@@ -25985,6 +26261,8 @@ class ActiveChatService {
   String? _homeWidgetActiveConnectionId;
   HermesHomeWidgetSnapshot? _lastHomeWidgetSemantic;
   bool _disposed = false;
+  bool _appSuspended = false;
+  int _lifecycleGeneration = 0;
 
   static String chatKey(String connectionId, String sessionId) =>
       '$connectionId::$sessionId';
@@ -26710,11 +26988,17 @@ class ActiveChatService {
     @visibleForTesting bool disableForegroundKeepAlive = false,
     @visibleForTesting int transcriptPageSizeForTesting = 500,
     @visibleForTesting int Function()? wallClockMsForTesting,
+    @visibleForTesting
+    List<CancelledTurnTombstone>? initialCancelledTurnTombstonesForTesting,
+    @visibleForTesting
+    Future<void> Function(CancelledTurnTombstone)? onCancelledTurnForTesting,
   }) {
     final owner = Session.profileOwner(
       sessionProfile ?? sessionSnapshot?.profile,
     );
     final key = _registryKey(connection.id, sessionId, owner);
+    _cancelNavigationRelease(key);
+    _pruneNavigationReleases(except: key);
     final existing = of(connection.id, sessionId, profile: owner);
     if (existing != null) {
       if (existing.bindKnownStoredSession(
@@ -26783,6 +27067,7 @@ class ActiveChatService {
       notifications: notifications,
       policy: policy,
       onTerminal: () => _onChatTerminal(key),
+      appLanguageCode: _prefs == null ? null : () => effectiveVoiceLang(_prefs),
       onUnused: () => _onChatUnused(key),
       beforeTerminalNotification: _maybeStopForeground,
       onRunStarted: (runId) => _onRunStarted(key, runId),
@@ -26832,6 +27117,7 @@ class ActiveChatService {
       // durable de Desktop. Restaura la unión exacta de ruta, lineage y stored
       // id para que un Stop confirmado no desaparezca tras reabrir.
       initialCancelledTurnTombstones:
+          initialCancelledTurnTombstonesForTesting ??
           cancelledTurnStore?.loadAliases(
             connectionId: connection.id,
             profile: owner,
@@ -26839,22 +27125,24 @@ class ActiveChatService {
             generation: tombstoneGeneration,
           ) ??
           const [],
-      onCancelledTurn: cancelledTurnStore == null
-          ? null
-          : (tombstone) {
-              final aliases = <String>{...initialTombstoneSessionIds};
-              final storedId = chat.storedSessionId;
-              if (storedId != null && storedId.isNotEmpty) {
-                aliases.add(storedId);
-              }
-              return cancelledTurnStore.addAliases(
-                connectionId: connection.id,
-                profile: owner,
-                sessionIds: aliases,
-                tombstone: tombstone,
-                generation: tombstoneGeneration,
-              );
-            },
+      onCancelledTurn:
+          onCancelledTurnForTesting ??
+          (cancelledTurnStore == null
+              ? null
+              : (tombstone) {
+                  final aliases = <String>{...initialTombstoneSessionIds};
+                  final storedId = chat.storedSessionId;
+                  if (storedId != null && storedId.isNotEmpty) {
+                    aliases.add(storedId);
+                  }
+                  return cancelledTurnStore.addAliases(
+                    connectionId: connection.id,
+                    profile: owner,
+                    sessionIds: aliases,
+                    tombstone: tombstone,
+                    generation: tombstoneGeneration,
+                  );
+                }),
     );
     _chats[key] = chat;
     final seed =
@@ -26951,6 +27239,8 @@ class ActiveChatService {
   /// Es la única reconciliación que sondea el socket (resume del ciclo de
   /// vida); la de un solo chat (`sessions.changed`, Reintentar) no.
   Future<void> reconcileAfterResume() async {
+    _lifecycleGeneration += 1;
+    _appSuspended = false;
     final chats = _chats.values.toList(growable: false);
     for (final chat in chats) {
       chat.probeTransportNow();
@@ -27015,30 +27305,44 @@ class ActiveChatService {
   }
 
   Future<void> suspendIdleConnections() async {
+    final lifecycleGeneration = ++_lifecycleGeneration;
+    _appSuspended = true;
     await Future.wait(
       _chats.values.map((chat) => chat.suspendIdleDesktopConnection()),
     );
+    if (_disposed || lifecycleGeneration != _lifecycleGeneration) return;
+    _pruneNavigationReleases();
   }
 
   /// Suelta el chat al cerrar la pantalla: si NO está en streaming, lo libera
   /// (cierra el cliente HTTP); si está en streaming, lo deja correr en segundo
   /// plano (se reaprovechará al volver y se reapará al terminar sin oyentes).
-  void release(String connectionId, String sessionId, {String? profile}) {
+  void release(
+    String connectionId,
+    String sessionId, {
+    String? profile,
+    bool retainForNavigation = false,
+  }) {
     final entry = _entryFor(connectionId, sessionId, profile: profile);
     if (entry == null) return;
     final chat = entry.value;
     _rememberSteerProjections(chat);
+    if (retainForNavigation) {
+      _navigationReleaseRequested.add(entry.key);
+    } else {
+      _cancelNavigationRelease(entry.key);
+    }
     chat.requestReleaseWhenUnused();
     if (chat.sessionActivity.active ||
         chat.hasPendingBackgroundProcessRefresh ||
         chat.hasPendingDurableCancellation ||
         chat.hasListeners ||
         chat.voiceBargeHandoffPending ||
-        chat.showReleaseToDesktopControl) {
+        chat.showReleaseToDesktopControl && !_appSuspended) {
       _refreshActiveIds();
       return;
     }
-    _dispose(entry.key);
+    _releaseDetachedChat(entry.key);
   }
 
   void _onChatUnused(String key) {
@@ -27050,10 +27354,10 @@ class ActiveChatService {
         chat.hasPendingDurableCancellation ||
         chat.hasListeners ||
         chat.voiceBargeHandoffPending ||
-        chat.showReleaseToDesktopControl) {
+        chat.showReleaseToDesktopControl && !_appSuspended) {
       return;
     }
-    _dispose(key);
+    _releaseDetachedChat(key);
   }
 
   /// Marca el inicio de un envío: registra la sesión como activa.
@@ -27094,10 +27398,41 @@ class ActiveChatService {
         chat.hasPendingDurableCancellation ||
         chat.hasListeners ||
         chat.voiceBargeHandoffPending ||
-        chat.showReleaseToDesktopControl) {
+        chat.showReleaseToDesktopControl && !_appSuspended) {
       return;
     }
-    _dispose(key);
+    _releaseDetachedChat(key);
+  }
+
+  void _releaseDetachedChat(String key) {
+    if (!_navigationReleaseRequested.contains(key) || _appSuspended) {
+      _dispose(key);
+    }
+  }
+
+  void _pruneNavigationReleases({String? except}) {
+    for (final key in _navigationReleaseRequested.toList(growable: false)) {
+      if (key == except) continue;
+      final chat = _chats[key];
+      if (chat == null) {
+        _navigationReleaseRequested.remove(key);
+        continue;
+      }
+      if (!chat.releaseRequested ||
+          chat.sessionActivity.active ||
+          chat.hasPendingBackgroundProcessRefresh ||
+          chat.hasPendingDurableCancellation ||
+          chat.hasListeners ||
+          chat.voiceBargeHandoffPending ||
+          chat.showReleaseToDesktopControl && !_appSuspended) {
+        continue;
+      }
+      _dispose(key);
+    }
+  }
+
+  void _cancelNavigationRelease(String key) {
+    _navigationReleaseRequested.remove(key);
   }
 
   /// Baja el foreground service salvo que (a) el usuario activó la escucha
@@ -27143,6 +27478,7 @@ class ActiveChatService {
   }
 
   void _dispose(String key) {
+    _cancelNavigationRelease(key);
     final chat = _chats.remove(key);
     if (chat != null) {
       _homeWidgetMetadata.remove(chat);
@@ -27180,6 +27516,7 @@ class ActiveChatService {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    _navigationReleaseRequested.clear();
     for (final chat in _chats.values) {
       chat.dispose();
     }

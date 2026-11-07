@@ -19,7 +19,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../l10n/app_localizations.dart';
 import '../../main.dart';
-import '../companion/models/companion_presence_level.dart';
+import '../companion/render/companion_empty_state_presence.dart';
 import '../services/notifications/background_listener.dart';
 import '../services/notifications/notification_service.dart';
 import '../services/approval_activity.dart';
@@ -44,7 +44,6 @@ import '../design/hermes_design.dart'
 import '../theme/app_theme.dart';
 import '../utils/enum_labels.dart';
 import '../widgets/hermes_notice.dart';
-import '../widgets/hermes_spark_mascot.dart';
 import '../utils/relative_time.dart';
 import '../widgets/hermes_pill.dart';
 import '../widgets/hermes_premium_ui.dart';
@@ -387,27 +386,9 @@ class _RunsTabState extends State<RunsTab> with AutomaticKeepAliveClientMixin {
                           if (companion == null) {
                             return const SizedBox.shrink();
                           }
-                          return AnimatedBuilder(
-                            animation: companion,
-                            builder: (context, _) {
-                              if (!companion.isInitialized ||
-                                  !companion.enabled ||
-                                  !companion
-                                      .presenceLevel
-                                      .showsStatusPresence) {
-                                return const SizedBox.shrink();
-                              }
-                              return const Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  HermesSparkMascot(
-                                    mood: HermesSparkMood.idle,
-                                    size: 48,
-                                  ),
-                                  SizedBox(height: 12),
-                                ],
-                              );
-                            },
+                          return CompanionEmptyStatePresence(
+                            controller: companion,
+                            onHome: false,
                           );
                         },
                       ),

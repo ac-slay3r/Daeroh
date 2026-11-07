@@ -168,6 +168,9 @@ class PreparedTurn {
   final bool restoresComposer;
   final bool queued;
 
+  /// Locale frozen at queue admission; null for legacy outbox entries.
+  final String? replyLanguage;
+
   /// Frontera durable capturada al enviar. `null` = lote anterior a 1.2.13
   /// (sin frontera persistida).
   final PreparedTurnRetryBoundary? retryBoundary;
@@ -191,6 +194,7 @@ class PreparedTurn {
     this.state = PreparedTurnState.prepared,
     this.restoresComposer = true,
     this.queued = false,
+    this.replyLanguage,
     this.retryBoundary,
   }) : fullText = fullText ?? text;
 
@@ -245,6 +249,7 @@ class PreparedTurn {
     PreparedTurnState? state,
     bool? restoresComposer,
     bool? queued,
+    String? replyLanguage,
     PreparedTurnRetryBoundary? retryBoundary,
   }) => PreparedTurn(
     connectionId: connectionId,
@@ -265,6 +270,7 @@ class PreparedTurn {
     state: state ?? this.state,
     restoresComposer: restoresComposer ?? this.restoresComposer,
     queued: queued ?? this.queued,
+    replyLanguage: replyLanguage ?? this.replyLanguage,
     retryBoundary: retryBoundary ?? this.retryBoundary,
   );
 
@@ -289,6 +295,8 @@ class PreparedTurn {
     'state': state.name,
     'restores_composer': restoresComposer,
     'queued': queued,
+    if (replyLanguage == 'en' || replyLanguage == 'es')
+      'reply_language': replyLanguage,
     if (retryBoundary != null) 'retry_boundary': retryBoundary!.toJson(),
   };
 
@@ -394,6 +402,11 @@ class PreparedTurn {
       queued: persistedSchema != 1 && persistedSchema != 2
           ? json['queued'] as bool? ?? false
           : false,
+      replyLanguage: json['reply_language'] == 'es'
+          ? 'es'
+          : json['reply_language'] == 'en'
+          ? 'en'
+          : null,
       retryBoundary: PreparedTurnRetryBoundary.fromJson(json['retry_boundary']),
     );
   }

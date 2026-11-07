@@ -3,17 +3,21 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
-import 'package:archive/archive.dart';
 
 import '../../models/profile_pet.dart';
 import '../models/companion.dart';
 import '../models/companion_animation_state.dart';
+import 'bounded_companion_zip.dart';
 import 'companion_manifest_parser.dart';
 
 /// Error de importación de una mascota custom local.
 class CompanionImportException implements Exception {
   final String message;
-  CompanionImportException(this.message);
+
+  /// True when the ZIP uses an unsupported dialect (encrypted, ZIP64,
+  /// multi-disk, non STORE/DEFLATE). The UI shows localized guidance.
+  final bool unsupportedZipFormat;
+  CompanionImportException(this.message, {this.unsupportedZipFormat = false});
 
   @override
   String toString() => 'CompanionImportException: $message';
@@ -55,6 +59,15 @@ class CompanionImportService {
   static const int _maxAtlasDimension = 4096;
   static const int _maxFrameDimension = 2048;
   static const int _maxGridAxis = 64;
+  static const int _maxZipEntries = 256;
+
+  Uint8List _readZipEntry(BoundedCompanionZipEntry entry, int limit) {
+    try {
+      return entry.read(limit);
+    } catch (_) {
+      throw CompanionImportException('no es un ZIP válido');
+    }
+  }
 
   /// Materializa el atlas oficial de `pet.info` mediante la misma validación y
   /// escritura atómica que las mascotas locales. [storageRoot] debe ser una
@@ -306,9 +319,18 @@ class CompanionImportService {
       );
     }
 
-    final Archive archive;
+    final BoundedCompanionZip directory;
     try {
-      archive = ZipDecoder().decodeBytes(zipBytes);
+      directory = BoundedCompanionZip(
+        zipBytes,
+        maxEntries: _maxZipEntries,
+        maxExpandedBytes: maxZipBytes,
+      );
+    } on UnsupportedCompanionZipException {
+      throw CompanionImportException(
+        'formato ZIP no admitido',
+        unsupportedZipFormat: true,
+      );
     } catch (e) {
       debugPrint(
         '[companion-import] excepción silenciada (se relanza como error propio): $e',
@@ -317,14 +339,17 @@ class CompanionImportService {
     }
 
     // 1) Localiza pet.json (top-level) y rechaza rutas peligrosas.
-    ArchiveFile? manifestEntry;
-    final byBasename = <String, ArchiveFile>{};
-    for (final entry in archive) {
-      if (!entry.isFile) continue;
-      final name = entry.name;
+    BoundedCompanionZipEntry? manifestEntry;
+    final byBasename = <String, BoundedCompanionZipEntry>{};
+    final seenNames = <String>{};
+    for (final entry in directory.entries) {
+      final name = entry.filename;
+      if (name.endsWith('/') || name.endsWith('\\')) continue;
       if (name.contains('..') || name.startsWith('/') || name.contains('\\')) {
         throw CompanionImportException('ruta no permitida en el ZIP: "$name"');
       }
+      // Like ZipDecoder, keep the first occurrence of each full path.
+      if (!seenNames.add(name)) continue;
       final base = name.split('/').last;
       if (base == 'pet.json') manifestEntry = entry;
       byBasename.putIfAbsent(base, () => entry);
@@ -333,10 +358,10 @@ class CompanionImportService {
       throw CompanionImportException('el ZIP no contiene "pet.json"');
     }
 
-    final manifestBytes = manifestEntry.content as List<int>;
-    if (manifestBytes.length > maxManifestBytes) {
+    if (manifestEntry.uncompressedSize > maxManifestBytes) {
       throw CompanionImportException('"pet.json" es demasiado grande');
     }
+    final manifestBytes = _readZipEntry(manifestEntry, maxManifestBytes);
     final String jsonString;
     try {
       jsonString = utf8.decode(manifestBytes);
@@ -407,7 +432,10 @@ class CompanionImportService {
         'el ZIP no contiene ningún spritesheet (.webp/.png)',
       );
     }
-    final spriteBytes = Uint8List.fromList(spriteEntry.content as List<int>);
+    if (spriteEntry.uncompressedSize > maxSpritesheetBytes) {
+      throw CompanionImportException('el spritesheet supera el tamaño máximo');
+    }
+    final spriteBytes = _readZipEntry(spriteEntry, maxSpritesheetBytes);
     if (spriteBytes.isEmpty) {
       throw CompanionImportException('el spritesheet está vacío');
     }

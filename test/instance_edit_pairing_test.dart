@@ -410,10 +410,15 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(dashboardCredentialWrites, 0);
-      expect(
-        find.text('Autoconfigurar dashboard (vía bridge)'),
-        findsOneWidget,
+      final blockedAction = find.text(
+        'No se puede cambiar la contraseña del Dashboard',
       );
+      expect(blockedAction, findsOneWidget);
+      await tester.ensureVisible(blockedAction);
+      await tester.tap(blockedAction);
+      await tester.pump();
+      expect(dashboardCredentialWrites, 0);
+      expect(find.textContaining('Por seguridad, Daeroh no puede'), findsWidgets);
 
       await pumpEditor(
         tester,

@@ -91,6 +91,9 @@ import '../services/bridge_client.dart';
 import '../services/bridge_update_service.dart';
 import '../services/chat_draft_store.dart';
 import '../services/chat_preference_store.dart';
+import '../services/chat_preview_store.dart';
+import '../services/local_transcript_store.dart';
+import '../models/transcript_privacy_state.dart';
 import '../services/desktop_gateway_capabilities.dart';
 import '../services/mission_bot_chat_store.dart';
 import '../services/notifications/notification_service.dart';
@@ -1196,6 +1199,11 @@ class ChatScreen extends StatefulWidget {
   final Session session;
   final String? initialPrompt;
   final AttachmentSourceChoice? initialAttachmentSource;
+
+  /// Texto de Inicio que acompaña un adjunto nuevo. Nunca usa [initialPrompt]:
+  /// el usuario aún no ha confirmado el envío.
+  final String? initialAttachmentDraftText;
+  final VoidCallback? onInitialAttachmentDraftRetained;
   final bool initialDictation;
   final bool initialVoiceMode;
   final bool requestComposerFocus;
@@ -1227,6 +1235,8 @@ class ChatScreen extends StatefulWidget {
     required this.session,
     this.initialPrompt,
     this.initialAttachmentSource,
+    this.initialAttachmentDraftText,
+    this.onInitialAttachmentDraftRetained,
     this.initialDictation = false,
     this.initialVoiceMode = false,
     this.requestComposerFocus = false,
@@ -1289,15 +1299,38 @@ class _ChatScreenState extends State<ChatScreen>
   bool _editingRewriteSubmitted = false;
   List<Map<String, dynamic>>? _editingMessagesSnapshot;
   ChatPipelineState? _editingPipelineSnapshot;
+  List<Map<String, dynamic>>? _savedPreviewMessages;
+  ChatPreviewSnapshot? _savedPreviewSnapshot;
+  ChatPreviewScope? _savedPreviewOwner;
+  bool _authoritativeTranscriptPublished = false;
+  int _savedPreviewGeneration = 0;
 
-  /// Congela la proyección visual mientras el editor está abierto. El agente
-  /// puede avanzar en segundo plano, pero su respuesta no aparece mientras se
-  /// edita: Cancelar revela el progreso real y Guardar rebobina el turno.
+  bool get _showingSavedPreview =>
+      !_authoritativeTranscriptPublished &&
+      _savedPreviewMessages != null &&
+      _savedPreviewMessages!.isNotEmpty &&
+      _savedPreviewSnapshot != null &&
+      _savedPreviewOwner != null &&
+      ChatPreviewStore.isCurrent(_savedPreviewOwner!, _savedPreviewSnapshot!);
+
+  ChatPreviewScope get _savedPreviewScope => ChatPreviewScope(
+    connectionId: widget.connection.id,
+    profile: _effectiveSessionProfile.isEmpty
+        ? 'default'
+        : _effectiveSessionProfile,
+    sessionId: _chat.serverSessionId,
+  );
+
+  /// Authoritative state only. Preview rows must never influence recovery,
+  /// send, edit, queue, user-count or missing-session decisions.
   List<Map<String, dynamic>> get _messages {
     final probe = widget.performanceProbe;
     if (probe != null) probe.publicTranscriptReads += 1;
     return _editingMessagesSnapshot ?? _chat.messages;
   }
+
+  List<Map<String, dynamic>> get _renderMessages =>
+      _showingSavedPreview ? _savedPreviewMessages! : _messages;
 
   bool get _editingTranscriptChanged {
     final before = _editingMessagesSnapshot;
@@ -1322,6 +1355,98 @@ class _ChatScreenState extends State<ChatScreen>
     _editingRewriteSubmitted = false;
     _editingMessagesSnapshot = null;
     _editingPipelineSnapshot = null;
+  }
+
+  Future<void> _loadSavedPreviewThenFetch({required bool passiveOnly}) async {
+    // Start the original network loader immediately. A held/offline loader leaves
+    // enough time for the encrypted device preview to paint, while a successful
+    // canonical reply still wins without being delayed by storage I/O.
+    if (widget.connection.kind == InstanceKind.localhost) {
+      await _fetchMessages(passiveOnly: passiveOnly);
+      return;
+    }
+    final scope = _savedPreviewScope;
+    final generation = ++_savedPreviewGeneration;
+    final previewFuture = ChatPreviewStore.load(scope);
+    final privacyFuture = LocalTranscriptStore.loadSnapshot(
+      scope.connectionId,
+      scope.sessionId,
+      profile: scope.profile,
+    );
+    unawaited(_fetchMessages(passiveOnly: passiveOnly));
+    final preview = await previewFuture;
+    final privacy = await privacyFuture;
+    final checkpoint = privacy.privacyCheckpoint;
+    final graph = checkpoint == null
+        ? null
+        : TranscriptPrivacyGraph(checkpoint.facts);
+    final previewNewestFirst = preview.messages.reversed.toList(
+      growable: false,
+    );
+    final safeRows = checkpoint?.suppressedWindow == true
+        ? const <Map<String, dynamic>>[]
+        : _chat
+              .projectCachedPreviewForDisplay(previewNewestFirst)
+              .where(
+                (row) =>
+                    graph == null ||
+                    !graph.excludes(TranscriptPrivacyObservation.fromRaw(row)),
+              )
+              .toList(growable: false);
+    if (!_disposed &&
+        mounted &&
+        generation == _savedPreviewGeneration &&
+        ChatPreviewStore.isCurrent(scope, preview) &&
+        !_chat.messagesLoaded &&
+        _chat.messages.isEmpty &&
+        safeRows.isNotEmpty) {
+      // ActiveChat's renderer source contract is newest-first.
+      setState(() {
+        _savedPreviewMessages = safeRows;
+        _savedPreviewSnapshot = preview;
+        _savedPreviewOwner = scope;
+      });
+    }
+  }
+
+  void _replaceSavedPreviewWithAuthoritativeTranscript() {
+    if (_authoritativeTranscriptPublished) return;
+    _authoritativeTranscriptPublished = true;
+    _savedPreviewMessages = null;
+    _savedPreviewSnapshot = null;
+    _savedPreviewOwner = null;
+    _renderProjection = null;
+    _listEntriesProjection = null;
+    _listEntries = null;
+  }
+
+  void _retireSavedPreviewIfAdmissionRevoked() {
+    final snapshot = _savedPreviewSnapshot;
+    final owner = _savedPreviewOwner;
+    if (_disposed || !mounted || snapshot == null || owner == null) return;
+    if (ChatPreviewStore.isCurrent(owner, snapshot)) return;
+    setState(() {
+      _savedPreviewMessages = null;
+      _savedPreviewSnapshot = null;
+      _savedPreviewOwner = null;
+      _renderProjection = null;
+      _listEntriesProjection = null;
+      _listEntries = null;
+    });
+  }
+
+  void _saveAuthoritativePreview() {
+    if (widget.connection.kind == InstanceKind.localhost) {
+      return;
+    }
+    // ActiveChat already applies its privacy/tombstone display vetoes. Copy the
+    // canonical server rows newest-first into a bounded chronological preview.
+    unawaited(
+      ChatPreviewStore.save(
+        _savedPreviewScope,
+        _chat.messages.reversed.map(Map<String, dynamic>.from),
+      ),
+    );
   }
 
   ChatPipelineState get _pipelineState =>
@@ -1572,6 +1697,10 @@ class _ChatScreenState extends State<ChatScreen>
   Timer? _draftTimer;
   bool _restoringDraft = false;
   bool _draftLoaded = false;
+  String? _initialAttachmentHandoffText;
+  bool _initialAttachmentHandoffRetained = false;
+  bool _initialAttachmentHandoffRetaining = false;
+  int _initialAttachmentHandoffGeneration = 0;
   // Un composer vacío NO prueba que nadie lo haya tocado: también es el estado
   // exacto en el que queda cuando el usuario borra el texto a mano. La
   // recuperación de un turno puede reconciliar mucho después de abrir el chat
@@ -1982,13 +2111,22 @@ class _ChatScreenState extends State<ChatScreen>
     _attachmentListener = _applyAttachmentProjection;
     _sessionUsageSnapshot = widget.session;
     _compaction.addListener(_onCompactionChanged);
+    ChatPreviewStore.retirementEvents.addListener(
+      _retireSavedPreviewIfAdmissionRevoked,
+    );
     WidgetsBinding.instance.addObserver(this);
     _loadPrefs();
     _loadActiveModel();
     _profileReady = _loadActiveProfile();
+    // The local-write lifecycle and the ActiveChat binding MUST share one
+    // owner. Unstamped sessions (new `mob-*` chats from Home/drawer) inherit
+    // the connection's active profile; resolving them as `default` here made
+    // every outbox save on a named profile a rejected cross-scope write.
     _localConversationLifecycle = LocalConversationCleanupFence.beginLifecycle(
       connectionId: widget.connection.id,
-      profile: Session.profileOwner(widget.session.profile),
+      profile: _resolvedSessionOwner(
+        context.findAncestorStateOfType<HermesAppState>(),
+      ),
       sessionId: widget.session.id,
       sessionAliases: {_draftRecoverySessionId, ..._draftRecoveryAliases},
     );
@@ -2027,6 +2165,8 @@ class _ChatScreenState extends State<ChatScreen>
 
     final initialAttachmentSource = widget.initialAttachmentSource;
     if (initialAttachmentSource != null) {
+      _stageInitialAttachmentDraft();
+      final attachmentCountBefore = _pendingAttachments.length;
       await WidgetsBinding.instance.endOfFrame;
       if (!mounted) return;
       switch (initialAttachmentSource) {
@@ -2039,6 +2179,11 @@ class _ChatScreenState extends State<ChatScreen>
         case AttachmentSourceChoice.files:
           await _pickDocument();
           break;
+      }
+      if (mounted && _pendingAttachments.length > attachmentCountBefore) {
+        await _retainInitialAttachmentDraft();
+      } else {
+        _releaseInitialAttachmentHandoff();
       }
       return;
     }
@@ -2082,6 +2227,68 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
+  void _stageInitialAttachmentDraft() {
+    final text = widget.initialAttachmentDraftText;
+    if (text == null ||
+        text.isEmpty ||
+        _composerEmptiedByUser ||
+        _textController.text.isNotEmpty) {
+      return;
+    }
+    _initialAttachmentHandoffText = text;
+    _restoringDraft = true;
+    _textController.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    _composerEmpty = false;
+    _restoringDraft = false;
+  }
+
+  Future<void> _retainInitialAttachmentDraft() async {
+    if (_initialAttachmentHandoffText == null ||
+        _initialAttachmentHandoffRetained ||
+        _initialAttachmentHandoffRetaining) {
+      return;
+    }
+    _initialAttachmentHandoffRetaining = true;
+    try {
+      while (mounted && _initialAttachmentHandoffText != null) {
+        final generation = _initialAttachmentHandoffGeneration;
+        final retained = await _saveDraftSnapshot(
+          _textController.text,
+          List<AttachmentDraft>.of(_pendingAttachments),
+        );
+        if (!retained || !mounted) {
+          _releaseInitialAttachmentHandoff();
+          return;
+        }
+        // A user edit or attachment mutation while secure persistence was in
+        // flight invalidates this acknowledgement. Persist the latest pair
+        // before allowing Home to retire its copy.
+        if (generation != _initialAttachmentHandoffGeneration) continue;
+        _initialAttachmentHandoffRetained = true;
+        _initialAttachmentHandoffText = null;
+        widget.onInitialAttachmentDraftRetained?.call();
+        return;
+      }
+    } finally {
+      _initialAttachmentHandoffRetaining = false;
+    }
+  }
+
+  void _releaseInitialAttachmentHandoff() {
+    if (_initialAttachmentHandoffText == null) return;
+    _initialAttachmentHandoffText = null;
+    _scheduleDraftSave();
+  }
+
+  void _markInitialAttachmentHandoffMutation() {
+    if (_initialAttachmentHandoffText != null) {
+      _initialAttachmentHandoffGeneration++;
+    }
+  }
+
   String get _draftRecoverySessionId {
     if (!_isBotChatSurface &&
         widget.session.isUnpersistedMobileDraft &&
@@ -2114,6 +2321,12 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   String get _recoveryProfile => _localConversationLifecycle.profile;
+
+  /// Single source of truth for this screen's conversation owner.
+  String _resolvedSessionOwner(HermesAppState? app) => Session.profileOwner(
+    widget.session.profile,
+    fallback: app?.connManager.activeProfileFor(widget.connection.id),
+  );
 
   bool get _isBotChatSurface => const {
     'mobile-bot',
@@ -2261,6 +2474,7 @@ class _ChatScreenState extends State<ChatScreen>
       }
     });
     _restoringDraft = false;
+    _markInitialAttachmentHandoffMutation();
     _syncProducerAttachmentRetention();
 
     // Si el servicio sigue vivo, él posee la frontera de transporte. Leer la
@@ -2369,6 +2583,7 @@ class _ChatScreenState extends State<ChatScreen>
       }
     });
     _restoringDraft = false;
+    _markInitialAttachmentHandoffMutation();
     _syncProducerAttachmentRetention();
     if (recoverPrepared &&
         prepared.state == PreparedTurnState.failedBeforeAcceptance &&
@@ -2486,6 +2701,7 @@ class _ChatScreenState extends State<ChatScreen>
         _textController.clear();
         _pendingAttachments.clear();
       });
+      _markInitialAttachmentHandoffMutation();
       _restoringDraft = false;
       await _clearDraft();
     } else if (mounted) {
@@ -2550,6 +2766,7 @@ class _ChatScreenState extends State<ChatScreen>
       _textController.clear();
       _pendingAttachments.clear();
     });
+    _markInitialAttachmentHandoffMutation();
     _restoringDraft = false;
     _syncProducerAttachmentRetention();
     await _clearDraft();
@@ -2676,7 +2893,7 @@ class _ChatScreenState extends State<ChatScreen>
 
   void _scheduleDraftSave() {
     _syncProducerAttachmentRetention();
-    if (_restoringDraft) return;
+    if (_restoringDraft || _initialAttachmentHandoffText != null) return;
     _draftTimer?.cancel();
     final text = _textController.text;
     final attachments = List<AttachmentDraft>.of(_pendingAttachments);
@@ -2882,6 +3099,7 @@ class _ChatScreenState extends State<ChatScreen>
         ..clear()
         ..addAll(next);
     });
+    _markInitialAttachmentHandoffMutation();
     final delivery = _attachmentDelivery;
     if (delivery != null) _preparedTurn = delivery.current;
     _scheduleDraftSave();
@@ -2927,6 +3145,7 @@ class _ChatScreenState extends State<ChatScreen>
     setState(() {
       _pendingAttachments.removeAt(removed);
     });
+    _markInitialAttachmentHandoffMutation();
     _maybeDiscardFailedTurnFromExplicitEmptyComposer();
     _scheduleDraftSave();
     // Puede retirarse antes de que el primer autosave llegue a referenciar la
@@ -3004,6 +3223,7 @@ class _ChatScreenState extends State<ChatScreen>
       return;
     }
     final isEmpty = text.isEmpty;
+    _markInitialAttachmentHandoffMutation();
     // Intención explícita del usuario sobre ESTE composer. Los vaciados
     // programáticos (restaurar, descartar, soltar el lote al enviar) ya se
     // envuelven en `_restoringDraft` y no la marcan.
@@ -4064,10 +4284,7 @@ class _ChatScreenState extends State<ChatScreen>
       _chatBound = true;
       _chatService = app.activeChats;
       _botChatStore = MissionBotChatStore(app.connManager.prefs);
-      final resolvedSessionProfile = Session.profileOwner(
-        widget.session.profile,
-        fallback: app.connManager.activeProfileFor(widget.connection.id),
-      );
+      final resolvedSessionProfile = _resolvedSessionOwner(app);
       _chat = _chatService.attach(
         connection: widget.connection,
         sessionId: widget.session.id,
@@ -4166,7 +4383,7 @@ class _ChatScreenState extends State<ChatScreen>
         // A screen created while the app is already backgrounded may perform
         // its one durable read, but it must not connect to or acquire a live
         // runtime until it becomes the owning foreground route.
-        _fetchMessages(passiveOnly: !_appInForeground);
+        _loadSavedPreviewThenFetch(passiveOnly: !_appInForeground);
       }
       // Fase G: comprueba (una vez) si el bridge de esta instancia está
       // desactualizado y, según el ajuste, lo auto-actualiza o avisa.
@@ -5155,6 +5372,12 @@ class _ChatScreenState extends State<ChatScreen>
     _syncTurnActivityClock();
     _syncCompaction();
     _syncSubagentPolling();
+    if (event == ActiveChatEvent.messagesHydrated) {
+      // A canonical loader publication, including an empty authoritative page,
+      // replaces saved device-only history; it is not merged into ActiveChat.
+      _replaceSavedPreviewWithAuthoritativeTranscript();
+      _saveAuthoritativePreview();
+    }
     final passiveTerminalEvent =
         event == ActiveChatEvent.done ||
         event == ActiveChatEvent.error ||
@@ -5846,6 +6069,9 @@ class _ChatScreenState extends State<ChatScreen>
     // defunct. El stream del agente NO se cancela aquí: el servicio lo mantiene
     // vivo en segundo plano (se suelta más abajo con _chatService.release).
     _disposed = true;
+    ChatPreviewStore.retirementEvents.removeListener(
+      _retireSavedPreviewIfAdmissionRevoked,
+    );
     _composerTurnSettleRetryTimer?.cancel();
     _composerTurnSettleRetryTimer = null;
     final modelConfirmationNavigator = _modelConfirmationNavigator;
@@ -5912,6 +6138,7 @@ class _ChatScreenState extends State<ChatScreen>
         widget.connection.id,
         widget.session.id,
         profile: widget.session.profile,
+        retainForNavigation: true,
       );
     }
 
@@ -6331,7 +6558,7 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   ChatRenderProjection get _currentRenderProjection {
-    final messages = _messages;
+    final messages = _renderMessages;
     final cached = _renderProjection;
     if (cached != null && cached.canReuseFor(messages)) return cached;
     widget.performanceProbe?.renderProjectionBuilds++;
@@ -6349,7 +6576,7 @@ class _ChatScreenState extends State<ChatScreen>
     // ActiveChat.messages computes the privacy/editorial projection. Read one
     // coherent snapshot for this synchronous pass, not the full history once
     // per row (quadratic on a cached long chat, before any network request).
-    final messages = _messages;
+    final messages = _renderMessages;
     final entries = <_ChatListEntry>[];
     final retainedErrorPair =
         !_chat.isStreaming &&
@@ -6661,7 +6888,9 @@ class _ChatScreenState extends State<ChatScreen>
               passiveOnly: passiveOnly,
               published: true,
             );
+            _replaceSavedPreviewWithAuthoritativeTranscript();
           });
+          _saveAuthoritativePreview();
         },
       );
       if (_disposed || !mounted || refreshEpoch != _messageRefreshEpoch) {
@@ -6703,6 +6932,8 @@ class _ChatScreenState extends State<ChatScreen>
         }
         if (storedSessionGone) {
           _chat.markStoredSessionGone();
+          _replaceSavedPreviewWithAuthoritativeTranscript();
+          unawaited(ChatPreviewStore.clear(_savedPreviewScope));
           setState(() => _error = null);
           HermesNotice.of(context).showSnackBar(
             SnackBar(content: Text(Strings.of(context).chaSessionGone)),
@@ -7149,6 +7380,7 @@ class _ChatScreenState extends State<ChatScreen>
           _textController.clear();
           _pendingAttachments.clear();
         });
+        _markInitialAttachmentHandoffMutation();
         _restoringDraft = false;
         await _clearDraft();
       } else {
@@ -7302,6 +7534,7 @@ class _ChatScreenState extends State<ChatScreen>
         _composerPreparedTurnClientTurnId = null;
         _showScrollToBottom = false;
       });
+      _markInitialAttachmentHandoffMutation();
       _restoringDraft = false;
       composerReleasedBeforeAcceptance = true;
       FocusManager.instance.primaryFocus?.unfocus();
@@ -7329,6 +7562,7 @@ class _ChatScreenState extends State<ChatScreen>
             _pendingAttachments.addAll(attachments);
           }
         });
+        _markInitialAttachmentHandoffMutation();
         _restoringDraft = false;
       }
       if (usesComposerState) {
@@ -7378,6 +7612,7 @@ class _ChatScreenState extends State<ChatScreen>
         _showScrollToBottom = false;
         _pendingAttachments.clear();
       });
+      _markInitialAttachmentHandoffMutation();
       // Cierra el teclado al enviar: la respuesta suele ocupar gran parte de la
       // pantalla y el usuario ya no necesita editar el lote aceptado.
       FocusManager.instance.primaryFocus?.unfocus();
@@ -7536,6 +7771,7 @@ class _ChatScreenState extends State<ChatScreen>
             _textController.clear();
             _pendingAttachments.clear();
           });
+          _markInitialAttachmentHandoffMutation();
           _restoringDraft = false;
           await _clearDraft();
         }
@@ -7748,7 +7984,8 @@ class _ChatScreenState extends State<ChatScreen>
 
   bool _isLatestAssistant(Map<String, dynamic> target) {
     final indexes = _currentRenderProjection.assistantMessageIndexesNewestFirst;
-    return indexes.isNotEmpty && identical(_messages[indexes.first], target);
+    return indexes.isNotEmpty &&
+        identical(_renderMessages[indexes.first], target);
   }
 
   void _editUserMessage(Map<String, dynamic> message, double bubbleWidth) {
@@ -9618,6 +9855,7 @@ class _ChatScreenState extends State<ChatScreen>
       setState(() {
         _pendingAttachments.add(persisted!);
       });
+      _markInitialAttachmentHandoffMutation();
       _scheduleDraftSave();
     } catch (_) {
       if (mounted) {
@@ -9758,6 +9996,7 @@ class _ChatScreenState extends State<ChatScreen>
         setState(() {
           _pendingAttachments.addAll(drafts);
         });
+        _markInitialAttachmentHandoffMutation();
         _scheduleDraftSave();
         drafts.clear();
       }
@@ -9896,6 +10135,7 @@ class _ChatScreenState extends State<ChatScreen>
         setState(() {
           _pendingAttachments.addAll(drafts);
         });
+        _markInitialAttachmentHandoffMutation();
         _scheduleDraftSave();
         drafts.clear();
       }
@@ -13282,7 +13522,7 @@ class _ChatScreenState extends State<ChatScreen>
 
   Widget _buildBodyContent() {
     final colors = Theme.of(context).hermes;
-    if (_messages.isEmpty &&
+    if (_renderMessages.isEmpty &&
         (_interactiveMessageRefreshPending || !_chat.messagesLoaded) &&
         _error == null) {
       // Estado de carga con la mascota (006): si la presencia está activa, el
@@ -13307,7 +13547,7 @@ class _ChatScreenState extends State<ChatScreen>
       );
     }
 
-    if (_error != null && _messages.isEmpty) {
+    if (_error != null && _renderMessages.isEmpty) {
       // A-201 (spec 028): estado de error según la plantilla §14 del design
       // system — card `error` alpha 0.08 con borde 0.3, mensaje conciso en
       // español y reintento con HermesSecondaryButton. La excepción cruda
@@ -13396,7 +13636,7 @@ class _ChatScreenState extends State<ChatScreen>
       );
     }
 
-    if (_messages.isEmpty) {
+    if (_renderMessages.isEmpty) {
       return KeyedSubtree(
         key: const ValueKey('chat-empty-state'),
         child: _EmptyChatState(
@@ -13407,7 +13647,7 @@ class _ChatScreenState extends State<ChatScreen>
     }
 
     final entries = _currentListEntries;
-    pruneMessageAnchorCache(_messageAnchors, _messages);
+    pruneMessageAnchorCache(_messageAnchors, _renderMessages);
 
     final transcript = ListenableBuilder(
       listenable: Listenable.merge([
@@ -13575,7 +13815,39 @@ class _ChatScreenState extends State<ChatScreen>
       onDismissError: () => setState(() => _refreshErrorNoticeDismissed = true),
       // Bajo el botón «cargar anteriores» (8 + 48 + 8) cuando está a la vista.
       errorTopInset: _chat.hasEarlierMessages ? 64 : 8,
-      child: transcript,
+      child: Stack(
+        children: [
+          transcript,
+          if (_showingSavedPreview)
+            Align(
+              alignment: Alignment.topCenter,
+              child: SafeArea(
+                bottom: false,
+                child: Semantics(
+                  label: 'Saved device-only history; updating from server',
+                  child: Container(
+                    margin: const EdgeInsets.only(top: 8),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: colors.surface,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      'Saved on this device · updating',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: colors.textSecondary,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 
@@ -13609,14 +13881,14 @@ class _ChatScreenState extends State<ChatScreen>
   Object _materializeRenderUnit(ChatRenderUnitPlan plan) {
     switch (plan) {
       case ChatMessageUnitPlan(:final messageIndex):
-        return _messages[messageIndex];
+        return _renderMessages[messageIndex];
       case ChatUserTurnUnitPlan(
         :final primaryMessageIndex,
         :final supplementMessageIndexes,
       ):
-        final group = _UserTurnGroup(_messages[primaryMessageIndex]);
+        final group = _UserTurnGroup(_renderMessages[primaryMessageIndex]);
         group.supplements.addAll(
-          supplementMessageIndexes.map((index) => _messages[index]),
+          supplementMessageIndexes.map((index) => _renderMessages[index]),
         );
         return group;
       case ChatToolActivityUnitPlan(:final events):
@@ -13636,7 +13908,7 @@ class _ChatScreenState extends State<ChatScreen>
         [primaryMessageIndex, ...supplementMessageIndexes],
       ChatToolActivityUnitPlan(:final messageIndexes) => messageIndexes,
     };
-    return [for (final index in indexes) _messages[index]];
+    return [for (final index in indexes) _renderMessages[index]];
   }
 
   /// Stable key for the newest-row entrance. Durable transcript coordinates are
@@ -13736,6 +14008,7 @@ class _ChatScreenState extends State<ChatScreen>
       }
       return _UserMessage(
         content: content,
+        savedPreview: _showingSavedPreview,
         verbose: _devDiagnostics,
         metadata: unit.primary,
         compact: compact,
@@ -13967,6 +14240,8 @@ class _ChatScreenState extends State<ChatScreen>
     return _MessageBubble(
       content: displayContent,
       isUser: role == 'user',
+      assistantRole: role == 'assistant' && !isStreaming && !isPipeline,
+      savedPreview: _showingSavedPreview,
       verbose: _devDiagnostics,
       metadata: metadataMsg,
       linkCache: _linkCache,
@@ -14070,6 +14345,7 @@ class _ChatScreenState extends State<ChatScreen>
     return _MessageBubble(
       content: projection.visibleMarkdown,
       isUser: false,
+      assistantRole: !frame.isStreaming,
       verbose: _devDiagnostics,
       metadata: frame.metadata,
       linkCache: _linkCache,
@@ -15470,6 +15746,8 @@ class _StableStreamingMarkdownState extends State<_StableStreamingMarkdown> {
 class _MessageBubble extends StatelessWidget {
   final String content;
   final bool isUser;
+  final bool assistantRole;
+  final bool savedPreview;
   final bool verbose;
   final Map<String, dynamic> metadata;
   final Map<String, _LinkPreviewData?> linkCache;
@@ -15502,6 +15780,8 @@ class _MessageBubble extends StatelessWidget {
   const _MessageBubble({
     required this.content,
     required this.isUser,
+    this.assistantRole = false,
+    this.savedPreview = false,
     required this.linkCache,
     required this.fetchLinkPreview,
     required this.firstUrl,
@@ -15533,9 +15813,10 @@ class _MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return isUser
+    final message = isUser
         ? _UserMessage(
             content: content,
+            savedPreview: savedPreview,
             verbose: verbose,
             metadata: metadata,
             onEdit: onEdit,
@@ -15549,6 +15830,7 @@ class _MessageBubble extends StatelessWidget {
           )
         : _AssistantMessage(
             content: content,
+            savedPreview: savedPreview,
             verbose: verbose,
             metadata: metadata,
             linkCache: linkCache,
@@ -15570,6 +15852,14 @@ class _MessageBubble extends StatelessWidget {
             compact: compact,
             performanceProbe: performanceProbe,
           );
+    if (!assistantRole) return message;
+    // Keep completed assistant responses separate from prompt/error nodes.
+    return Semantics(
+      container: true,
+      explicitChildNodes: true,
+      label: 'Assistant response',
+      child: message,
+    );
   }
 }
 
@@ -16046,6 +16336,7 @@ class _TimelineSystemEventRow extends StatelessWidget {
 
 class _UserMessage extends StatelessWidget {
   final String content;
+  final bool savedPreview;
   final bool verbose;
   final Map<String, dynamic> metadata;
   final List<String> supplements;
@@ -16060,6 +16351,7 @@ class _UserMessage extends StatelessWidget {
 
   const _UserMessage({
     required this.content,
+    this.savedPreview = false,
     this.verbose = false,
     this.metadata = const {},
     this.supplements = const [],
@@ -16123,6 +16415,14 @@ class _UserMessage extends StatelessWidget {
     // Los blobs de sistema (cron/skill/compactación) los intercepta el
     // renderizador central (_buildRenderUnit → _SystemBlobChip), antes de llegar
     // aquí, así que en este punto `content` ya es un mensaje real del usuario.
+    // Retained device-only text must bypass Markdown, attachment parsing,
+    // filesystem probes and interactive attachment widgets entirely.
+    if (savedPreview) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(56, 11, 12, 3),
+        child: Text(content, style: theme.textTheme.bodyMedium),
+      );
+    }
     final List<String> metaLines = _buildMetaLines(verbose, metadata);
     final timestamp = _formatMessageTimestamp(metadata);
     final parsed = _parseUserContent(content);
@@ -16587,6 +16887,7 @@ class _AssistantLiveHeader extends StatelessWidget {
 
 class _AssistantMessage extends StatelessWidget {
   final String content;
+  final bool savedPreview;
   final bool verbose;
   final Map<String, dynamic> metadata;
   final Map<String, _LinkPreviewData?> linkCache;
@@ -16610,6 +16911,7 @@ class _AssistantMessage extends StatelessWidget {
 
   const _AssistantMessage({
     required this.content,
+    this.savedPreview = false,
     required this.linkCache,
     required this.fetchLinkPreview,
     required this.firstUrl,
@@ -16775,6 +17077,16 @@ class _AssistantMessage extends StatelessWidget {
     }
 
     Iterable<Widget> answerWidgets() sync* {
+      if (savedPreview) {
+        // Saved previews are device-only display state. They must never route
+        // a retained MEDIA: directive or attachment metadata into a canonical
+        // renderer that can authenticate or fetch a managed server file.
+        final text = GeneratedMediaService.stripDirectives(answer);
+        if (text.trim().isNotEmpty) {
+          yield Text(text.trim(), style: Theme.of(context).textTheme.bodyMedium);
+        }
+        return;
+      }
       final projected = terminalProjection;
       if (projected != null) {
         var generatedMediaOrdinal = 0;

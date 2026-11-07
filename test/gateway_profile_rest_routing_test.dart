@@ -110,6 +110,32 @@ void main() {
     client.close();
   });
 
+  test(
+    'named profile health never authenticates against the default library',
+    () async {
+      final requests = <Uri>[];
+      final client = ApiClient(
+        baseUrl: 'https://hermes.example',
+        apiKey: 'test-key',
+        httpClient: MockClient((request) async {
+          requests.add(request.url);
+          if (request.url.path == '/health') return http.Response('{}', 200);
+          return http.Response(jsonEncode({'data': <Object>[]}), 200);
+        }),
+      );
+
+      expect(await client.healthCheck(profile: 'team_alpha'), isTrue);
+
+      expect(requests.map((uri) => uri.path), [
+        '/health',
+        '/p/team_alpha/api/sessions',
+      ]);
+      expect(requests.last.queryParameters, const {'limit': '0'});
+      expect(requests.map((uri) => uri.path), isNot(contains('/api/sessions')));
+      client.close();
+    },
+  );
+
   test('named profile rejects a conflicting Gateway session owner', () async {
     final client = ApiClient(
       baseUrl: 'https://hermes.example',

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/services/pairing_link.dart';
 
@@ -96,6 +97,52 @@ void main() {
         PairingLink.tryParse('hermes://pair?host=h&port=abc&token=t'),
         isNull,
       );
+    });
+
+    test('redacts malformed URI parser failures in diagnostic logs', () {
+      const token = 'SYNTHETIC_PAIRING_TOKEN_ONLY';
+      const malformed =
+          'hermes://[invalid-ipv6]?host=example.test&port=8642&token=$token';
+      final lines = <String>[];
+      final previousDebugPrint = debugPrint;
+      debugPrint = (message, {wrapWidth}) => lines.add(message ?? '');
+      try {
+        expect(PairingLink.tryParse(malformed), isNull);
+      } finally {
+        debugPrint = previousDebugPrint;
+      }
+      expect(lines, ['[pairing] malformed URI (redacted)']);
+      expect(lines.join('\n'), isNot(contains(token)));
+      expect(lines.join('\n'), isNot(contains(malformed)));
+    });
+
+    test('malformed query decoding returns null with only redacted diagnostics', () {
+      const token = 'SYNTHETIC_PAIRING_TOKEN_ONLY';
+      const bridge = 'SYNTHETIC_BRIDGE_TOKEN_ONLY';
+      const prefix =
+          'hermes://pair?host=example.test&port=8642&token=$token&bridge_token=$bridge';
+      final lines = <String>[];
+      final previousDebugPrint = debugPrint;
+      debugPrint = (message, {wrapWidth}) => lines.add(message ?? '');
+      try {
+        for (final malformed in [
+          '$prefix&label=%FF',
+          '$prefix&label=%E2%82',
+          '$prefix&%FF=value',
+          '$prefix&unused=%FF',
+          '$prefix&bridge_token=%FF',
+        ]) {
+          expect(PairingLink.tryParse(malformed), isNull);
+          expect(lines.last, '[pairing] malformed URI (redacted)');
+        }
+        expect(PairingLink.tryParse('$prefix&label=Pr%C3%BCfung')?.label, 'Prüfung');
+      } finally {
+        debugPrint = previousDebugPrint;
+      }
+      expect(lines, hasLength(5));
+      expect(lines.join('\n'), isNot(contains(token)));
+      expect(lines.join('\n'), isNot(contains(bridge)));
+      expect(lines.join('\n'), isNot(contains(prefix)));
     });
 
     test('parsea el formato que emite el comando del servidor', () {

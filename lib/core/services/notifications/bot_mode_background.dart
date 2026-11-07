@@ -646,6 +646,12 @@ class BotModeBackgroundMonitor {
         objectId: roomId,
         eventKind: key,
       ),
+      release: (connId, roomId, key) => NotificationEventLedger(prefs).release(
+        connId: connId,
+        profile: 'rooms',
+        objectId: roomId,
+        eventKind: key,
+      ),
     );
     final now = _now();
     if (!watcher.allowsAttempt || !_policy.shouldConnect(now)) {
@@ -665,11 +671,11 @@ class BotModeBackgroundMonitor {
       if (ok) {
         _lastOkAt = at;
         final live = {
-          for (final v in watcher.views)
-            RichNotificationIds.roomTag(connection.id, v.room.roomId),
+          for (final roomId in watcher.listedRoomIds)
+            RichNotificationIds.roomTag(connection.id, roomId),
         };
-        // Rooms that left `groups.list` (disbanded, beyond maxRooms) are
-        // never evaluated again: withdraw their Live Update now.
+        // Only rooms missing from the full active listing lose their Live
+        // Update; a room skipped by this pass's polling budget keeps it.
         await presenter.cancelLiveExcept(live);
       } else {
         await _expireIfUnreachable(at);

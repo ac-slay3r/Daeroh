@@ -147,6 +147,7 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        AppLockAttempts.attach(applicationContext, flutterEngine.dartExecutor.binaryMessenger)
         documentPreviewHandler?.close()
         documentPreviewHandler = HermesDocumentPreviewHandler(applicationContext).also { handler ->
             MethodChannel(

@@ -575,7 +575,13 @@ class _MascotasBodyState extends State<_MascotasBody> {
       );
     } on CompanionImportException catch (e) {
       messenger?.showSnackBar(
-        SnackBar(content: Text(str.petImportFailed(e.message))),
+        SnackBar(
+          content: Text(
+            e.unsupportedZipFormat
+                ? str.petImportUnsupportedZip
+                : str.petImportFailed(e.message),
+          ),
+        ),
         kind: HermesNoticeKind.error,
       );
     } catch (e) {

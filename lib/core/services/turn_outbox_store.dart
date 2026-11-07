@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/attachment_draft.dart';
 import '../models/prepared_turn.dart';
 import 'attachment_uploader.dart';
+import 'secure_storage_policy.dart';
 import 'session_deletion.dart';
 
 /// Contrato mínimo que consume el lifecycle de un turno activo. Permite probar
@@ -376,7 +377,7 @@ class TurnOutboxStore
   final LocalConversationLifecycle? lifecycle;
 
   TurnOutboxStore({
-    FlutterSecureStorage secureStorage = const FlutterSecureStorage(),
+    FlutterSecureStorage secureStorage = sharedSecureStorage,
     Future<bool> Function(AttachmentDraft)? deletePrivateCopy,
     int Function()? nowMs,
     this.lifecycle,

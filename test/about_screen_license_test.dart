@@ -13,8 +13,8 @@ void main() {
     LicenseRegistry.reset();
     addTearDown(LicenseRegistry.reset);
     PackageInfo.setMockInitialValues(
-      appName: 'Hermes Console',
-      packageName: 'dev.xpetalab.hermes',
+      appName: 'Daeroh',
+      packageName: 'cool.n0thing.daeroh',
       version: '1.2.7-qa',
       buildNumber: '914',
       buildSignature: '',
@@ -32,7 +32,7 @@ void main() {
 
     final entries = await LicenseRegistry.licenses.toList();
     final project = entries.singleWhere(
-      (entry) => entry.packages.contains('Hermes Console'),
+      (entry) => entry.packages.contains('Daeroh'),
     );
     final projectNotice = project.paragraphs
         .map((paragraph) => paragraph.text)
@@ -53,5 +53,33 @@ void main() {
       entries.any((entry) => entry.packages.contains('Thinking Orbs 0.3.1')),
       isFalse,
     );
+  });
+
+  testWidgets('Privacy note opens bundled document on Hermes surface', (
+    tester,
+  ) async {
+    PackageInfo.setMockInitialValues(
+      appName: 'Daeroh',
+      packageName: 'cool.n0thing.daeroh',
+      version: '0.1.0',
+      buildNumber: '1',
+      buildSignature: '',
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.fromId('dark'),
+        localizationsDelegates: Strings.localizationsDelegates,
+        supportedLocales: Strings.supportedLocales,
+        home: const AboutScreen(),
+      ),
+    );
+    final noteRow = find.text('Privacy note');
+    await tester.ensureVisible(noteRow);
+    await tester.pumpAndSettle();
+    await tester.tap(noteRow);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('daeroh-privacy-note')), findsOneWidget);
+    expect(find.textContaining('Daeroh privacy'), findsWidgets);
+    expect(tester.takeException(), isNull);
   });
 }

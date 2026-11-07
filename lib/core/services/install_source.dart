@@ -7,10 +7,12 @@ import 'package:flutter/services.dart';
 enum InstallSource { googlePlay, githubObtainium, manual }
 
 abstract final class InstallSourceInfo {
+  // Daeroh is not published on Play. Never route this package to upstream's
+  // differently signed releases or Play listing.
   static const playListingUrl =
-      'https://play.google.com/store/apps/details?id=dev.xpetalab.hermesconsole';
+      'https://github.com/ac-slay3r/Daeroh/releases';
   static const githubReleasesUrl =
-      'https://github.com/xP3ta/hermes-console/releases';
+      'https://github.com/ac-slay3r/Daeroh/releases';
 
   static const _channel = MethodChannel('hermes/platform_info');
 

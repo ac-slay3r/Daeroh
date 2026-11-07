@@ -30,22 +30,18 @@ void main() {
     );
     expect(
       InstallSourceInfo.updateUrl(InstallSource.googlePlay),
-      contains('id=dev.xpetalab.hermesconsole'),
+      'https://github.com/ac-slay3r/Daeroh/releases',
     );
     expect(
       InstallSourceInfo.updateUrl(InstallSource.manual),
-      'https://github.com/xP3ta/hermes-console/releases',
+      'https://github.com/ac-slay3r/Daeroh/releases',
     );
   });
 
-  for (final (source, label, button) in const [
-    (InstallSource.googlePlay, 'Google Play', 'Abrir en Google Play'),
-    (
-      InstallSource.githubObtainium,
-      'GitHub / Obtainium',
-      'Abrir versiones en GitHub',
-    ),
-    (InstallSource.manual, 'Instalación manual', 'Abrir versiones en GitHub'),
+  for (final (source, label) in const [
+    (InstallSource.googlePlay, 'Google Play'),
+    (InstallSource.githubObtainium, 'GitHub / Obtainium'),
+    (InstallSource.manual, 'Instalación manual'),
   ]) {
     testWidgets('install source $source', (tester) async {
       await pumpDesignScreen(
@@ -59,8 +55,8 @@ void main() {
       );
       expect(find.text('Actualizaciones'), findsOneWidget);
       expect(find.text(label), findsOneWidget);
-      expect(find.text(button), findsOneWidget);
-      expect(find.textContaining('desinstala primero'), findsOneWidget);
+      expect(find.byKey(const ValueKey('install-source-open')), findsNothing);
+      expect(find.textContaining('aún no tiene canal público'), findsOneWidget);
     });
   }
 

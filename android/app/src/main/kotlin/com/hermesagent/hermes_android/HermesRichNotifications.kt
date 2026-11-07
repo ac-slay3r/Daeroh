@@ -1456,7 +1456,7 @@ internal object HermesNotificationActionInbox {
  */
 class HermesNotificationActionReceiver : BroadcastReceiver() {
     companion object {
-        const val ACTION = "dev.xpetalab.hermesconsole.action.RICH_NOTIFICATION"
+        const val ACTION = "cool.n0thing.daeroh.action.RICH_NOTIFICATION"
         const val EXTRA_ACTION_ID = "rich_action_id"
         const val EXTRA_PAYLOAD = "rich_payload"
         const val EXTRA_NOTIFICATION_ID = "rich_notification_id"

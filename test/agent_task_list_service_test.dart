@@ -16,8 +16,9 @@ import 'support/in_memory_compression_restore_storage.dart';
 SavedConnection _conn(String id) => SavedConnection(
   id: id,
   label: 'Test',
-  host: 'hermes.local',
+  host: '127.0.0.1',
   port: 8642,
+  kind: InstanceKind.homelab,
   apiKey: 'test-key',
 );
 

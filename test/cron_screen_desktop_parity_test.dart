@@ -61,7 +61,7 @@ void main() {
 
     Map<String, dynamic>? createdBody;
     final client = DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       manualToken: 'token',
       httpClientOverride: MockClient((request) async {
         if (request.method == 'GET' && request.url.path == '/api/cron/jobs') {
@@ -135,7 +135,7 @@ void main() {
           connection: SavedConnection(
             id: 'cron-parity',
             label: 'QA',
-            host: 'hermes.local',
+            host: '127.0.0.1',
             port: 8642,
             apiKey: 'gateway-key',
             useHttps: true,
@@ -182,7 +182,7 @@ void main() {
 
     final requestedProfiles = <String?>[];
     final client = DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       manualToken: 'token',
       httpClientOverride: MockClient((request) async {
         if (request.method == 'GET' && request.url.path == '/api/cron/jobs') {
@@ -215,7 +215,7 @@ void main() {
           connection: SavedConnection(
             id: 'cron-profile-scope',
             label: 'QA',
-            host: 'hermes.local',
+            host: '127.0.0.1',
             port: 8642,
             apiKey: 'gateway-key',
             useHttps: true,
@@ -277,7 +277,7 @@ void main() {
     final events = StreamController<TuiGatewayEvent>.broadcast();
     addTearDown(events.close);
     final client = DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       manualToken: 'token',
       httpClientOverride: MockClient((request) async {
         if (request.method == 'GET' && request.url.path == '/api/cron/jobs') {
@@ -303,7 +303,7 @@ void main() {
           connection: SavedConnection(
             id: 'cron-events',
             label: 'QA',
-            host: 'hermes.local',
+            host: '127.0.0.1',
             port: 8642,
             apiKey: 'gateway-key',
             useHttps: true,

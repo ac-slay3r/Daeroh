@@ -7,7 +7,7 @@ set -Eeuo pipefail
 unset GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 unset GIT_DIR GIT_WORK_TREE
 
-readonly LOCK_SHA256="f366fdfc011b65c1b3f44e777fc876be21d3492ec3b0b0cf014536c0ac3490c3"
+readonly LOCK_SHA256="14328be1a42a6839e16931c8953acacdc2b063ce17672521f6687cc1e2644717"
 readonly SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 fail() {
@@ -65,12 +65,16 @@ chmod 700 -- "$STAGING_ROOT"
 
 build_replica() {
   local replica="$1"
-  local clone="$WORK/source-$replica"
-  local home="$WORK/home-$replica"
-  local pub_cache="$WORK/pub-cache-$replica"
-  local gradle_home="$WORK/gradle-$replica"
+  # Recreate every build-visible input at the same absolute path for each
+  # sequential replica. Only the copied, signed outputs remain side by side.
+  local clone="$WORK/source"
+  local home="$WORK/home"
+  local pub_cache="$WORK/pub-cache"
+  local gradle_home="$WORK/gradle"
+  local tmp="$WORK/tmp"
   local destination="$STAGING_ROOT/replica-$replica"
-  mkdir -m 700 -- "$home" "$pub_cache" "$gradle_home" "$destination"
+  rm -rf -- "$clone" "$home" "$pub_cache" "$gradle_home" "$tmp"
+  mkdir -m 700 -- "$home" "$pub_cache" "$gradle_home" "$tmp" "$destination"
   git clone --no-local --no-hardlinks --recurse-submodules -- "$SOURCE_ROOT" "$clone" >/dev/null
   git -C "$clone" checkout --detach "$COMMIT" >/dev/null
   git -C "$clone" submodule update --init --recursive >/dev/null
@@ -82,12 +86,12 @@ build_replica() {
   if [[ "$CHANNEL" == direct-public ]]; then
     (
       cd "$clone"
-      env -i PATH="$PATH" HOME="$home" PUB_CACHE="$pub_cache" \
+      env -i PATH="$PATH" HOME="$home" PUB_CACHE="$pub_cache" TMPDIR="$tmp" \
         GRADLE_USER_HOME="$gradle_home" SOURCE_DATE_EPOCH="$source_epoch" \
         ANDROID_HOME="$CLEAN_ANDROID_HOME" \
         ANDROID_SDK_ROOT="$CLEAN_ANDROID_SDK_ROOT" JAVA_HOME="$CLEAN_JAVA_HOME" \
         flutter pub get --enforce-lockfile
-      env -i PATH="$PATH" HOME="$home" PUB_CACHE="$pub_cache" \
+      env -i PATH="$PATH" HOME="$home" PUB_CACHE="$pub_cache" TMPDIR="$tmp" \
         GRADLE_USER_HOME="$gradle_home" SOURCE_DATE_EPOCH="$source_epoch" \
         ANDROID_HOME="$CLEAN_ANDROID_HOME" \
         ANDROID_SDK_ROOT="$CLEAN_ANDROID_SDK_ROOT" JAVA_HOME="$CLEAN_JAVA_HOME" \
@@ -99,12 +103,12 @@ build_replica() {
   else
     (
       cd "$clone"
-      env -i PATH="$PATH" HOME="$home" PUB_CACHE="$pub_cache" \
+      env -i PATH="$PATH" HOME="$home" PUB_CACHE="$pub_cache" TMPDIR="$tmp" \
         GRADLE_USER_HOME="$gradle_home" SOURCE_DATE_EPOCH="$source_epoch" \
         ANDROID_HOME="$CLEAN_ANDROID_HOME" \
         ANDROID_SDK_ROOT="$CLEAN_ANDROID_SDK_ROOT" JAVA_HOME="$CLEAN_JAVA_HOME" \
         flutter pub get --enforce-lockfile
-      env -i PATH="$PATH" HOME="$home" PUB_CACHE="$pub_cache" \
+      env -i PATH="$PATH" HOME="$home" PUB_CACHE="$pub_cache" TMPDIR="$tmp" \
         GRADLE_USER_HOME="$gradle_home" SOURCE_DATE_EPOCH="$source_epoch" \
         ANDROID_HOME="$CLEAN_ANDROID_HOME" \
         ANDROID_SDK_ROOT="$CLEAN_ANDROID_SDK_ROOT" JAVA_HOME="$CLEAN_JAVA_HOME" \

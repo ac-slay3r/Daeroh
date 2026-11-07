@@ -12,11 +12,75 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:hermes_android/core/services/secure_storage.dart';
 import 'package:hermes_android/core/services/voice/stt_engine.dart';
+import 'package:hermes_android/core/services/voice/stt_remote.dart';
 import 'package:hermes_android/core/services/voice/voice_service.dart';
 import 'package:hermes_android/core/services/voice/voice_settings.dart';
 
 /// Motor STT falso: cuenta paradas y liberaciones, y puede simular un fallo al
 /// liberar para comprobar que no tumba el servicio.
+class _BlockingServerSttEngine extends ServerSttEngine {
+  _BlockingServerSttEngine(this.availableGate)
+    : super(
+        baseUrl: 'ws://127.0.0.1:9123',
+        allowLegacyQueryTokenFallback: true,
+      );
+
+  final Completer<bool> availableGate;
+  final Completer<void> availableStarted = Completer<void>();
+  int revokeCount = 0;
+  int disposeCount = 0;
+
+  @override
+  Future<bool> available() {
+    if (!availableStarted.isCompleted) availableStarted.complete();
+    return availableGate.future;
+  }
+
+  @override
+  void revokeLegacyQueryTokenFallback() {
+    revokeCount++;
+    super.revokeLegacyQueryTokenFallback();
+  }
+
+  @override
+  Future<void> dispose() async {
+    disposeCount++;
+  }
+}
+
+class _PingBlockingServerSttEngine extends ServerSttEngine {
+  _PingBlockingServerSttEngine(this.pingGate)
+    : super(
+        baseUrl: 'ws://127.0.0.1:9123',
+        allowLegacyQueryTokenFallback: true,
+      );
+
+  final Completer<bool> pingGate;
+  final Completer<void> pingStarted = Completer<void>();
+  int revokeCount = 0;
+  int disposeCount = 0;
+
+  @override
+  Future<bool> available() async => false;
+
+  @override
+  Future<bool> ping({Duration timeout = const Duration(seconds: 4)}) {
+    if (!pingStarted.isCompleted) pingStarted.complete();
+    return pingGate.future;
+  }
+
+  @override
+  void revokeLegacyQueryTokenFallback() {
+    revokeCount++;
+    super.revokeLegacyQueryTokenFallback();
+  }
+
+  @override
+  Future<void> dispose() async {
+    disposeCount++;
+  }
+}
+
 class _FakeStt implements SttEngine {
   _FakeStt({this.throwOnDispose = false, this.disposeGate});
 
@@ -122,6 +186,151 @@ void main() {
     expect(created.first.disposeCount, 1);
     expect(created.last.disposeCount, 0);
   });
+
+  test('revocar fallback legacy no interrumpe un motor STT no servidor',
+      () async {
+    await voice.saveSettings(
+      voice.settings.copyWith(allowLegacyQueryTokenFallback: true),
+    );
+    await voice.checkStt();
+    expect(created, hasLength(1));
+
+    await voice.saveSettings(
+      voice.settings.copyWith(allowLegacyQueryTokenFallback: false),
+    );
+
+    expect(created.single.disposeCount, 0);
+    await voice.checkStt();
+    expect(created, hasLength(1));
+  });
+
+  test('dispose cancela un check STT server antes de crear su motor', () async {
+    await voice.saveSettings(
+      voice.settings.copyWith(
+        sttEngine: SttEngineKind.server,
+        serverSttUrl: 'ws://127.0.0.1:9123',
+        allowLegacyQueryTokenFallback: true,
+      ),
+    );
+    final tokenGate = Completer<String?>();
+    var enginesCreated = 0;
+    voice.debugSttFactory = null;
+    voice.debugServerSttTokenLoader = () => tokenGate.future;
+    voice.debugServerSttFactory = () {
+      enginesCreated++;
+      return _BlockingServerSttEngine(Completer<bool>()..complete(true));
+    };
+
+    final check = voice.checkStt();
+    await Future<void>.delayed(Duration.zero);
+    await voice.dispose();
+    tokenGate.complete('token');
+
+    expect((await check).status, SttStatus.needsServerConfig);
+    expect(enginesCreated, 0);
+  });
+
+  test('revocar fallback legacy libera el STT servidor con voz activa',
+      () async {
+    await voice.saveSettings(
+      voice.settings.copyWith(
+        sttEngine: SttEngineKind.server,
+        serverSttUrl: 'ws://127.0.0.1:9123',
+        allowLegacyQueryTokenFallback: true,
+      ),
+    );
+    final serverEngine =
+        _BlockingServerSttEngine(Completer<bool>()..complete(true));
+    voice.debugSttFactory = null;
+    voice.debugServerSttTokenLoader = () async => '';
+    voice.debugServerSttFactory = () => serverEngine;
+    await voice.checkStt();
+    voice.setVoiceConversationActive(true);
+
+    await voice.saveSettings(
+      voice.settings.copyWith(allowLegacyQueryTokenFallback: false),
+    );
+
+    expect(serverEngine.revokeCount, 1);
+    expect(serverEngine.disposeCount, 1);
+  });
+
+  test('cambiar el fallback legacy recrea el motor STT cacheado', () async {
+    await voice.checkStt();
+    expect(created, hasLength(1));
+
+    await voice.saveSettings(
+      voice.settings.copyWith(allowLegacyQueryTokenFallback: true),
+    );
+
+    await voice.checkStt();
+    expect(created, hasLength(2));
+    expect(created.first.disposeCount, 1);
+  });
+
+  test(
+    'los checks STT server simultáneos comparten un único probe revocable',
+    () async {
+      await voice.saveSettings(
+        voice.settings.copyWith(
+          sttEngine: SttEngineKind.server,
+          serverSttUrl: 'ws://127.0.0.1:9123',
+          allowLegacyQueryTokenFallback: true,
+        ),
+      );
+      final firstGate = Completer<bool>();
+      final engines = [_BlockingServerSttEngine(firstGate)];
+      var next = 0;
+      voice.debugSttFactory = null;
+      voice.debugServerSttTokenLoader = () async => '';
+      voice.debugServerSttFactory = () => engines[next++];
+
+      final firstCheck = voice.checkStt();
+      await engines.single.availableStarted.future;
+      final secondCheck = voice.checkStt();
+      await Future<void>.delayed(Duration.zero);
+      expect(next, 1);
+
+      await voice.saveSettings(
+        voice.settings.copyWith(allowLegacyQueryTokenFallback: false),
+      );
+      expect(engines.single.revokeCount, 1);
+
+      firstGate.complete(true);
+      expect((await firstCheck).status, SttStatus.needsServerConfig);
+      expect((await secondCheck).status, SttStatus.needsServerConfig);
+      expect(engines.single.disposeCount, 1);
+    },
+  );
+
+  test(
+    'revocar fallback legacy mantiene el probe ping revocable',
+    () async {
+      await voice.saveSettings(
+        voice.settings.copyWith(
+          sttEngine: SttEngineKind.server,
+          serverSttUrl: 'ws://127.0.0.1:9123',
+          allowLegacyQueryTokenFallback: true,
+        ),
+      );
+      final pingGate = Completer<bool>();
+      final engine = _PingBlockingServerSttEngine(pingGate);
+      voice.debugSttFactory = null;
+      voice.debugServerSttTokenLoader = () async => '';
+      voice.debugServerSttFactory = () => engine;
+
+      final check = voice.checkStt();
+      await engine.pingStarted.future;
+      await voice.saveSettings(
+        voice.settings.copyWith(allowLegacyQueryTokenFallback: false),
+      );
+      expect(engine.revokeCount, 1);
+
+      pingGate.complete(true);
+      expect((await check).status, SttStatus.needsServerConfig);
+      expect(engine.disposeCount, 1);
+    },
+  );
 
   test(
     'stopDictation para el motor pero NO lo libera (se reutiliza)',

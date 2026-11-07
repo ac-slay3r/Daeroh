@@ -50,7 +50,7 @@ void main() {
   test('memory metadata request scopes the selected profile', () async {
     Uri? requested;
     final client = DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       manualToken: 'token',
       httpClientOverride: MockClient((request) async {
         requested = request.url;

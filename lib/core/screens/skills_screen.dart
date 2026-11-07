@@ -71,6 +71,29 @@ bool skillsProfileMutationsBlocked(String profile) {
   return value.isNotEmpty && value != 'default';
 }
 
+/// Where a skill enable/disable may be written.
+enum SkillToggleRoute { dashboard, bridge, blocked }
+
+/// The Dashboard writes the active profile's own config, so it is the only
+/// route a named profile may use. The bridge edits the global config.yaml and
+/// is kept solely as the default profile's fallback. Until the profile is
+/// resolved, '' would mean "default" and leak a named profile's toggle into
+/// the global config, so nothing is written.
+@visibleForTesting
+SkillToggleRoute skillToggleRoute({
+  required String profile,
+  required bool profileResolved,
+  required bool dashboardListed,
+  required bool bridgeSkills,
+}) {
+  if (!profileResolved) return SkillToggleRoute.blocked;
+  if (dashboardListed) return SkillToggleRoute.dashboard;
+  if (bridgeSkills && !skillsProfileMutationsBlocked(profile)) {
+    return SkillToggleRoute.bridge;
+  }
+  return SkillToggleRoute.blocked;
+}
+
 class SkillsScreen extends StatefulWidget {
   final SavedConnection connection;
   final String? profileOverride;
@@ -104,6 +127,21 @@ class _SkillsScreenState extends State<SkillsScreen>
   /// Fuente que alimentó la lista: Dashboard (con flag enabled) o Gateway
   /// (/v1/skills, fallback sin estado enabled).
   String _skillsSource = '/api/skills';
+
+  /// Profile the Dashboard list was loaded for; null when it came from the
+  /// Gateway fallback (no enabled flags, no toggle).
+  String? _listedProfile;
+
+  /// Where a toggle on the current list would be written.
+  SkillToggleRoute get _toggleRoute => skillToggleRoute(
+    profile: _profile,
+    profileResolved: _profileResolved,
+    dashboardListed:
+        !_loadingInstalled &&
+        _skillsSource == '/api/skills' &&
+        _listedProfile == _profile,
+    bridgeSkills: _bridgeSkills,
+  );
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
 
@@ -304,9 +342,17 @@ class _SkillsScreenState extends State<SkillsScreen>
   }
 
   Future<void> _toggleSkill(Map<String, dynamic> skill, bool enabled) async {
-    if (_blockedByProfile()) return;
     final name = skill['name'] as String? ?? '';
-    if (name.isEmpty || !_bridgeSkills) return;
+    if (name.isEmpty) return;
+    switch (_toggleRoute) {
+      case SkillToggleRoute.dashboard:
+        return _toggleSkillViaDashboard(skill, name, enabled);
+      case SkillToggleRoute.blocked:
+        _blockedByProfile();
+        return;
+      case SkillToggleRoute.bridge:
+        break;
+    }
     final str = Strings.of(context);
     final client = await _bridgeMgr.clientFor(widget.connection.id);
     if (client == null) return;
@@ -339,6 +385,44 @@ class _SkillsScreenState extends State<SkillsScreen>
       _snack(str.sklError(e.toString()));
     } finally {
       client.close();
+      if (mounted) setState(() => _busySkill = null);
+      if (needsResync) _loadInstalled();
+    }
+  }
+
+  /// Writes the toggle to the list's own profile config via the Dashboard.
+  /// Same optimistic/reload semantics as the bridge path.
+  Future<void> _toggleSkillViaDashboard(
+    Map<String, dynamic> skill,
+    String name,
+    bool enabled,
+  ) async {
+    final str = Strings.of(context);
+    final profile = _profile;
+    setState(() => _busySkill = name);
+    var needsResync = false;
+    try {
+      final res = await _dashClient.setSkillEnabled(
+        name,
+        enabled,
+        profile: profile,
+      );
+      if (res['ok'] == true && res['enabled'] == enabled) {
+        if (mounted) {
+          setState(() {
+            skill['enabled'] = enabled;
+            _pendingReload = true;
+          });
+        }
+        _snack(enabled ? str.sklActivated(name) : str.sklDeactivated(name));
+      } else {
+        needsResync = true;
+        _snack(str.sklToggleFailed(name));
+      }
+    } catch (e) {
+      needsResync = true;
+      _snack(localizedApiError(str, e));
+    } finally {
       if (mounted) setState(() => _busySkill = null);
       if (needsResync) _loadInstalled();
     }
@@ -533,11 +617,13 @@ class _SkillsScreenState extends State<SkillsScreen>
       _installedDependencyFailure = DashboardDependencyFailure.other;
     });
     try {
-      final raw = await _dashClient.getSkills(profile: _profile);
+      final requestedProfile = _profile;
+      final raw = await _dashClient.getSkills(profile: requestedProfile);
       if (!mounted) return;
       setState(() {
         _installed = raw;
         _skillsSource = '/api/skills';
+        _listedProfile = requestedProfile;
         _loadingInstalled = false;
       });
     } catch (dashboardError) {
@@ -555,6 +641,7 @@ class _SkillsScreenState extends State<SkillsScreen>
         setState(() {
           _installed = raw;
           _skillsSource = '/v1/skills (gateway)';
+          _listedProfile = null;
           _loadingInstalled = false;
         });
       } catch (e) {
@@ -790,6 +877,7 @@ class _SkillsScreenState extends State<SkillsScreen>
             onConfigureDependencies: _configureDependencies,
             onTap: (skill) => _showInstalledDetail(context, skill, colors),
             bridgeManaged: _bridgeSkills,
+            canToggle: _toggleRoute != SkillToggleRoute.blocked,
             canRemove: _bridgeSkills,
             bridgeRunning: _bridge.running,
             onConfigureBridge: _configureBridge,
@@ -837,6 +925,7 @@ class _InstalledTab extends StatelessWidget {
   final Future<void> Function() onConfigureDependencies;
   final void Function(Map<String, dynamic>) onTap;
   final bool bridgeManaged;
+  final bool canToggle;
   final bool canRemove;
   final bool bridgeRunning;
   final VoidCallback onConfigureBridge;
@@ -857,6 +946,7 @@ class _InstalledTab extends StatelessWidget {
     required this.onConfigureDependencies,
     required this.onTap,
     required this.bridgeManaged,
+    required this.canToggle,
     required this.canRemove,
     required this.bridgeRunning,
     required this.onConfigureBridge,
@@ -964,7 +1054,7 @@ class _InstalledTab extends StatelessWidget {
                       skill: skills[i],
                       colors: colors,
                       onTap: () => onTap(skills[i]),
-                      bridgeManaged: bridgeManaged,
+                      canToggle: canToggle,
                       canRemove: canRemove,
                       busy: busySkill == (skills[i]['name'] as String? ?? ''),
                       onToggle: (v) => onToggle(skills[i], v),
@@ -982,7 +1072,7 @@ class _InstalledTile extends StatelessWidget {
   final Map<String, dynamic> skill;
   final HermesThemeColors colors;
   final VoidCallback onTap;
-  final bool bridgeManaged;
+  final bool canToggle;
   final bool canRemove;
   final bool busy;
   final void Function(bool) onToggle;
@@ -992,7 +1082,7 @@ class _InstalledTile extends StatelessWidget {
     required this.skill,
     required this.colors,
     required this.onTap,
-    this.bridgeManaged = false,
+    this.canToggle = false,
     this.canRemove = false,
     this.busy = false,
     required this.onToggle,
@@ -1065,7 +1155,7 @@ class _InstalledTile extends StatelessWidget {
                 ),
               ),
               // Gestión nativa: toggle si hay bridge; borrar si Dashboard o bridge.
-              if (bridgeManaged || canRemove) ...[
+              if (canToggle || canRemove) ...[
                 if (busy)
                   const SizedBox(
                     width: 36,
@@ -1079,7 +1169,7 @@ class _InstalledTile extends StatelessWidget {
                     ),
                   )
                 else ...[
-                  if (bridgeManaged)
+                  if (canToggle)
                     Transform.scale(
                       scale: 0.8,
                       child: Switch(value: enabled, onChanged: onToggle),

@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../models/attachment_draft.dart';
+import 'secure_storage_policy.dart';
 
 /// Contenido recibido mediante ACTION_SEND/ACTION_SEND_MULTIPLE de Android.
 ///
@@ -80,7 +81,7 @@ class AndroidSharedContent {
 class AndroidShareInbox {
   factory AndroidShareInbox({
     MethodChannel channel = const MethodChannel('hermes/share'),
-    FlutterSecureStorage secureStorage = const FlutterSecureStorage(),
+    FlutterSecureStorage secureStorage = sharedSecureStorage,
   }) => AndroidShareInbox._(channel, secureStorage);
 
   AndroidShareInbox._(this._channel, this._secure);

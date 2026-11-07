@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -20,10 +21,10 @@ class AboutScreen extends StatefulWidget {
 }
 
 class _AboutScreenState extends State<AboutScreen> {
-  /// Sitio oficial de la app (XPeta Lab). La política de privacidad enlaza a
-  /// la misma página que declara la ficha de Google Play.
-  static const _websiteUrl = 'https://hermes.xpetalab.dev';
-  static const _privacyPolicyUrl = 'https://hermes.xpetalab.dev/privacy';
+  /// Daeroh is a separate private downstream; never present the upstream
+  /// developer's privacy policy or website as our own.
+  static const _websiteUrl = 'https://github.com/ac-slay3r/Daeroh';
+
   static bool _appLicensesRegistered = false;
 
   static const _upstreamMitNotice = '''
@@ -74,6 +75,38 @@ SOFTWARE.
     }
   }
 
+  Future<void> _openPrivacyNote() async {
+    final note = await rootBundle.loadString('docs/PRIVACY.md');
+    if (!mounted) return;
+    await showHermesSurface<void>(
+      context: context,
+      surfaceKey: const ValueKey('daeroh-privacy-note'),
+      maxHeightFactor: 0.85,
+      builder: (dialogContext) => Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            HermesSurfaceHeader(
+              title: Strings.of(dialogContext).aboutPrivacyPolicyTitle,
+            ),
+            Flexible(child: Markdown(data: note, shrinkWrap: true)),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: Text(
+                  MaterialLocalizations.of(dialogContext).closeButtonLabel,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -81,7 +114,8 @@ SOFTWARE.
       LicenseRegistry.addLicense(() async* {
         final projectLicense = await rootBundle.loadString('LICENSE');
         yield LicenseEntryWithLineBreaks(const [
-          'Hermes Console',
+          'Daeroh',
+          'Hermes Console (upstream)',
         ], projectLicense);
         yield const LicenseEntryWithLineBreaks([
           'hermes-android (upstream)',
@@ -125,7 +159,7 @@ SOFTWARE.
           child: Row(
             children: [
               Image.asset(
-                'assets/branding/hermes_logo.webp',
+                'assets/branding/daeroh_logo.png',
                 width: 56,
                 height: 56,
                 // El master es 1024×1024; decodificar acotado al tamaño
@@ -142,7 +176,7 @@ SOFTWARE.
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Hermes Console',
+                      'Daeroh',
                       style: HermesType.display.copyWith(
                         color: colors.textPrimary,
                       ),
@@ -174,7 +208,7 @@ SOFTWARE.
               subtitle: s.aboutThirdParty,
               onTap: () => showLicensePage(
                 context: context,
-                applicationName: 'Hermes Console',
+                applicationName: 'Daeroh',
                 applicationVersion: 'v$_version',
               ),
             ),
@@ -193,8 +227,8 @@ SOFTWARE.
             ),
           ],
         ),
-        // Enlaces oficiales: web y política de privacidad. Solo URLs https
-        // propias y constantes (sin entrada del usuario).
+        // Privacy note is bundled locally; the private repo cannot serve
+        // recipients of a development APK without GitHub access.
         HermesSectionHeader(s.aboutSectionLinks),
         HermesListGroup(
           children: [
@@ -213,12 +247,7 @@ SOFTWARE.
               icon: Icons.policy_outlined,
               title: s.aboutPrivacyPolicyTitle,
               subtitle: s.aboutPrivacyPolicySub,
-              trailing: Icon(
-                Icons.open_in_new,
-                size: 18,
-                color: colors.textDisabled,
-              ),
-              onTap: () => _openLink(_privacyPolicyUrl),
+              onTap: _openPrivacyNote,
             ),
           ],
         ),

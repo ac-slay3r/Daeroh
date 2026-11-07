@@ -6,7 +6,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:whisper_ggml_plus/whisper_ggml_plus.dart';
 
@@ -24,6 +23,7 @@ import 'stt_remote.dart';
 import 'stt_sherpa.dart';
 import 'tts_engine.dart';
 import 'tts_model_manager.dart';
+import 'whisper_model_downloader.dart';
 import 'voice_lang.dart';
 import 'voice_settings.dart';
 
@@ -253,6 +253,10 @@ class VoiceService {
   int? _ttsBuildInFlightEpoch;
   int _ttsBuildEpoch = 0;
   SttEngine? _stt;
+  // Server engines probe availability before joining [_stt]. Several callers
+  // can check concurrently, so every pending probe remains revocable.
+  final Set<ServerSttEngine> _pendingServerStt = <ServerSttEngine>{};
+  Future<SttCheck>? _serverSttCheckInFlight;
   // Serializa liberaciones STT. Pause/Stop y X pueden encadenarse antes de que
   // el plugin termine de destruir AudioRecord; la salida debe esperar esa cola
   // antes de liberar las cachés nativas de Sherpa.
@@ -345,6 +349,14 @@ class VoiceService {
   /// verificar el ciclo reutilizar/parar/liberar sin hardware (FIX-1, TASK-022).
   @visibleForTesting
   SttEngine Function()? debugSttFactory;
+
+  /// Test-only server engine factory for exercising availability races without
+  /// platform plugins or a live STT endpoint.
+  @visibleForTesting
+  ServerSttEngine Function()? debugServerSttFactory;
+
+  @visibleForTesting
+  Future<String?> Function()? debugServerSttTokenLoader;
 
   /// Inyección de TTS para pruebas de la sesión sin plugins de plataforma.
   @visibleForTesting
@@ -1132,6 +1144,7 @@ class VoiceService {
     final prevStt = _settings.sttEngine;
     final prevWhisper = _settings.whisperModel;
     final prevSherpa = _settings.sherpaModel;
+    final prevLegacySttFallback = _settings.allowLegacyQueryTokenFallback;
     if (_settings.readAloudStopBehavior != s.readAloudStopBehavior ||
         _readAloudSession.snapshot.phase != ReadAloudPhase.idle) {
       // Una preferencia nueva nunca hereda un cursor con semántica antigua, y
@@ -1140,13 +1153,55 @@ class VoiceService {
     }
     _settings = s;
     bargeInEnabled.value = s.bargeInEnabled;
+    final legacyFallbackRevoked =
+        prevLegacySttFallback && !s.allowLegacyQueryTokenFallback;
+    Future<void>? legacyRevocationDisposal;
+    if (legacyFallbackRevoked) {
+      // This is a security revocation, not an ordinary settings change: block a
+      // pending legacy retry synchronously before any awaited preference I/O or
+      // queued engine disposal.
+      if (_voiceConversationActive && _voiceRouteSnapshot != null) {
+        final frozen = _voiceRouteSnapshot!;
+        _voiceRouteSnapshot = VoiceRouteSnapshot._(
+          kind: frozen.kind,
+          sttEngine: frozen.sttEngine,
+          ttsEngine: frozen.ttsEngine,
+          createdAtEpoch: frozen.createdAtEpoch,
+          settings: frozen._settings.copyWith(
+            allowLegacyQueryTokenFallback: false,
+          ),
+        );
+      }
+      final pendingServerStt = _pendingServerStt.toList(growable: false);
+      _pendingServerStt.clear();
+      for (final engine in pendingServerStt) {
+        engine.revokeLegacyQueryTokenFallback();
+      }
+      final oldStt = _stt;
+      if (oldStt is ServerSttEngine) {
+        oldStt.revokeLegacyQueryTokenFallback();
+        _stt = null;
+        _sttKind = null;
+        legacyRevocationDisposal = _disposeSttEngine(
+          oldStt,
+          reason: 'legacy_fallback_revoked',
+        );
+      }
+    }
     await s.save(_prefs);
     if (_voiceConversationActive && _voiceRouteSnapshot != null) {
-      // La conversación actual conserva su snapshot. Exit ya libera STT/TTS;
-      // las preferencias recién guardadas se resolverán en la siguiente entrada.
-      debugPrint(
-        '[voice-stab] ajustes de motores aplazados hasta la próxima conversación',
-      );
+      if (legacyFallbackRevoked) {
+        await legacyRevocationDisposal;
+        debugPrint(
+          '[voice-stab] fallback legacy revocado durante conversación activa',
+        );
+      } else {
+        // La conversación actual conserva su snapshot. Exit ya libera STT/TTS;
+        // las preferencias recién guardadas se resolverán en la siguiente entrada.
+        debugPrint(
+          '[voice-stab] ajustes de motores aplazados hasta la próxima conversación',
+        );
+      }
       return;
     }
     // Un cambio de voz no puede convivir con el modelo anterior. Invalida cola y
@@ -1156,12 +1211,15 @@ class VoiceService {
     // Reconstruir STT si cambió el motor o cualquiera de sus modelos locales.
     if (prevStt != s.sttEngine ||
         prevWhisper != s.whisperModel ||
-        prevSherpa != s.sherpaModel) {
+        prevSherpa != s.sherpaModel ||
+        (prevLegacySttFallback != s.allowLegacyQueryTokenFallback &&
+            !legacyFallbackRevoked)) {
       final oldStt = _stt;
       _stt = null;
       _sttKind = null;
       await _disposeSttEngine(oldStt, reason: 'settings_changed');
     }
+    await legacyRevocationDisposal;
   }
 
   // ── Clave de ElevenLabs (Keystore) ──────────────────────────────────
@@ -1176,7 +1234,8 @@ class VoiceService {
   static const String _serverSttTokenName = 'server_stt_token';
   String _serverTokenCache = '';
   Future<String?> serverSttToken() async {
-    final t = await _secure.readAppSecret(_serverSttTokenName);
+    final t = await (debugServerSttTokenLoader?.call() ??
+        _secure.readAppSecret(_serverSttTokenName));
     _serverTokenCache = t ?? '';
     return t;
   }
@@ -2382,11 +2441,16 @@ class VoiceService {
 
   /// Construye el motor de STT por servidor (faster-whisper). Usa el token
   /// cacheado en memoria (el Keystore es async; checkStt lo refresca antes).
-  ServerSttEngine _newServerEngine() => ServerSttEngine(
-    baseUrl: _engineSettings.serverSttUrl,
-    token: _serverTokenCache,
-    onLevel: (v) => micLevel.value = v,
-  );
+  ServerSttEngine _newServerEngine() =>
+      debugServerSttFactory?.call() ??
+      ServerSttEngine(
+        baseUrl: _engineSettings.serverSttUrl,
+        token: _serverTokenCache,
+        allowLegacyQueryTokenFallback:
+            _engineSettings.allowLegacyQueryTokenFallback,
+        lang: voiceLang,
+        onLevel: (v) => micLevel.value = v,
+      );
 
   SttEngine _sttEngine({bool forComposerDictation = false}) {
     final lang = _recycleSttIfLangChanged();
@@ -2487,6 +2551,18 @@ class VoiceService {
     final effectiveEngine = forComposerDictation
         ? _settings.sttEngine
         : effectiveConversationSttEngine;
+    if (effectiveEngine == SttEngineKind.server) {
+      final inFlight = _serverSttCheckInFlight;
+      if (inFlight != null) return inFlight;
+      late final Future<SttCheck> started;
+      started = _checkServerStt().whenComplete(() {
+        if (identical(_serverSttCheckInFlight, started)) {
+          _serverSttCheckInFlight = null;
+        }
+      });
+      _serverSttCheckInFlight = started;
+      return started;
+    }
     // FIX-1 (TASK-022): reutiliza el motor STT ya resuelto en vez de destruirlo
     // y reconstruirlo en CADA turno. saveSettings() ya pone _stt=null cuando
     // cambia el motor o el modelo Whisper, así que un _stt no nulo aquí ya es del
@@ -2509,9 +2585,7 @@ class VoiceService {
         kind,
       );
     }
-    if (_stt != null &&
-        (_sttKind == SttEngineKind.server ||
-            _sttKind == SttEngineKind.hermesServer)) {
+    if (_stt != null && _sttKind == SttEngineKind.hermesServer) {
       final oldStt = _stt;
       _stt = null;
       _sttKind = null;
@@ -2588,30 +2662,6 @@ class VoiceService {
       return const SttCheck(SttStatus.ready, SttEngineKind.hermesServer);
     }
 
-    if (effectiveEngine == SttEngineKind.server) {
-      if (_engineSettings.serverSttUrl.trim().isEmpty) {
-        return const SttCheck(
-          SttStatus.needsServerConfig,
-          SttEngineKind.server,
-        );
-      }
-      await serverSttToken(); // refresca el token cacheado desde el Keystore
-      final engine = _newServerEngine();
-      // Sin permiso de micro no podemos dictar aunque el servidor responda.
-      if (!await engine.available()) {
-        // Distingue "sin micro" (servidor OK) de "servidor no responde".
-        final serverOk = await engine.ping();
-        await engine.dispose();
-        return SttCheck(
-          serverOk ? SttStatus.needsMicPermission : SttStatus.needsServerConfig,
-          SttEngineKind.server,
-        );
-      }
-      _stt = engine;
-      _sttKind = SttEngineKind.server;
-      return const SttCheck(SttStatus.ready, SttEngineKind.server);
-    }
-
     // Motor del sistema (default).
     final sys = SystemSttEngine(lang: voiceLang);
     if (await sys.available()) {
@@ -2628,6 +2678,62 @@ class VoiceService {
     }
 
     return const SttCheck(SttStatus.systemUnavailable, SttEngineKind.system);
+  }
+
+  Future<SttCheck> _checkServerStt() async {
+    if (_disposed) {
+      return const SttCheck(SttStatus.needsServerConfig, SttEngineKind.server);
+    }
+    final existing = _stt;
+    if (existing != null && _sttKind == SttEngineKind.server) {
+      _stt = null;
+      _sttKind = null;
+      await _disposeSttEngine(existing, reason: 'server_recheck');
+    }
+    if (_disposed) {
+      return const SttCheck(SttStatus.needsServerConfig, SttEngineKind.server);
+    }
+    if (_engineSettings.serverSttUrl.trim().isEmpty) {
+      return const SttCheck(SttStatus.needsServerConfig, SttEngineKind.server);
+    }
+    await serverSttToken(); // Refresca el token cacheado desde el Keystore.
+    if (_disposed) {
+      return const SttCheck(SttStatus.needsServerConfig, SttEngineKind.server);
+    }
+    final engine = _newServerEngine();
+    _pendingServerStt.add(engine);
+    try {
+      // Sin permiso de micro no podemos dictar aunque el servidor responda.
+      final available = await engine.available();
+      if (!_pendingServerStt.contains(engine)) {
+        await engine.dispose();
+        return const SttCheck(SttStatus.needsServerConfig, SttEngineKind.server);
+      }
+      if (!available) {
+        // Distingue "sin micro" (servidor OK) de "servidor no responde".
+        final serverOk = await engine.ping();
+        if (!_pendingServerStt.contains(engine)) {
+          await engine.dispose();
+          return const SttCheck(
+            SttStatus.needsServerConfig,
+            SttEngineKind.server,
+          );
+        }
+        await engine.dispose();
+        return SttCheck(
+          serverOk ? SttStatus.needsMicPermission : SttStatus.needsServerConfig,
+          SttEngineKind.server,
+        );
+      }
+      _stt = engine;
+      _sttKind = SttEngineKind.server;
+      return const SttCheck(SttStatus.ready, SttEngineKind.server);
+    } catch (_) {
+      await engine.dispose();
+      rethrow;
+    } finally {
+      _pendingServerStt.remove(engine);
+    }
   }
 
   /// ¿La ruta elegida graba primero y transcribe al detener?
@@ -2897,28 +3003,11 @@ class VoiceService {
   /// lo espera. Idempotente.
   Future<void> downloadWhisperModel({void Function(double)? onProgress}) async {
     final path = await _whisperPath();
-    final file = File(path);
-    if (file.existsSync()) {
-      onProgress?.call(1);
-      return;
-    }
-    final req = http.Request('GET', whisperModel.modelUri);
-    final res = await http.Client().send(req);
-    if (res.statusCode != 200) {
-      throw Exception('Model download failed (${res.statusCode}).');
-    }
-    final total = res.contentLength ?? 0;
-    var received = 0;
-    final tmp = File('$path.part');
-    final sink = tmp.openWrite();
-    await for (final chunk in res.stream) {
-      sink.add(chunk);
-      received += chunk.length;
-      if (total > 0) onProgress?.call(received / total);
-    }
-    await sink.close();
-    await tmp.rename(path);
-    onProgress?.call(1);
+    await WhisperModelDownloader().download(
+      source: whisperModel.modelUri,
+      target: File(path),
+      onProgress: onProgress,
+    );
   }
 
   // ── Modelos del STT en vivo (sherpa-onnx) ───────────────────────────
@@ -2949,6 +3038,11 @@ class VoiceService {
     disableHermesServerDictation(force: true);
     disableNativeVoice(force: true);
     _disposed = true;
+    final pendingServerStt = _pendingServerStt.toList(growable: false);
+    _pendingServerStt.clear();
+    for (final engine in pendingServerStt) {
+      engine.revokeLegacyQueryTokenFallback();
+    }
     _activeConversationSpeechLease = null;
     _cancelHeavyModelIdleRelease();
     _memoryPressureEvictionPending = false;

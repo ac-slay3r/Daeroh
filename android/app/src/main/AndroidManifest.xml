@@ -65,7 +65,7 @@
         tools:node="remove" />
     <application
         android:name=".HermesApplication"
-        android:label="Hermes Console"
+        android:label="Daeroh"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:allowBackup="false"
@@ -138,13 +138,13 @@
              permiten proyectar un glifo limpio para el trabajo en segundo plano
              y un orbe específico para la conversación de voz. -->
         <meta-data
-            android:name="dev.xpetalab.hermesconsole.service.NOTIFICATION_ICON"
+            android:name="cool.n0thing.daeroh.service.NOTIFICATION_ICON"
             android:resource="@drawable/ic_stat_hermes" />
         <meta-data
-            android:name="dev.xpetalab.hermesconsole.voice.NOTIFICATION_ICON_ACTIVE"
+            android:name="cool.n0thing.daeroh.voice.NOTIFICATION_ICON_ACTIVE"
             android:resource="@drawable/ic_stat_voice_orb_active" />
         <meta-data
-            android:name="dev.xpetalab.hermesconsole.voice.NOTIFICATION_ICON_PAUSED"
+            android:name="cool.n0thing.daeroh.voice.NOTIFICATION_ICON_PAUSED"
             android:resource="@drawable/ic_stat_voice_orb_paused" />
         <!-- Servicio Flutter de automatización y audio. La escucha usa
              remoteMessaging en API >=35 y dataSync en API <=34;

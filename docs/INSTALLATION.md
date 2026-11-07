@@ -12,7 +12,7 @@ Do not install or share a `qa`, `debug`, or `profile` APK outside the internal
 validation flow. Those builds use different guarantees and, in the QA flavor,
 a different package name; they are not distribution artifacts.
 
-Hermes Console requires Android API 24 or later, with Android 10+ recommended.
+Hermes Console requires Android 10 (API 29) or later.
 The app does not include Hermes Agent or an AI service. Before connecting it,
 you need a compatible Hermes server that you control.
 

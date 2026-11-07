@@ -18,6 +18,7 @@ import '../../l10n/app_localizations.dart';
 import '../../main.dart';
 import '../models/agent_profile.dart';
 import '../models/dock_config.dart';
+import '../services/chat_preview_store.dart';
 import '../services/connection_manager.dart';
 import '../services/dock_preferences_store.dart';
 import '../services/tui_gateway_client.dart';
@@ -244,6 +245,11 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
         await widget.connManager.setActiveProfile(widget.connection.id, '');
       }
       await _client.deleteProfile(p.name);
+      // Remote deletion succeeded. Local cleanup is independently best-effort:
+      // a Keystore failure must not misreport the successful remote operation.
+      try {
+        await ChatPreviewStore.deleteForProfile(widget.connection.id, p.name);
+      } catch (_) {}
       _snack(str.prfDeleted(p.name));
       await _load();
     } catch (e) {
@@ -658,31 +664,9 @@ class _IdentityPreset {
 
 List<_IdentityPreset> _identityPresets(Strings s) => [
   _IdentityPreset(s.prfPresetInherit, '↗', ''),
-  _IdentityPreset(s.prfPresetTechnical, '🛠', '''# Identidad
-
-Soy un asistente técnico especializado en programación, infraestructura y
-administración de sistemas. Respondo de forma concisa y directa, con código
-funcional cuando corresponde.
-
-## Estilo
-- Respuestas cortas y precisas; expansión solo si se pide
-- Código funcional sobre explicaciones largas
-- Señalo problemas sin rodeos
-'''),
-  _IdentityPreset(s.prfPresetHomelab, '🖥', '''# Identidad
-
-Soy el operador de esta instancia homelab. Gestiono servicios, automatizo
-tareas repetitivas y mantengo la infraestructura personal segura y eficiente.
-
-## Comportamiento
-- Aviso proactivamente de cambios con impacto en servicios activos
-- Rollback plan disponible antes de cambios disruptivos
-'''),
-  _IdentityPreset(s.prfPresetMinimal, '◦', '''# Identidad
-
-Responde con la menor cantidad de palabras que transmita la información
-completa. Sin preámbulos, sin despedidas, sin confirmaciones innecesarias.
-'''),
+  _IdentityPreset(s.prfPresetTechnical, '🛠', s.prfPresetTechnicalContent),
+  _IdentityPreset(s.prfPresetHomelab, '🖥', s.prfPresetHomelabContent),
+  _IdentityPreset(s.prfPresetMinimal, '◦', s.prfPresetMinimalContent),
 ];
 
 class ProfileBuilderScreen extends StatefulWidget {

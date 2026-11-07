@@ -354,4 +354,20 @@ void main() {
     expect(degraded?.kind, PreparedTurnRetryBoundaryKind.knownMissing);
     expect(degraded?.createdSessionId, isNull);
   });
+
+  test('queued reply locale survives persistence and state transitions', () {
+    final queued = turn(const []).copyWith(replyLanguage: 'es', queued: true);
+    final restored = PreparedTurn.fromJson(queued.toJson());
+    expect(restored.replyLanguage, 'es');
+    expect(
+      restored.copyWith(state: PreparedTurnState.submitting).replyLanguage,
+      'es',
+    );
+    expect(
+      PreparedTurn.fromJson(turn(const []).toJson()).replyLanguage,
+      isNull,
+    );
+    final invalid = queued.toJson()..['reply_language'] = 'fr';
+    expect(PreparedTurn.fromJson(invalid).replyLanguage, isNull);
+  });
 }

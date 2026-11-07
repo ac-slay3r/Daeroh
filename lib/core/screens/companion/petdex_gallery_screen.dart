@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 
 import '../../../l10n/app_localizations.dart';
@@ -186,6 +188,7 @@ class _PetdexGalleryScreenState extends State<PetdexGalleryScreen> {
           valueListenable: _installRev,
           builder: (_, _, _) => _PetdexDetailSheet(
             pet: pet,
+            service: _service,
             installing: _installing.contains(pet.slug),
             error: _installError[pet.slug],
             onInstall: () => _install(pet, sheetCtx),
@@ -345,10 +348,7 @@ class _PetdexGalleryScreenState extends State<PetdexGalleryScreen> {
                           final pet = pets[i];
                           final busy = _installing.contains(pet.slug);
                           return ListTile(
-                            leading: _PetdexThumb(
-                              url: pet.spritesheetUrl.toString(),
-                              colors: colors,
-                            ),
+                            leading: _PetdexThumb(colors: colors),
                             title: Text(
                               pet.displayName,
                               maxLines: 1,
@@ -388,13 +388,10 @@ class _PetdexGalleryScreenState extends State<PetdexGalleryScreen> {
   }
 }
 
-/// Miniatura del **primer frame** (192×208) del spritesheet, recortado del
-/// sheet completo. Carga perezosa (solo filas visibles) y cacheada por Flutter;
-/// si falla, muestra un icono en vez de romper la fila.
+/// Manifest rows never fetch artwork; only opening a detail requests bytes.
 class _PetdexThumb extends StatelessWidget {
-  final String url;
   final HermesThemeColors colors;
-  const _PetdexThumb({required this.url, required this.colors});
+  const _PetdexThumb({required this.colors});
 
   @override
   Widget build(BuildContext context) {
@@ -406,28 +403,7 @@ class _PetdexThumb extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
       ),
       clipBehavior: Clip.antiAlias,
-      child: FittedBox(
-        fit: BoxFit.contain,
-        child: ClipRect(
-          child: SizedBox(
-            // Un frame del grid estándar de Petdex/Fase A.
-            width: 192,
-            height: 208,
-            child: Image.network(
-              url,
-              fit: BoxFit.none,
-              alignment: Alignment.topLeft,
-              filterQuality: FilterQuality.medium,
-              gaplessPlayback: true,
-              loadingBuilder: (context, child, progress) =>
-                  progress == null ? child : const SizedBox.shrink(),
-              errorBuilder: (context, error, stack) => Center(
-                child: Icon(Icons.pets, color: colors.textSecondary, size: 96),
-              ),
-            ),
-          ),
-        ),
-      ),
+      child: Icon(Icons.pets, color: colors.textSecondary),
     );
   }
 }
@@ -462,6 +438,7 @@ class _ErrorState extends StatelessWidget {
 
 class _PetdexDetailSheet extends StatelessWidget {
   final PetdexRemotePet pet;
+  final PetdexRemoteService service;
   final bool installing;
 
   /// Causa del último fallo de instalación, visible dentro del sheet
@@ -471,6 +448,7 @@ class _PetdexDetailSheet extends StatelessWidget {
 
   const _PetdexDetailSheet({
     required this.pet,
+    required this.service,
     required this.installing,
     required this.onInstall,
     this.error,
@@ -502,29 +480,10 @@ class _PetdexDetailSheet extends StatelessWidget {
           Center(
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxHeight: 180, maxWidth: 220),
-              child: Image.network(
-                pet.spritesheetUrl.toString(),
-                fit: BoxFit.contain,
-                // Preview acotado al cuadro de 220 dp de ancho (×3 de DPR): el
-                // spritesheet remoto se decodifica reducido en memoria. Solo un
-                // lado para conservar la proporción del sheet.
-                cacheWidth: 660,
-                loadingBuilder: (context, child, progress) {
-                  if (progress == null) return child;
-                  return const SizedBox(
-                    height: 120,
-                    child: Center(child: CircularProgressIndicator()),
-                  );
-                },
-                errorBuilder: (context, error, stack) => SizedBox(
-                  height: 120,
-                  child: Center(
-                    child: Icon(
-                      Icons.image_not_supported_outlined,
-                      color: colors.textSecondary,
-                    ),
-                  ),
-                ),
+              child: _PetdexPreview(
+                key: ValueKey((service, pet.spritesheetUrl)),
+                service: service,
+                url: pet.spritesheetUrl,
               ),
             ),
           ),
@@ -562,4 +521,58 @@ class _PetdexDetailSheet extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Route-local future: installation rebuilds do not restart the download.
+/// The service/URL key replaces this state for another pet. FutureBuilder
+/// ignores completions after disposal, so a dismissed preview cannot paint
+/// a later route. Only the resized provider enters Flutter's decoded cache.
+class _PetdexPreview extends StatefulWidget {
+  final PetdexRemoteService service;
+  final Uri url;
+
+  const _PetdexPreview({required this.service, required this.url, super.key});
+
+  @override
+  State<_PetdexPreview> createState() => _PetdexPreviewState();
+}
+
+class _PetdexPreviewState extends State<_PetdexPreview> {
+  late final Future<Uint8List> _bytes = widget.service.loadImage(widget.url);
+
+  Widget _placeholder(BuildContext context) => SizedBox(
+    height: 120,
+    child: Center(
+      child: Icon(
+        Icons.image_not_supported_outlined,
+        color: Theme.of(context).hermes.textSecondary,
+      ),
+    ),
+  );
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<Uint8List>(
+    future: _bytes,
+    builder: (context, snapshot) {
+      if (snapshot.hasError) return _placeholder(context);
+      if (!snapshot.hasData) {
+        return const SizedBox(
+          height: 120,
+          child: Center(child: CircularProgressIndicator()),
+        );
+      }
+      return Image(
+        image: ResizeImage(
+          MemoryImage(snapshot.data!),
+          // Bound BOTH dimensions (220×180 dp at up to 3×), preserving
+          // aspect ratio even for unusually tall/wide remote sheets.
+          width: 660,
+          height: 540,
+          policy: ResizeImagePolicy.fit,
+        ),
+        fit: BoxFit.contain,
+        errorBuilder: (context, error, stack) => _placeholder(context),
+      );
+    },
+  );
 }

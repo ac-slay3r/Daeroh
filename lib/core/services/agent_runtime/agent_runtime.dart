@@ -5,8 +5,9 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import '../secure_storage_policy.dart';
 
 /// Estado de un runtime de agente desde el punto de vista de la Consola.
 enum AgentRuntimeStatus {
@@ -143,7 +144,7 @@ class AgentRuntimeConsts {
   static Future<String> getOrGenerateLocalToken() async {
     // Limpia cualquier UUID heredado de versiones anteriores (best-effort) para
     // que no quede ruido en SecureStorage; el token efectivo es siempre el fijo.
-    const storage = FlutterSecureStorage();
+    const storage = sharedSecureStorage;
     const legacyKey = 'local_agent_session_token';
     try {
       final legacy = await storage.read(key: legacyKey);
@@ -341,7 +342,7 @@ echo CANCELADO
   /// (lifecycle `resumed`) para reintentar el RUN_COMMAND real, y `exit` cierra
   /// la sesión. `grep -qxF` evita duplicar la propiedad.
   static const String bootstrapExternalAppsCommand =
-      r'''mkdir -p ~/.termux; grep -qxF allow-external-apps=true ~/.termux/termux.properties 2>/dev/null || printf 'allow-external-apps=true\n' >> ~/.termux/termux.properties; am start -n dev.xpetalab.hermesconsole/com.hermesagent.hermes_android.MainActivity >/dev/null 2>&1; exit''';
+      r'''mkdir -p ~/.termux; grep -qxF allow-external-apps=true ~/.termux/termux.properties 2>/dev/null || printf 'allow-external-apps=true\n' >> ~/.termux/termux.properties; am start -n cool.n0thing.daeroh/com.hermesagent.hermes_android.MainActivity >/dev/null 2>&1; exit''';
 
   /// Para el agente Hermes en ejecución dentro de Termux. Envía TERM primero
   /// (graceful) y, si no muere en 2 s, KILL. Cubre gateway (:8642) y
@@ -378,7 +379,7 @@ kill_ports(){ sig="$1"; shift; for port in "$@"; do for SS in ss /system/bin/ss;
 #  - `pkill -x` (nombre exacto) es POCO FIABLE en el procps de Termux: no encontró
 #    ni a ollama (comm="ollama") → no usar -x.
 #  - `pkill hermes` por comm matchea TAMBIÉN el proceso de la app
-#    (dev.xpetalab.hermesconsole); como el stop corre con otro uid no la mata,
+#    (cool.n0thing.daeroh); como el stop corre con otro uid no la mata,
 #    pero es frágil → gateway/dashboard se matan por cmdline EXACTO (subcomando),
 #    no por comm.
 #  - Ollama sí se mata bien por comm con `pkill ollama` (sin -x), patrón ya usado

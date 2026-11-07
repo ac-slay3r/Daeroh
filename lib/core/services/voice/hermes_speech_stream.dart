@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:web_socket_channel/io.dart';
+import '../../utils/private_websocket_client.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../connection_manager.dart';
@@ -148,6 +149,7 @@ class HermesSpeechStreamClient {
              IOWebSocketChannel.connect(
                uri,
                headers: headers,
+               customClient: privateWebSocketHttpClient,
                pingInterval: const Duration(seconds: 20),
                connectTimeout: connectTimeout,
              ),

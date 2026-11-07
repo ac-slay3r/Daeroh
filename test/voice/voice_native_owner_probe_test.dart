@@ -39,7 +39,7 @@ void main() {
         () async {
           SharedPreferences.setMockInitialValues({});
           final prefs = await SharedPreferences.getInstance();
-          const identity = 'http://owner.test:9119';
+          const identity = 'http://127.0.0.20:9119';
           await NativeVoiceModeStore(
             prefs,
           ).write(identity, NativeVoiceMode.server);
@@ -81,12 +81,12 @@ void main() {
           final connection = SavedConnection(
             id: 'owner',
             label: 'owner',
-            host: 'owner.test',
+            host: '127.0.0.20',
             port: 8642,
             apiKey: String.fromCharCodes([107]),
           );
           DashboardClient dash(CountClient client) => DashboardClient(
-            host: 'owner.test',
+            host: '127.0.0.20',
             port: 9119,
             manualToken: String.fromCharCodes([116]),
             httpClientOverride: client,
@@ -123,7 +123,7 @@ void main() {
                 currentConnection = SavedConnection(
                   id: 'B',
                   label: 'B',
-                  host: 'b.test',
+                  host: '127.0.0.21',
                   port: 8642,
                   apiKey: String.fromCharCodes([107]),
                 );

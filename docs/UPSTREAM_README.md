@@ -19,7 +19,7 @@
 <p align="center">
   <a href="https://hermes.xpetalab.dev"><img alt="Website" src="https://img.shields.io/badge/Website-hermes.xpetalab.dev-F59E0B?style=flat-square&logo=googlechrome&logoColor=white"></a>
   <a href="LICENSE"><img alt="GPL-3.0-only" src="https://img.shields.io/badge/license-GPL--3.0--only-7C3AED?style=flat-square"></a>
-  <img alt="Android 7+" src="https://img.shields.io/badge/Android-7.0%2B-3DDC84?style=flat-square&logo=android&logoColor=white">
+  <img alt="Android 10+" src="https://img.shields.io/badge/Android-10%2B-3DDC84?style=flat-square&logo=android&logoColor=white">
 </p>
 
 <p align="center">

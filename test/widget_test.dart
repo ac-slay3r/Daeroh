@@ -55,7 +55,7 @@ class _EmptyHomeClient extends ApiClient {
       );
 
   @override
-  Future<bool> healthCheck() async => true;
+  Future<bool> healthCheck({String? profile, bool verifySessionAccess = true}) async => true;
 
   @override
   Future<List<Session>> getSessions({
@@ -101,7 +101,7 @@ class _DeferredHomeClient extends ApiClient {
   final Completer<bool> health = Completer<bool>();
 
   @override
-  Future<bool> healthCheck() => health.future;
+  Future<bool> healthCheck({String? profile, bool verifySessionAccess = true}) => health.future;
 
   @override
   Future<List<Session>> getSessions({
@@ -344,7 +344,7 @@ void main() {
       // El glow de fondo usa repeat(): NO usar pumpAndSettle (no se asienta).
       await tester.pump(const Duration(milliseconds: 50));
 
-      expect(find.text('Hermes Console'), findsOneWidget);
+      expect(find.text('Daeroh'), findsOneWidget);
       expect(find.text('Saltar'), findsOneWidget);
       // Botón de avance (aún no es la última página).
       expect(find.text('Siguiente'), findsOneWidget);
@@ -384,7 +384,7 @@ void main() {
       );
       await tester.pump(const Duration(milliseconds: 50));
 
-      expect(find.text('Hermes Console'), findsOneWidget);
+      expect(find.text('Daeroh'), findsOneWidget);
       expect(find.text('Siguiente'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });

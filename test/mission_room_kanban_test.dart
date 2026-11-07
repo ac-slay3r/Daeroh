@@ -27,7 +27,7 @@ void main() {
           'capabilities_$connectionId': jsonEncode(matrix.toJson()),
         });
         final dashboard = DashboardClient(
-          host: 'hermes.local',
+          host: '127.0.0.1',
           manualToken: 'session-token',
           httpClientOverride: MockClient((_) async {
             requests++;
@@ -38,7 +38,7 @@ void main() {
           SavedConnection(
             id: connectionId,
             label: 'Room QA',
-            host: 'hermes.local',
+            host: '127.0.0.1',
             port: 8642,
             apiKey: 'gateway-key',
           ),
@@ -81,7 +81,7 @@ void main() {
     'tracked create resolves the authoritative current board slug',
     () async {
       final dashboard = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         manualToken: 'session-token',
         httpClientOverride: MockClient(
           (_) async => http.Response(
@@ -100,7 +100,7 @@ void main() {
         SavedConnection(
           id: 'room-board-target',
           label: 'Room QA',
-          host: 'hermes.local',
+          host: '127.0.0.1',
           port: 8642,
           apiKey: 'gateway-key',
         ),
@@ -119,7 +119,7 @@ void main() {
   test('current board snapshot is pinned to its authoritative slug', () async {
     final requests = <Uri>[];
     final dashboard = DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       manualToken: 'session-token',
       httpClientOverride: MockClient((request) async {
         requests.add(request.url);
@@ -150,7 +150,7 @@ void main() {
       SavedConnection(
         id: 'room-current-board',
         label: 'Room QA',
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 8642,
         apiKey: 'gateway-key',
       ),
@@ -171,7 +171,7 @@ void main() {
   test('legacy current board keeps the compatibility locator', () async {
     final requests = <Uri>[];
     final dashboard = DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       manualToken: 'session-token',
       httpClientOverride: MockClient((request) async {
         requests.add(request.url);
@@ -185,7 +185,7 @@ void main() {
       SavedConnection(
         id: 'room-legacy-board',
         label: 'Room QA',
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 8642,
         apiKey: 'gateway-key',
       ),
@@ -204,7 +204,7 @@ void main() {
   test('200 board catalog without a valid board fails closed', () async {
     var posts = 0;
     final dashboard = DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       manualToken: 'session-token',
       httpClientOverride: MockClient((request) async {
         if (request.method == 'POST') posts++;
@@ -218,7 +218,7 @@ void main() {
       SavedConnection(
         id: 'room-empty-board-catalog',
         label: 'Room QA',
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 8642,
         apiKey: 'gateway-key',
       ),
@@ -232,7 +232,7 @@ void main() {
 
   test('current board outside the advertised catalog fails closed', () async {
     final dashboard = DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       manualToken: 'session-token',
       httpClientOverride: MockClient(
         (_) async => http.Response(
@@ -250,7 +250,7 @@ void main() {
       SavedConnection(
         id: 'room-invalid-current-board',
         label: 'Room QA',
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 8642,
         apiKey: 'gateway-key',
       ),
@@ -266,7 +266,7 @@ void main() {
     () async {
       late http.Request captured;
       final dashboard = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         manualToken: 'session-token',
         httpClientOverride: MockClient((request) async {
           if (request.method == 'GET') {
@@ -292,7 +292,7 @@ void main() {
         SavedConnection(
           id: 'room-kanban',
           label: 'Room QA',
-          host: 'hermes.local',
+          host: '127.0.0.1',
           port: 8642,
           apiKey: 'gateway-key',
         ),
@@ -325,7 +325,7 @@ void main() {
     'createTaskTracked rejects response without authoritative task id',
     () async {
       final dashboard = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         manualToken: 'session-token',
         httpClientOverride: MockClient((request) async {
           if (request.method == 'GET') {
@@ -342,7 +342,7 @@ void main() {
         SavedConnection(
           id: 'room-kanban',
           label: 'Room QA',
-          host: 'hermes.local',
+          host: '127.0.0.1',
           port: 8642,
           apiKey: 'gateway-key',
         ),
@@ -363,7 +363,7 @@ void main() {
   test('tracked create reconciles an existing key before any POST', () async {
     var postCalls = 0;
     final dashboard = DashboardClient(
-      host: 'hermes.local',
+      host: '127.0.0.1',
       manualToken: 'session-token',
       httpClientOverride: MockClient((request) async {
         if (request.method == 'POST') postCalls++;
@@ -393,7 +393,7 @@ void main() {
       SavedConnection(
         id: 'room-reconcile',
         label: 'Room QA',
-        host: 'hermes.local',
+        host: '127.0.0.1',
         port: 8642,
         apiKey: 'gateway-key',
       ),
@@ -416,7 +416,7 @@ void main() {
     'authoritative roster never turns schema failure into empty success',
     () async {
       final dashboard = DashboardClient(
-        host: 'hermes.local',
+        host: '127.0.0.1',
         manualToken: 'session-token',
         httpClientOverride: MockClient(
           (_) async => http.Response('{"unexpected":[]}', 200),
@@ -426,7 +426,7 @@ void main() {
         SavedConnection(
           id: 'room-roster',
           label: 'Room QA',
-          host: 'hermes.local',
+          host: '127.0.0.1',
           port: 8642,
           apiKey: 'gateway-key',
         ),

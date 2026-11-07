@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../models/session.dart';
+import 'secure_storage_policy.dart';
 
 /// Where a manual `/compress` ran, so a relaunched app can ask the gateway
 /// whether it is still running.
@@ -23,7 +24,7 @@ abstract interface class CompressionRestoreStorage {
 final class FlutterSecureCompressionRestoreStorage
     implements CompressionRestoreStorage {
   FlutterSecureCompressionRestoreStorage({FlutterSecureStorage? secureStorage})
-    : _secureStorage = secureStorage ?? const FlutterSecureStorage();
+    : _secureStorage = secureStorage ?? sharedSecureStorage;
 
   static const storageKey = 'compression_restore_v1';
 

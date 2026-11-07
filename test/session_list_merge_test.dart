@@ -45,9 +45,16 @@ class _SessionListApiClient extends ApiClient {
   final List<Session> remoteSessions;
   bool healthy = true;
   int sessionReads = 0;
+  final List<String?> healthProfiles = [];
 
   @override
-  Future<bool> healthCheck() async => healthy;
+  Future<bool> healthCheck({
+    String? profile,
+    bool verifySessionAccess = true,
+  }) async {
+    healthProfiles.add(profile);
+    return healthy;
+  }
 
   @override
   Future<List<Session>> getSessions({
@@ -70,6 +77,55 @@ Widget _host(Widget child) => MaterialApp(
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  testWidgets('the library health probe uses the active profile scope', (
+    tester,
+  ) async {
+    // A profile-scoped Gateway key is rejected on unscoped /api/sessions by
+    // design. Probing unscoped marked a healthy named-profile library as
+    // offline and kept retrying.
+    const channel = MethodChannel(
+      'plugins.it_nomads.com/flutter_secure_storage',
+    );
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      channel,
+      (call) async => call.method == 'readAll' ? <String, String>{} : null,
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        null,
+      ),
+    );
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final manager = await ConnectionManager.create(prefs);
+    final connection = SavedConnection(
+      id: 'conn-merge',
+      label: 'QA',
+      host: 'hermes.test',
+      port: 443,
+      apiKey: 'test-key',
+      useHttps: true,
+      kind: InstanceKind.vps,
+    );
+    await manager.setActiveProfile(connection.id, 'android');
+    final client = _SessionListApiClient(const []);
+
+    await tester.pumpWidget(
+      _host(
+        SessionListScreen(
+          connection: connection,
+          connManager: manager,
+          clientOverride: client,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(client.healthProfiles, isNotEmpty);
+    expect(client.healthProfiles, everyElement('android'));
+  });
 
   test('a remote session stays authoritative over a newer local draft', () {
     final remote = _session(

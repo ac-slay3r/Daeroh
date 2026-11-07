@@ -120,7 +120,7 @@ class _HomeActivityClient extends ApiClient {
   int sessionReads = 0;
 
   @override
-  Future<bool> healthCheck() async => true;
+  Future<bool> healthCheck({String? profile, bool verifySessionAccess = true}) async => true;
 
   @override
   Future<List<Session>> getSessions({
@@ -1193,4 +1193,3 @@ final class _MemoryRestoreStorage implements CompressionRestoreStorage {
   @override
   Future<void> write(String value) async => this.value = value;
 }
-

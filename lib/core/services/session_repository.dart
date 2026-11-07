@@ -166,6 +166,7 @@ final class SessionRepository {
   int? _total;
   bool _exhausted = false;
   Future<SessionLibrarySnapshot>? _nextPageFlight;
+  final Map<String, Future<SessionLibrarySnapshot>> _pageZeroFlights = {};
   final Set<String> _deletionTombstones = <String>{};
 
   SessionRepository(this._dashboard, this._gateway) : _ownsDashboard = false;
@@ -206,16 +207,37 @@ final class SessionRepository {
     }
   }
 
+  /// Coalesces identical page-zero reads. Callers with an observed data
+  /// invalidation set [force] so that their newer read cannot be satisfied by
+  /// a request that began before that invalidation.
   Future<SessionLibrarySnapshot> refresh(
     SessionLibraryQuery query, {
     Iterable<String> keepIds = const <String>[],
-  }) async {
+    bool force = false,
+  }) {
+    final retainedIds = Set<String>.unmodifiable(keepIds);
+    final flightKey = _pageZeroFlightKey(query, retainedIds);
+    final inFlight = _pageZeroFlights[flightKey];
+    if (!force && inFlight != null) return inFlight;
+
+    final future = _refresh(query, retainedIds);
+    _pageZeroFlights[flightKey] = future;
+    return future.whenComplete(() {
+      if (identical(_pageZeroFlights[flightKey], future)) {
+        _pageZeroFlights.remove(flightKey);
+      }
+    });
+  }
+
+  Future<SessionLibrarySnapshot> _refresh(
+    SessionLibraryQuery query,
+    Set<String> retainedIds,
+  ) async {
     final previousFingerprint = _query?.fingerprint;
     final previousSource = _source;
     final epoch = ++_queryEpoch;
     final deletionTombstones = Set<String>.of(_deletionTombstones);
     final fingerprint = query.fingerprint;
-    final retainedIds = Set<String>.unmodifiable(keepIds);
     _query = query;
     try {
       final page = await _loadDashboardPage(query, 0);
@@ -412,6 +434,14 @@ final class SessionRepository {
         else
           row,
     ]);
+  }
+
+  static String _pageZeroFlightKey(
+    SessionLibraryQuery query,
+    Set<String> retainedIds,
+  ) {
+    final canonicalIds = retainedIds.toList()..sort();
+    return '${query.fingerprint}\u001e${canonicalIds.join('\u001f')}';
   }
 
   bool _isCurrent(int epoch, String fingerprint) =>

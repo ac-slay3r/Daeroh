@@ -473,7 +473,7 @@ List<CapabilityItem> mergeSkills({
     }
   }
   for (final skill in installed) {
-    if (!used.contains(skill.name)) merged.add(skill);
+    if (used.add(skill.name)) merged.add(skill);
   }
   return merged;
 }

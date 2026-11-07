@@ -13,6 +13,7 @@ import '../../l10n/app_localizations.dart';
 import '../config/flavor.dart';
 import '../services/connection_manager.dart';
 import '../utils/transport_privacy.dart';
+import '../utils/private_http_client.dart';
 import '../theme/app_theme.dart';
 import '../widgets/accent_card.dart';
 import '../widgets/general_dock_shell.dart';
@@ -25,6 +26,61 @@ import 'onboarding/welcome_mode_screen.dart';
 import '../widgets/hermes_app_bar.dart';
 import '../design/hermes_design.dart'
     show HermesDialogAction, HermesDialogActionStyle, showHermesDialog;
+
+/// Probes the public health endpoint and profile-owned session inventory.
+///
+/// Health is always unscoped. A named profile's saved key must instead prove
+/// session access below `/p/<profile>/`; default and empty profiles preserve
+/// the historical unprefixed session route.
+Future<InstanceStatus> fetchGatewayInstanceStatus(
+  SavedConnection conn, {
+  String profile = '',
+}) async {
+  try {
+    final base = TransportPrivacy.requireAllowed(conn.baseUrl);
+    final client = PrivateHttpClient(http.Client());
+    try {
+      final headers = {
+        'Authorization': 'Bearer ${conn.apiKey}',
+        'Content-Type': 'application/json',
+      };
+      final health = await client
+          .get(Uri.parse('$base/health'), headers: headers)
+          .timeout(const Duration(seconds: 8));
+
+      if (health.statusCode == 401 || health.statusCode == 403) {
+        return InstanceStatus.error;
+      }
+      if (health.statusCode != 200) return InstanceStatus.offline;
+
+      final endpoint = ApiClient.profileEndpoint(
+        'api/sessions',
+        profile: profile,
+      );
+      final sessions = await client
+          .get(
+            Uri.parse(
+              '$base/$endpoint',
+            ).replace(queryParameters: const {'limit': '0'}),
+            headers: headers,
+          )
+          .timeout(const Duration(seconds: 8));
+
+      if (sessions.statusCode == 200) return InstanceStatus.online;
+      if (sessions.statusCode == 401 || sessions.statusCode == 403) {
+        return InstanceStatus.error;
+      }
+      return InstanceStatus.offline;
+    } finally {
+      client.close();
+    }
+  } on TimeoutException {
+    return InstanceStatus.offline;
+  } catch (error) {
+    debugPrint('[gateway-manager] status probe failed (${error.runtimeType})');
+    return InstanceStatus.offline;
+  }
+}
 
 class GatewayManagerScreen extends StatefulWidget {
   final ConnectionManager connManager;
@@ -99,78 +155,12 @@ class _GatewayManagerScreenState extends State<GatewayManagerScreen> {
   Future<void> _checkSingle(SavedConnection conn) async {
     if (!mounted) return;
     setState(() => _statuses[conn.id] = InstanceStatus.checking);
-    final status = await _fetchStatus(conn);
+    final status = await fetchGatewayInstanceStatus(
+      conn,
+      profile: widget.connManager.activeProfileFor(conn.id),
+    );
     if (!mounted) return;
     setState(() => _statuses[conn.id] = status);
-  }
-
-  /// Fetches /health and maps the response to an [InstanceStatus].
-  ///
-  /// The current Hermes Gateway /health endpoint returns HTTP 200 when
-  /// the server is up and the API key is valid (checked via /api/sessions).
-  /// It does not currently expose a `mode` or `readOnly` field in its body,
-  /// so [InstanceStatus.readOnly] and [InstanceStatus.syncing] are supported
-  /// by the widget but are not sourced from live data. If a future version of
-  /// the health endpoint adds e.g. `{"status":"read_only"}` or
-  /// `{"status":"syncing"}`, extend the body-parsing block below.
-  static Future<InstanceStatus> _fetchStatus(SavedConnection conn) async {
-    try {
-      final base = TransportPrivacy.requireAllowed(conn.baseUrl);
-      final client = http.Client();
-      try {
-        final res = await client
-            .get(
-              Uri.parse('$base/health'),
-              headers: {
-                'Authorization': 'Bearer ${conn.apiKey}',
-                'Content-Type': 'application/json',
-              },
-            )
-            .timeout(const Duration(seconds: 8));
-
-        if (res.statusCode == 401 || res.statusCode == 403) {
-          return InstanceStatus.error;
-        }
-        if (res.statusCode != 200) return InstanceStatus.offline;
-
-        // Future-proof: if /health body carries a status field, map it.
-        // Currently this block never fires because Hermes /health
-        // returns a plain `{"ok":true}` or similar without a `status` key.
-        // Uncomment and extend when/if the backend adds it.
-        // try {
-        //   final body = jsonDecode(res.body) as Map<String, dynamic>?;
-        //   final mode = body?['status'] as String?;
-        //   if (mode == 'read_only') return InstanceStatus.readOnly;
-        //   if (mode == 'syncing') return InstanceStatus.syncing;
-        // } catch (_) {}
-
-        // Confirm auth with sessions endpoint (same logic as ApiClient.healthCheck)
-        final sessions = await client
-            .get(
-              Uri.parse('$base/api/sessions'),
-              headers: {
-                'Authorization': 'Bearer ${conn.apiKey}',
-                'Content-Type': 'application/json',
-              },
-            )
-            .timeout(const Duration(seconds: 8));
-
-        if (sessions.statusCode == 200) return InstanceStatus.online;
-        if (sessions.statusCode == 401 || sessions.statusCode == 403) {
-          return InstanceStatus.error;
-        }
-        return InstanceStatus.offline;
-      } finally {
-        client.close();
-      }
-    } on TimeoutException {
-      return InstanceStatus.offline;
-    } catch (e) {
-      debugPrint(
-        '[gateway-manager] excepción silenciada (se continúa sin propagar): $e',
-      );
-      return InstanceStatus.offline;
-    }
   }
 
   Future<void> _setActive(SavedConnection conn) async {

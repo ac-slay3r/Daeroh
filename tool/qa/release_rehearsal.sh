@@ -5,7 +5,7 @@ set -Eeuo pipefail
 readonly ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 readonly ANDROID_DIR="$ROOT/android"
 readonly KEY_PROPERTIES="$ROOT/key.properties"
-readonly EXPECTED_PACKAGE="dev.xpetalab.hermesconsole"
+readonly EXPECTED_PACKAGE="cool.n0thing.daeroh"
 readonly AAB_REL="build/app/outputs/bundle/playRelease/app-play-release.aab"
 
 usage() {
@@ -124,7 +124,7 @@ manifest() {
   [[ -f "$merged" ]] || fail "no se generó el manifest Play fusionado"
   grep -q "package=\"$EXPECTED_PACKAGE\"" "$merged" ||
     fail "applicationId Play inesperado"
-  grep -q 'android:minSdkVersion="24"' "$merged" || fail "minSdk inesperado"
+  grep -q 'android:minSdkVersion="29"' "$merged" || fail "minSdk inesperado"
   grep -q 'android:targetSdkVersion="36"' "$merged" || fail "targetSdk inesperado"
   grep -q 'android:allowBackup="false"' "$merged" || fail "backup no está bloqueado"
   grep -q 'android:usesCleartextTraffic="false"' "$merged" ||

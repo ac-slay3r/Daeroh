@@ -7,7 +7,7 @@
         android:shortcutLongLabel="@string/new_session_shortcut_long_label"
         android:shortcutShortLabel="@string/new_session_shortcut_short_label">
         <intent
-            android:action="dev.xpetalab.hermesconsole.action.NEW_SESSION"
+            android:action="cool.n0thing.daeroh.action.NEW_SESSION"
             android:targetClass="com.hermesagent.hermes_android.MainActivity"
             android:targetPackage="@string/new_session_target_package">
             <extra

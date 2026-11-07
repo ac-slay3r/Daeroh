@@ -13,6 +13,7 @@ import 'package:http/http.dart' as http;
 
 import '../../l10n/app_localizations.dart';
 import '../utils/transport_privacy.dart';
+import '../utils/private_http_client.dart';
 import 'connection_manager.dart';
 
 /// Persiste una matriz recién comprobada únicamente cuando el diagnóstico se
@@ -174,6 +175,9 @@ class ServerCapabilities {
 
   bool hasEndpoint(String key) => endpoints.containsKey(key);
 
+  /// True when the server enumerates its endpoints, making absence meaningful.
+  bool get declaresEndpointInventory => endpoints.isNotEmpty;
+
   /// Returns a server-declared read endpoint only when it remains on [base].
   /// Invalid or mutating metadata is ignored rather than probed speculatively.
   Uri? safeGetEndpoint(String key, Uri base) {
@@ -291,7 +295,7 @@ class ConnectionDiagnostics {
   static const _kTimeout = Duration(seconds: 8);
 
   ConnectionDiagnostics({http.Client? httpClient})
-    : _http = httpClient ?? http.Client();
+    : _http = PrivateHttpClient(httpClient ?? http.Client());
 
   void close() => _http.close();
 
@@ -377,9 +381,24 @@ class ConnectionDiagnostics {
 
   // ── Gateway (8642) ────────────────────────────────────────────────────
 
+  /// Profile-scoped Gateway credentials must never be tested against unscoped
+  /// routes: the Gateway deliberately fails those requests closed. Health stays
+  /// public and unscoped; authenticated endpoints are prefixed only when a
+  /// named profile owns the connection.
+  static Uri _gatewayUri(String base, String path, String profile) {
+    // Same routing contract as ApiClient: '' and 'default' stay unprefixed,
+    // invalid names fail closed instead of being probed.
+    final scoped = ApiClient.profileEndpoint(
+      path.startsWith('/') ? path.substring(1) : path,
+      profile: profile,
+    );
+    return Uri.parse('$base/$scoped');
+  }
+
   Future<(List<ProbeResult>, String?, ServerCapabilities?)> probeGateway(
-    SavedConnection conn,
-  ) async {
+    SavedConnection conn, {
+    String profile = '',
+  }) async {
     final base = TransportPrivacy.requireAllowed(conn.gatewayUrl);
     final auth = {'Authorization': 'Bearer ${conn.apiKey}'};
     final results = <ProbeResult>[];
@@ -409,7 +428,7 @@ class ConnectionDiagnostics {
       await _probe(
         'sessions',
         'GET',
-        Uri.parse('$base/api/sessions'),
+        _gatewayUri(base, '/api/sessions', profile),
         headers: conn.apiKey.isEmpty ? null : auth,
       ),
     );
@@ -419,7 +438,7 @@ class ConnectionDiagnostics {
       await _probe(
         'models',
         'GET',
-        Uri.parse('$base/v1/models'),
+        _gatewayUri(base, '/v1/models', profile),
         headers: auth,
       ),
     );
@@ -427,7 +446,7 @@ class ConnectionDiagnostics {
     // 4. /v1/capabilities — fuente principal de la matriz cuando responde.
     //    Contrato: object hermes.api_server.capabilities con features{} y
     //    endpoints{} (api_server.py del upstream).
-    final capsUri = Uri.parse('$base/v1/capabilities');
+    final capsUri = _gatewayUri(base, '/v1/capabilities', profile);
     final capsProbe = await _probe(
       'capabilities',
       'GET',
@@ -446,7 +465,7 @@ class ConnectionDiagnostics {
       await _probe(
         'skills (gateway)',
         'GET',
-        Uri.parse('$base/v1/skills'),
+        _gatewayUri(base, '/v1/skills', profile),
         headers: auth,
       ),
     );
@@ -454,7 +473,7 @@ class ConnectionDiagnostics {
       await _probe(
         'toolsets',
         'GET',
-        Uri.parse('$base/v1/toolsets'),
+        _gatewayUri(base, '/v1/toolsets', profile),
         headers: auth,
       ),
     );
@@ -462,10 +481,22 @@ class ConnectionDiagnostics {
     // 5b. Skills toggle is never probed: authenticated capabilities is
     // authoritative and diagnostics must not issue mutating requests. Plugins
     // may be verified with GET, honoring valid same-origin endpoint metadata.
+    // A document that enumerates endpoints but omits plugins declares that the
+    // server has no plugins API: probing it would only turn an expected 404
+    // into a false "needs review". Only servers without an endpoint inventory
+    // keep the legacy probe.
     final baseUri = Uri.parse(base);
-    final pluginsUri = serverCaps?.hasEndpoint('plugins') ?? false
+    final hasDeclaredPlugins = serverCaps?.hasEndpoint('plugins') == true;
+    final declaredPlugins = hasDeclaredPlugins
         ? serverCaps!.safeGetEndpoint('plugins', baseUri)
-        : baseUri.resolve('/v1/plugins');
+        : null;
+    final Uri? pluginsUri = hasDeclaredPlugins
+        ? declaredPlugins == null
+              ? null
+              : _gatewayUri(base, declaredPlugins.path, profile)
+        : serverCaps?.declaresEndpointInventory == true
+        ? null
+        : _gatewayUri(base, '/v1/plugins', profile);
     if (pluginsUri != null) {
       results.add(await _probe('plugins', 'GET', pluginsUri, headers: auth));
     }
@@ -477,8 +508,9 @@ class ConnectionDiagnostics {
 
   Future<List<ProbeResult>> probeDashboard(
     SavedConnection conn,
-    DashboardSecrets secrets,
-  ) async {
+    DashboardSecrets secrets, {
+    String profile = '',
+  }) async {
     final base = TransportPrivacy.requireAllowed(conn.effectiveDashboardUrl);
     final results = <ProbeResult>[];
 
@@ -532,8 +564,17 @@ class ConnectionDiagnostics {
       ('config', '/api/config'),
       ('logs', '/api/logs'),
     ]) {
+      final scopedPath =
+          name == 'skills' && profile.isNotEmpty && profile != 'default'
+          ? '$path?profile=${Uri.encodeQueryComponent(profile)}'
+          : path;
       results.add(
-        await _probe(name, 'GET', Uri.parse('$base$path'), headers: headers),
+        await _probe(
+          name,
+          'GET',
+          Uri.parse('$base$scopedPath'),
+          headers: headers,
+        ),
       );
     }
 
@@ -546,11 +587,15 @@ class ConnectionDiagnostics {
     Strings s,
     SavedConnection conn,
     DashboardSecrets secrets, {
+    String profile = '',
     String? bridgeUrl,
     String? bridgeToken,
   }) async {
-    final (gw, version, serverCaps) = await probeGateway(conn);
-    final dash = await probeDashboard(conn, secrets);
+    final (gw, version, serverCaps) = await probeGateway(
+      conn,
+      profile: profile,
+    );
+    final dash = await probeDashboard(conn, secrets, profile: profile);
     final bridge = await probeBridge(
       conn,
       bridgeUrl: bridgeUrl,
@@ -728,8 +773,19 @@ class ConnectionDiagnostics {
       ),
       skillsToggle: srv(
         'skillsToggle',
-        CapState.unknown,
-        serverCaps?.feature('skills_toggle'),
+        // The Dashboard's skills router serves list and per-profile toggle
+        // together, so a signed-in skills read implies the toggle (same
+        // inference as cron R/W). Diagnostics still never issue the write.
+        dashboardAuthValid == CapState.yes &&
+                fromProbe(find(dash, 'skills')) == CapState.yes
+            ? CapState.yes
+            : CapState.unknown,
+        // Gateway capabilities describe its own router. An authenticated
+        // Dashboard skills read confirms the separate Dashboard toggle route.
+        dashboardAuthValid == CapState.yes &&
+                fromProbe(find(dash, 'skills')) == CapState.yes
+            ? true
+            : serverCaps?.feature('skills_toggle'),
       ),
       // Installation is a separate Mobile Bridge capability. The Gateway
       // skills_toggle declaration says nothing about install support.
@@ -759,7 +815,11 @@ class ConnectionDiagnostics {
       pluginsSupported: srv(
         'pluginsSupported',
         fromProbe(find(gw, 'plugins')),
-        serverCaps?.feature('plugins_api'),
+        serverCaps?.feature('plugins_api') ??
+            (serverCaps?.declaresEndpointInventory == true &&
+                    !serverCaps!.hasEndpoint('plugins')
+                ? false
+                : null),
       ),
       gatewayVersion: version,
       serverModel: serverCaps?.model,

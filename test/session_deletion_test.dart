@@ -329,7 +329,7 @@ void main() {
       final root = cronSession('cron_wire_20260807_001500');
       final leaf = childSession('leaf-wire', root.id);
       final client = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
+        baseUrl: 'http://127.0.0.1:8642',
         apiKey: 'gateway-key',
         httpClient: MockClient((request) async {
           requests.add(request);

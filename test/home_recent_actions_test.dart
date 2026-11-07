@@ -3,14 +3,29 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hermes_android/core/screens/chat_screen.dart';
 import 'package:hermes_android/core/screens/home_dashboard_screen.dart';
+import 'package:hermes_android/core/screens/session_list_screen.dart';
+import 'package:hermes_android/core/models/core_read.dart';
+import 'package:hermes_android/core/services/active_chat_service.dart';
+import 'package:hermes_android/core/services/app_lock.dart';
+import 'package:hermes_android/core/services/approval_policy.dart';
+import 'package:hermes_android/core/services/bridge_manager.dart';
 import 'package:hermes_android/core/services/chat_draft_store.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
+import 'package:hermes_android/core/services/font_size_service.dart';
+import 'package:hermes_android/core/services/local_transcript_store.dart';
+import 'package:hermes_android/core/services/notifications/notification_service.dart';
+import 'package:hermes_android/core/services/secure_storage.dart';
 import 'package:hermes_android/core/widgets/home_prompt_composer.dart';
 import 'package:hermes_android/core/services/session_archive.dart';
 import 'package:hermes_android/core/services/session_deletion.dart';
+import 'package:hermes_android/core/services/sftp_transfer_service.dart';
+import 'package:hermes_android/core/services/ssh_manager.dart';
+import 'package:hermes_android/core/services/ssh_session_service.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
 import 'package:hermes_android/l10n/app_localizations.dart';
+import 'package:hermes_android/main.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -26,7 +41,7 @@ class _RecentHomeClient extends ApiClient {
   final Session session;
 
   @override
-  Future<bool> healthCheck() async => true;
+  Future<bool> healthCheck({String? profile, bool verifySessionAccess = true}) async => true;
 
   @override
   Future<List<Session>> getSessions({
@@ -50,7 +65,7 @@ class _ProfileRowsHomeClient extends ApiClient {
   String? requestedProfile;
 
   @override
-  Future<bool> healthCheck() async => true;
+  Future<bool> healthCheck({String? profile, bool verifySessionAccess = true}) async => true;
 
   @override
   Future<List<Session>> getSessions({
@@ -77,7 +92,7 @@ class _MutableRecentHomeClient extends ApiClient {
   int sessionReads = 0;
 
   @override
-  Future<bool> healthCheck() async => true;
+  Future<bool> healthCheck({String? profile, bool verifySessionAccess = true}) async => true;
 
   @override
   Future<List<Session>> getSessions({
@@ -103,7 +118,7 @@ class _DeferredRecentHomeClient extends ApiClient {
   final List<Completer<List<Session>>> sessionLoads = [];
 
   @override
-  Future<bool> healthCheck() async => true;
+  Future<bool> healthCheck({String? profile, bool verifySessionAccess = true}) async => true;
 
   @override
   Future<List<Session>> getSessions({
@@ -114,6 +129,44 @@ class _DeferredRecentHomeClient extends ApiClient {
     sessionLoads.add(load);
     return load.future;
   }
+
+  @override
+  void close() {}
+}
+
+class _UnavailableRecentHomeClient extends ApiClient {
+  _UnavailableRecentHomeClient()
+    : super(
+        baseUrl: 'http://127.0.0.1:8642',
+        apiKey: 'test-key',
+        httpClient: MockClient((_) async => http.Response('{}', 404)),
+      );
+
+  @override
+  Future<bool> healthCheck({String? profile, bool verifySessionAccess = true}) async => true;
+
+  @override
+  Future<List<Session>> getSessions({
+    bool includeChildren = false,
+    String? profile,
+  }) => Future<List<Session>>.error(
+    const CoreReadException(CoreReadErrorKind.auth, statusCode: 401),
+  );
+
+  @override
+  void close() {}
+}
+
+class _OfflineRecentHomeClient extends ApiClient {
+  _OfflineRecentHomeClient()
+    : super(
+        baseUrl: 'http://127.0.0.1:8642',
+        apiKey: 'test-key',
+        httpClient: MockClient((_) async => http.Response('{}', 404)),
+      );
+
+  @override
+  Future<bool> healthCheck({String? profile, bool verifySessionAccess = true}) async => false;
 
   @override
   void close() {}
@@ -224,6 +277,203 @@ void main() {
 
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'Home stays online when only the recent-session library is unavailable',
+    (tester) async {
+      final manager = await ConnectionManager.create(
+        await SharedPreferences.getInstance(),
+      );
+      await manager.saveConnection(
+        'QA',
+        '127.0.0.2',
+        8642,
+        'test-key',
+        kind: InstanceKind.vps,
+      );
+      final connection = manager.getConnections().single;
+      await manager.setActiveConnection(connection.id);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          locale: const Locale('en'),
+          theme: AppTheme.fromId('dark'),
+          localizationsDelegates: Strings.localizationsDelegates,
+          supportedLocales: Strings.supportedLocales,
+          home: HomeDashboardScreen(
+            connManager: manager,
+            clientFactory: (_) => _UnavailableRecentHomeClient(),
+          ),
+        ),
+      );
+      for (var attempt = 0; attempt < 40; attempt++) {
+        await tester.pump(const Duration(milliseconds: 50));
+        if (find.text('agent online · QA').evaluate().isNotEmpty) break;
+      }
+
+      expect(find.text('agent online · QA'), findsOneWidget);
+      expect(
+        find.text('Chat is connected. Conversations could not be refreshed (HTTP 401).'),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('home-offline-retry')), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'Home shows device history while the agent is offline',
+    (tester) async {
+      final manager = await ConnectionManager.create(
+        await SharedPreferences.getInstance(),
+      );
+      await manager.saveConnection(
+        'QA',
+        '127.0.0.2',
+        8642,
+        'test-key',
+        kind: InstanceKind.localhost,
+      );
+      final connection = manager.getConnections().single;
+      await manager.setActiveConnection(connection.id);
+      await LocalTranscriptStore.saveFromNewestFirst(
+        connection.id,
+        'device-history',
+        const [
+          {'role': 'assistant', 'content': 'Saved locally'},
+          {'role': 'user', 'content': 'Keep this chat'},
+        ],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          locale: const Locale('en'),
+          theme: AppTheme.fromId('dark'),
+          localizationsDelegates: Strings.localizationsDelegates,
+          supportedLocales: Strings.supportedLocales,
+          home: HomeDashboardScreen(
+            connManager: manager,
+            clientFactory: (_) => _OfflineRecentHomeClient(),
+          ),
+        ),
+      );
+      for (var attempt = 0; attempt < 40; attempt++) {
+        await tester.pump(const Duration(milliseconds: 50));
+        if (find.text('Chat local').evaluate().isNotEmpty) break;
+      }
+
+      if (const bool.fromEnvironment('HERMES_LOCAL_AGENT')) {
+        expect(find.text('off'), findsOneWidget);
+      }
+      expect(find.text('Chat local'), findsOneWidget);
+      expect(
+        find.text(
+          'Showing chats saved on this device. They may not match the server.',
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'abrir un reciente de Inicio va directo al chat sin crear la biblioteca',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({'onboarding_done': true});
+      final prefs = await SharedPreferences.getInstance();
+      final manager = await ConnectionManager.create(prefs);
+      final activeChats = ActiveChatService();
+      addTearDown(activeChats.dispose);
+      await manager.saveConnection(
+        'QA',
+        '127.0.0.2',
+        8642,
+        'test-key',
+        kind: InstanceKind.vps,
+      );
+      final connection = manager.getConnections().single;
+      await manager.setActiveConnection(connection.id);
+      final session = Session(
+        id: 'recent-direct-chat',
+        title: 'Abrir directo',
+        model: 'hermes-agent',
+        source: 'mobile',
+        messageCount: 1,
+        isActive: false,
+        preview: 'Contenido',
+        startedAt: DateTime.now().millisecondsSinceEpoch / 1000,
+      );
+      final client = _RecentHomeClient(session);
+      activeChats.attach(
+        connection: connection,
+        sessionId: session.id,
+        sessionTitle: session.displayTitle,
+        api: client,
+        disableForegroundKeepAlive: true,
+      );
+      final secureStorage = SecureStorage();
+      final notifications = NotificationService(prefs);
+      final sshManager = SshManager(secureStorage, manager);
+
+      await tester.pumpWidget(
+        HermesApp(
+          connManager: manager,
+          appLock: AppLockService(prefs),
+          approvalPolicy: ApprovalPolicyService(prefs),
+          fontSize: FontSizeService(prefs),
+          bridgeManager: BridgeManager(secureStorage, manager),
+          sshManager: sshManager,
+          sftpTransfers: SftpTransferService(sshManager, notifications),
+          sshSessions: SshSessionService(sshManager),
+          notifications: notifications,
+          activeChats: activeChats,
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 5));
+
+      final navigator = Navigator.of(
+        tester.element(find.byType(Navigator).first),
+      );
+      navigator.push<void>(
+        PageRouteBuilder<void>(
+          transitionDuration: Duration.zero,
+          reverseTransitionDuration: Duration.zero,
+          pageBuilder: (_, _, _) => HomeDashboardScreen(
+            connManager: manager,
+            clientFactory: (_) => client,
+          ),
+        ),
+      );
+      for (var attempt = 0; attempt < 30; attempt++) {
+        await tester.pump(const Duration(milliseconds: 50));
+        if (find.text('Abrir directo').evaluate().isNotEmpty) break;
+      }
+      expect(find.text('Abrir directo'), findsOneWidget);
+
+      await tester.tap(find.text('Abrir directo'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 350));
+
+      expect(find.byType(ChatScreen), findsOneWidget);
+      expect(
+        find.byType(SessionListScreen, skipOffstage: false),
+        findsNothing,
+        reason: 'Inicio no debe construir la biblioteca antes de abrir un chat',
+      );
+
+      await tester.binding.handlePopRoute();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 350));
+      expect(find.byType(ChatScreen), findsNothing);
+      expect(find.byType(HomeDashboardScreen), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );

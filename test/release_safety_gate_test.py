@@ -1127,6 +1127,8 @@ class PrivatePlayLaneTest(unittest.TestCase):
             "print(values[sys.argv[2]])\n",
             encoding="utf-8",
         )
+        java = tools / "java"
+        java.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         jarsigner = tools / "jarsigner"
         jarsigner.write_text("#!/bin/sh\nprintf 'jar verified.\\n'\n", encoding="utf-8")
         keytool = tools / "keytool"
@@ -1137,7 +1139,7 @@ class PrivatePlayLaneTest(unittest.TestCase):
         keytool.write_text(
             f"#!/bin/sh\nprintf 'SHA256: {fingerprint}\\n'\n", encoding="utf-8"
         )
-        for tool in (apkanalyzer, jarsigner, keytool):
+        for tool in (apkanalyzer, java, jarsigner, keytool):
             tool.chmod(0o700)
         policy = source / "tool/release/release_contract.json"
         policy.parent.mkdir(parents=True)
@@ -2198,7 +2200,7 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertIn("v1.2.9", policy)
         self.assertIn("86edaa150fabd33d8184f5b958400cabadacb49632f7ec50ecbe49608058d159", policy)
         self.assertIn(
-            "f366fdfc011b65c1b3f44e777fc876be21d3492ec3b0b0cf014536c0ac3490c3",
+            "14328be1a42a6839e16931c8953acacdc2b063ce17672521f6687cc1e2644717",
             policy,
         )
 
@@ -2222,7 +2224,7 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertIn("./tool/sbom/generate.sh", workflow)
         self.assertIn("git diff --exit-code -- sbom", workflow)
         self.assertIn(
-            "f366fdfc011b65c1b3f44e777fc876be21d3492ec3b0b0cf014536c0ac3490c3",
+            "14328be1a42a6839e16931c8953acacdc2b063ce17672521f6687cc1e2644717",
             workflow,
         )
 
@@ -2605,13 +2607,24 @@ class FinalPublicProvenanceGateTest(unittest.TestCase):
 
 
 class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
+    def test_authoritative_lock_digest_matches_release_gates(self):
+        digest = hashlib.sha256((ROOT / "pubspec.lock").read_bytes()).hexdigest()
+        policy = json.loads(
+            (ROOT / "tool/release/release_contract.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(policy["source"]["authoritativeLockSha256"], digest)
+        workflow = (ROOT / ".github/workflows/build-apk.yml").read_text(encoding="utf-8")
+        double_build = (ROOT / "tool/release/double_build.sh").read_text(encoding="utf-8")
+        self.assertIn(f'echo "{digest}  pubspec.lock"', workflow)
+        self.assertIn(f'readonly LOCK_SHA256="{digest}"', double_build)
+
     def test_contract_pins_lock_channels_and_keyless_identity(self):
         policy = json.loads(
             (ROOT / "tool/release/release_contract.json").read_text(encoding="utf-8")
         )
         self.assertEqual(
             policy["source"]["authoritativeLockSha256"],
-            "f366fdfc011b65c1b3f44e777fc876be21d3492ec3b0b0cf014536c0ac3490c3",
+            "14328be1a42a6839e16931c8953acacdc2b063ce17672521f6687cc1e2644717",
         )
         self.assertEqual(policy["android"]["packageId"], "dev.xpetalab.hermesconsole")
         self.assertEqual(set(policy["channels"]), {"direct-public", "play-private"})
@@ -2708,7 +2721,22 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
         self.assertIn("git clone --no-local", source)
         self.assertIn("PUB_CACHE", source)
         self.assertIn("GRADLE_USER_HOME", source)
-        self.assertIn("f366fdfc011b65c1b3f44e777fc876be21d3492ec3b0b0cf014536c0ac3490c3", source)
+        # Two independent checkouts must not present different absolute paths
+        # to Dart AOT or native compilers. Reset all build-visible state before B.
+        # Flutter/Gradle/native tools can also preserve temporary-file paths.
+        canonical_paths = {
+            "source": "clone", "pub-cache": "pub_cache",
+            "home": "home", "gradle": "gradle_home", "tmp": "tmp",
+        }
+        for path, variable in canonical_paths.items():
+            self.assertIn(f'local {variable}="$WORK/{path}"', source)
+            self.assertNotIn(f'$WORK/{path}-$replica', source)
+        reset = 'rm -rf -- "$clone" "$home" "$pub_cache" "$gradle_home" "$tmp"'
+        self.assertIn(reset, source)
+        self.assertLess(source.index(reset), source.index('git clone --no-local'))
+        self.assertEqual(source.count('TMPDIR="$tmp"'), 4)
+        self.assertIn('build_replica a\nbuild_replica b', source)
+        self.assertIn("14328be1a42a6839e16931c8953acacdc2b063ce17672521f6687cc1e2644717", source)
         self.assertIn("compare_rebuilds.py", source)
         self.assertIn("ANDROID_HOME", source)
         self.assertIn("ANDROID_SDK_ROOT", source)
@@ -2716,6 +2744,23 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
         for tool in ("flutter", "git", "python3", "java", "sha256sum", "install", "mktemp", "mv"):
             self.assertIn(f'command -v "$tool"', source)
         self.assertNotIn("gh release", source)
+
+    def test_jni_native_build_disables_only_nondeterministic_build_id(self):
+        # NDK sha1 hashes unstripped link inputs; libdartjni is subsequently
+        # stripped, leaving identical payloads with different 20-byte IDs.
+        source = (ROOT / "android/build.gradle.kts").read_text(encoding="utf-8")
+        self.assertIn('project.name == "jni"', source)
+        self.assertIn('"-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--build-id=none"', source)
+        self.assertNotIn('build-id=none', (ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8"))
+
+    def test_apk_excludes_encrypted_dependency_metadata_but_bundle_keeps_it(self):
+        # AGP encrypts APK dependency metadata with fresh randomness. The strict
+        # direct-public double-build therefore excludes only that APK block;
+        # bundles retain it for Play's SDK dependency metadata.
+        source = (ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
+        self.assertIn("dependenciesInfo {", source)
+        self.assertIn("includeInApk = false", source)
+        self.assertIn("includeInBundle = true", source)
 
     def test_release_gate_rejects_artifacts_not_emitted_by_the_bound_double_build(self):
         with tempfile.TemporaryDirectory(prefix="s09-double-build-") as temporary:
@@ -2756,6 +2801,9 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
                 encoding="utf-8",
             )
             flutter.chmod(0o700)
+            java = tools / "java"
+            java.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            java.chmod(0o700)
             output = root / "double-output"
             result = subprocess.run(
                 [

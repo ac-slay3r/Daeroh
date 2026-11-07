@@ -51,8 +51,9 @@ const _kWatchKey = 'bg_watch_runs'; // BackgroundWatch._key (privado)
 SavedConnection _remoteConn() => SavedConnection(
   id: 'conn-remote',
   label: 'Remoto',
-  host: 'hermes.local',
+  host: '127.0.0.1',
   port: 8642,
+  kind: InstanceKind.homelab,
   apiKey: 'test-key',
 );
 
@@ -2082,6 +2083,98 @@ void main() {
           )['_steer'],
           isTrue,
         );
+        service.dispose();
+      },
+    );
+
+    test('navigating away keeps an idle chat reusable', () async {
+      const sessionId = 'sess-navigation-retention-red';
+      final service = ActiveChatService();
+      final chat = service.attach(
+        connection: _remoteConn(),
+        sessionId: sessionId,
+        sessionTitle: 'Navigation retention',
+        desktopGateway: _FakeDesktopGateway(),
+      );
+      final screenSubscription = chat.changes.listen((_) {});
+
+      await screenSubscription.cancel();
+      service.release(_remoteConn().id, sessionId, retainForNavigation: true);
+
+      expect(service.of(_remoteConn().id, sessionId), same(chat));
+      final reopened = service.attach(
+        connection: _remoteConn(),
+        sessionId: sessionId,
+        sessionTitle: 'Navigation retention',
+        desktopGateway: _FakeDesktopGateway(),
+      );
+      expect(reopened, same(chat));
+      service.dispose();
+    });
+
+    test(
+      'app suspension prunes an idle chat retained for navigation',
+      () async {
+        const sessionId = 'sess-navigation-retention-suspend';
+        final service = ActiveChatService();
+        final chat = service.attach(
+          connection: _remoteConn(),
+          sessionId: sessionId,
+          sessionTitle: 'Navigation retention suspension',
+          desktopGateway: _FakeDesktopGateway(),
+        );
+        final screenSubscription = chat.changes.listen((_) {});
+
+        await screenSubscription.cancel();
+        service.release(_remoteConn().id, sessionId, retainForNavigation: true);
+        expect(service.of(_remoteConn().id, sessionId), same(chat));
+
+        await service.suspendIdleConnections();
+        expect(service.of(_remoteConn().id, sessionId), isNull);
+        service.dispose();
+      },
+    );
+
+    test(
+      'a retained run finishing during app suspension releases its transport',
+      () async {
+        const sessionId = 'sess-navigation-retention-finish-background';
+        final service = ActiveChatService();
+        final desktop = _FakeDesktopGateway();
+        final chat = service.attach(
+          connection: _remoteConn(),
+          sessionId: sessionId,
+          sessionTitle: 'Navigation retention terminal',
+          api: ApiClient(
+            baseUrl: _remoteConn().baseUrl,
+            apiKey: _remoteConn().apiKey,
+            httpClient: MockClient((_) async => http.Response('{}', 404)),
+          ),
+          desktopGateway: desktop,
+        );
+        final screenSubscription = chat.changes.listen((_) {});
+
+        unawaited(
+          chat.send(
+            fullText: 'finish after background',
+            model: 'hermes-agent',
+            history: const [],
+          ),
+        );
+        await _waitUntil(() => desktop.prompts.isNotEmpty);
+        desktop.emit('message.start');
+        await _waitUntil(() => chat.isStreaming);
+        await screenSubscription.cancel();
+        service.release(_remoteConn().id, sessionId, retainForNavigation: true);
+        await service.suspendIdleConnections();
+        expect(service.of(_remoteConn().id, sessionId), same(chat));
+
+        desktop.emit('message.complete', {'text': 'done'});
+        await _waitUntil(() => !chat.isStreaming);
+        expect(chat.isStreaming, isFalse);
+        await _waitUntil(() => service.of(_remoteConn().id, sessionId) == null);
+        expect(service.of(_remoteConn().id, sessionId), isNull);
+        expect(desktop.connected, isFalse);
         service.dispose();
       },
     );

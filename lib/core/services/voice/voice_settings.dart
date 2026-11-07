@@ -183,6 +183,10 @@ class VoiceSettings {
   /// cuando [sttEngine] == server.
   final String serverSttUrl;
 
+  /// Disabled by default: a legacy server fallback sends the STT token in the
+  /// WebSocket URL, which may be retained in infrastructure logs.
+  final bool allowLegacyQueryTokenFallback;
+
   /// Perfil de ayuda para el contrato OpenAI. No cambia el protocolo de red.
   final StreamingTtsProfile streamingTtsProfile;
 
@@ -239,6 +243,7 @@ class VoiceSettings {
     this.whisperModel = SttModelSize.base,
     this.sherpaModel = SherpaModelKind.whisperBase,
     this.serverSttUrl = '',
+    this.allowLegacyQueryTokenFallback = false,
     String? streamingTtsUrl,
     String? streamingTtsVoice,
     String? streamingTtsModel,
@@ -304,6 +309,7 @@ class VoiceSettings {
     SttModelSize? whisperModel,
     SherpaModelKind? sherpaModel,
     String? serverSttUrl,
+    bool? allowLegacyQueryTokenFallback,
     String? streamingTtsUrl,
     String? streamingTtsVoice,
     String? streamingTtsModel,
@@ -340,6 +346,8 @@ class VoiceSettings {
       whisperModel: whisperModel ?? this.whisperModel,
       sherpaModel: sherpaModel ?? this.sherpaModel,
       serverSttUrl: serverSttUrl ?? this.serverSttUrl,
+      allowLegacyQueryTokenFallback:
+          allowLegacyQueryTokenFallback ?? this.allowLegacyQueryTokenFallback,
       streamingTtsProfile: nextProfile,
       kokoroTtsUrl:
           kokoroTtsUrl ??
@@ -406,6 +414,8 @@ class VoiceSettings {
   static const _kWhisperModel = 'voice_whisper_model';
   static const _kSherpaModel = 'voice_sherpa_model';
   static const _kServerUrl = 'voice_server_stt_url';
+  static const _kServerAllowLegacyQueryTokenFallback =
+      'voice_server_stt_allow_legacy_query_token_fallback';
   static const _kStreamUrl = 'voice_streaming_tts_url';
   static const _kStreamVoice = 'voice_streaming_tts_voice';
   static const _kStreamModel = 'voice_streaming_tts_model';
@@ -512,7 +522,11 @@ class VoiceSettings {
       onnxVoiceId: prefs.getString(_kOnnxVoice) ?? defaultOnnxVoiceFor(lang),
       whisperModel: SttModelSize.from(prefs.getString(_kWhisperModel)),
       sherpaModel: SherpaModelKind.from(prefs.getString(_kSherpaModel)),
-      serverSttUrl: prefs.getString(_kServerUrl) ?? '',
+      serverSttUrl: _safeStoredServerSttUrl(
+        prefs.getString(_kServerUrl) ?? '',
+      ),
+      allowLegacyQueryTokenFallback:
+          prefs.getBool(_kServerAllowLegacyQueryTokenFallback) ?? false,
       streamingTtsProfile: streamProfile,
       kokoroTtsUrl: kokoroUrl,
       kokoroTtsVoice: kokoroVoice,
@@ -561,6 +575,12 @@ class VoiceSettings {
     return StreamingTtsProfile.openAiCompatible;
   }
 
+  static String _safeStoredServerSttUrl(String value) {
+    final uri = Uri.tryParse(value.trim());
+    final hasQuery = uri?.queryParameters.isNotEmpty ?? false;
+    return hasQuery ? '' : value;
+  }
+
   Future<void> save(SharedPreferences prefs) async {
     await prefs.setString(_kStt, sttEngine.id);
     await prefs.setString(_kTts, ttsEngine.id);
@@ -573,7 +593,11 @@ class VoiceSettings {
     await prefs.setString(_kOnnxVoice, onnxVoiceId);
     await prefs.setString(_kWhisperModel, whisperModel.id);
     await prefs.setString(_kSherpaModel, sherpaModel.id);
-    await prefs.setString(_kServerUrl, serverSttUrl);
+    await prefs.setString(_kServerUrl, _safeStoredServerSttUrl(serverSttUrl));
+    await prefs.setBool(
+      _kServerAllowLegacyQueryTokenFallback,
+      allowLegacyQueryTokenFallback,
+    );
     await prefs.setString(_kStreamUrl, streamingTtsUrl);
     await prefs.setString(_kStreamVoice, streamingTtsVoice);
     await prefs.setString(_kStreamModel, streamingTtsModel);

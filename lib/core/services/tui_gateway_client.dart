@@ -17,6 +17,7 @@ import 'dart:math' show Random, min;
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/io.dart';
+import '../utils/private_websocket_client.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models/command_descriptor.dart';
@@ -1417,6 +1418,7 @@ class TuiGatewayClient
   int _socketGeneration = 0;
   int _exclusiveSubmitCapabilityGeneration = -1;
   bool? _exclusiveSubmitCapabilityAllowed;
+  bool? _replyLanguageCapabilityAllowed;
   Future<bool>? _exclusiveSubmitCapabilityProbe;
   int _heartbeatSequence = 0;
   DateTime _lastInboundAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -1604,6 +1606,7 @@ class TuiGatewayClient
         IOWebSocketChannel.connect(
           uri,
           headers: auth.headers,
+          customClient: privateWebSocketHttpClient,
           pingInterval: const Duration(seconds: 20),
           connectTimeout: const Duration(seconds: 10),
         );
@@ -2758,12 +2761,33 @@ class TuiGatewayClient
         origin: CompressionFailureOrigin.localPreflight,
       );
     }
+    // Read the feature decision only after the same-socket proof above. A
+    // reconnect cannot carry metadata authorized by a retired socket.
+    if (method == 'prompt.submit') {
+      final language = Zone.current[_replyLanguageZoneKey];
+      if (_replyLanguageCapabilityAllowed == true &&
+          (language == 'en' || language == 'es')) {
+        params = {...params, 'reply_language': language};
+      }
+    }
     return _requestConnected(method, params, timeout: timeout);
   }
 
   Future<Map<String, dynamic>> _requestPromptSubmit(
     Map<String, dynamic> params,
   ) => _requestExclusiveSessionMutation('prompt.submit', params);
+
+  static final Object _replyLanguageZoneKey = Object();
+
+  static String? get currentReplyLanguage =>
+      Zone.current[_replyLanguageZoneKey] as String?;
+
+  /// Scope metadata to one turn, including asynchronous retries. Other
+  /// transports and existing gateway fakes are not affected.
+  static Future<T> withReplyLanguage<T>(
+    String language,
+    Future<T> Function() submit,
+  ) => runZoned(submit, zoneValues: {_replyLanguageZoneKey: language});
 
   Future<({int generation, WebSocketChannel channel})>
   _requireExclusiveSubmitCapabilityProof({
@@ -2808,6 +2832,7 @@ class TuiGatewayClient
     if (_exclusiveSubmitCapabilityGeneration != generation) {
       _exclusiveSubmitCapabilityGeneration = generation;
       _exclusiveSubmitCapabilityAllowed = null;
+      _replyLanguageCapabilityAllowed = null;
       _exclusiveSubmitCapabilityProbe = null;
     }
     final cached = _exclusiveSubmitCapabilityAllowed;
@@ -2844,6 +2869,8 @@ class TuiGatewayClient
     final allowed = capabilities['per_session_exclusive_submit'] == true;
     if (generation == _socketGeneration && identical(_channel, channel)) {
       _exclusiveSubmitCapabilityAllowed = allowed;
+      _replyLanguageCapabilityAllowed =
+          allowed && capabilities['prompt_reply_language'] == true;
     }
     return allowed;
   }

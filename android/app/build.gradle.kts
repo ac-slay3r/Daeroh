@@ -18,6 +18,14 @@ android {
    namespace = "com.hermesagent.hermes_android"
    compileSdk = 36
 
+   // APK SDK dependency metadata is encrypted with fresh randomness by AGP,
+   // preventing byte-identical signed direct builds. Keep it in Play AABs while
+   // excluding only the APK signing-block record.
+   dependenciesInfo {
+       includeInApk = false
+       includeInBundle = true
+   }
+
    compileOptions {
        sourceCompatibility = JavaVersion.VERSION_17
        targetCompatibility = JavaVersion.VERSION_17
@@ -28,8 +36,9 @@ android {
        // Identidad pública en Play (inmutable tras la primera publicación).
        // Propia de XPeta Lab para no colisionar con el package de Nous/Hermes.
        // El namespace interno no cambia: las clases Kotlin siguen donde están.
-       applicationId = "dev.xpetalab.hermesconsole"
-       minSdk = 24
+       applicationId = "cool.n0thing.daeroh"
+       // Android 10+ (API 29) is the supported minimum (docs/PROJECT_BRIEF.md).
+       minSdk = 29
        targetSdk = 36
        versionCode = flutter.versionCode
        versionName = flutter.versionName

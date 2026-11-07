@@ -9,9 +9,12 @@ import '../../l10n/app_localizations.dart';
 import '../config/flavor.dart';
 import '../services/connection_manager.dart';
 import '../services/diagnostic_bundle_service.dart';
+import '../services/diagnostics_consent_store.dart';
+import '../services/reliability_diagnostics.dart';
 import '../services/turn_outbox_store.dart';
 import '../theme/app_theme.dart';
 import 'hermes_notice.dart';
+import 'hermes_ui.dart';
 
 class DiagnosticRuntimeInfo {
   final String version;
@@ -159,6 +162,65 @@ class DiagnosticBundleController {
 
   static Future<void> _defaultShareFile(File file) async {
     await Share.shareXFiles([XFile(file.path, mimeType: 'application/json')]);
+  }
+}
+
+/// Explicit opt-in for the future private diagnostics transport.
+///
+/// Local, on-demand diagnostic export stays available regardless of this
+/// setting. This controls only background reliability telemetry, which is
+/// disabled by default and may never include prompt, message, attachment,
+/// credential, endpoint, or identifier content.
+class DiagnosticsConsentTile extends StatefulWidget {
+  const DiagnosticsConsentTile({
+    super.key,
+    required this.consent,
+    this.isAvailable,
+  });
+
+  final DiagnosticsConsentStore consent;
+  @visibleForTesting
+  final bool? isAvailable;
+
+  @override
+  State<DiagnosticsConsentTile> createState() => _DiagnosticsConsentTileState();
+}
+
+class _DiagnosticsConsentTileState extends State<DiagnosticsConsentTile> {
+  late bool _enabled = widget.consent.enabled;
+  bool _saving = false;
+
+  Future<void> _setEnabled(bool value) async {
+    if (_saving) return;
+    setState(() {
+      _saving = true;
+      _enabled = value;
+    });
+    try {
+      await widget.consent.setEnabled(value);
+    } catch (_) {
+      if (mounted) setState(() => _enabled = !value);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!(widget.isAvailable ?? ReliabilityDiagnostics.isAvailable)) {
+      return const SizedBox.shrink();
+    }
+    final strings = Strings.of(context);
+    return Material(
+      type: MaterialType.transparency,
+      child: HermesSwitchTile(
+        controlKey: const ValueKey('diagnostics-remote-opt-in'),
+        title: strings.diagnosticsTelemetryTitle,
+        subtitle: strings.diagnosticsTelemetrySubtitle,
+        value: _enabled,
+        onChanged: _saving ? null : _setEnabled,
+      ),
+    );
   }
 }
 

@@ -7,6 +7,8 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'app_lock_attempt_store.dart';
+
 /// Bloqueo local opcional de la app: PIN propio (hash+salt en Keystore) con
 /// desbloqueo biométrico opcional encima.
 ///
@@ -22,6 +24,7 @@ class AppLockService {
   static const _kPinSalt = 'app_lock_pin_salt';
   static const _kPinHash = 'app_lock_pin_hash';
   static const _kCooldownUntil = 'app_lock_cooldown_until';
+  static const _kAttemptWindow = 'app_lock_attempt_window';
 
   /// Intentos fallidos consecutivos antes de aplicar espera.
   static const maxAttemptsBeforeCooldown = 5;
@@ -29,6 +32,7 @@ class AppLockService {
 
   final SharedPreferences _prefs;
   final FlutterSecureStorage _storage;
+  late final AppLockAttemptStore _attemptStore;
   final LocalAuthentication _localAuth;
 
   /// Estado observable: true mientras la app está bloqueada.
@@ -36,6 +40,9 @@ class AppLockService {
 
   int _failedAttempts = 0;
   DateTime? _cooldownUntil;
+  late final Future<void> _attemptWindowReady;
+  bool _attemptWindowHealthy = true;
+  bool _verifying = false;
   DateTime? _backgroundedAt;
 
   /// true mientras el prompt biométrico del sistema está abierto — evita que
@@ -46,26 +53,74 @@ class AppLockService {
     this._prefs, {
     FlutterSecureStorage? storage,
     LocalAuthentication? localAuth,
-  }) : _storage = storage ?? const FlutterSecureStorage(),
+  }) : _storage = storage ?? appLockSecureStorage,
        _localAuth = localAuth ?? LocalAuthentication() {
+    _attemptStore = AppLockAttemptStore(
+      _storage,
+      durableAndroid:
+          storage == null &&
+          !kIsWeb &&
+          defaultTargetPlatform == TargetPlatform.android,
+    );
     locked.value = enabled;
-    _loadCooldown();
+    _attemptWindowReady = _loadAttemptWindow();
   }
 
-  /// Restaura el cooldown persistido tras un reinicio: si la app se mató durante
-  /// la espera por intentos fallidos, el rate-limit del PIN no debe resetearse.
-  Future<void> _loadCooldown() async {
+  /// Restaura tanto los fallos parciales como el cooldown antes de verificar.
+  /// El valor antiguo del cooldown se lee para instalaciones ya existentes.
+  Future<void> _loadAttemptWindow() async {
     try {
-      final saved = await _storage.read(key: _kCooldownUntil);
-      if (saved == null) return;
-      final until = DateTime.tryParse(saved);
-      if (until != null && until.isAfter(DateTime.now())) {
-        _cooldownUntil = until;
-      } else {
-        await _storage.delete(key: _kCooldownUntil);
+      final saved = await _attemptStore.read(key: _kAttemptWindow);
+      final legacy = await _attemptStore.read(key: _kCooldownUntil);
+      if (saved != null) {
+        final window = jsonDecode(saved) as Map<String, dynamic>;
+        final attempts = window['attempts'] as int;
+        final untilValue = window['until'] as String?;
+        if (attempts < 0 ||
+            attempts >= maxAttemptsBeforeCooldown ||
+            (untilValue != null && DateTime.tryParse(untilValue) == null)) {
+          throw const FormatException('Invalid app-lock attempt window');
+        }
+        final until = untilValue == null ? null : DateTime.parse(untilValue);
+        if (until != null && until.isAfter(DateTime.now())) {
+          _cooldownUntil = until;
+        } else if (until != null) {
+          await _attemptStore.delete(key: _kAttemptWindow);
+        } else {
+          _failedAttempts = attempts;
+        }
       }
-    } catch (e) {
-      debugPrint('[app-lock] excepción silenciada (se ignora sin más): $e');}
+      if (legacy != null) {
+        final until = DateTime.tryParse(legacy);
+        if (until == null) {
+          throw const FormatException('Invalid legacy app-lock cooldown');
+        }
+        if (until.isAfter(DateTime.now())) {
+          // Una migración interrumpida puede dejar ambas claves presentes.
+          // Conservar siempre la espera más larga, nunca acortarla.
+          if (_cooldownUntil == null || until.isAfter(_cooldownUntil!)) {
+            _cooldownUntil = until;
+          }
+          _failedAttempts = 0;
+          await _saveAttemptWindow(0, _cooldownUntil);
+        }
+        await _attemptStore.delete(key: _kCooldownUntil);
+      }
+    } catch (_) {
+      // No conceder intentos nuevos si el estado de seguridad es ilegible.
+      _attemptWindowHealthy = false;
+      debugPrint('[app-lock] no se pudo restaurar el límite de PIN');
+    }
+  }
+
+  Future<void> _saveAttemptWindow(int attempts, DateTime? until) async {
+    await _attemptStore.write(
+      key: _kAttemptWindow,
+      value: jsonEncode({
+        'attempts': attempts,
+        'until': until?.toIso8601String(),
+      }),
+    );
   }
 
   bool get enabled => _prefs.getBool(_kEnabled) ?? false;
@@ -88,10 +143,16 @@ class AppLockService {
 
   /// Desactiva el bloqueo y elimina el PIN y sus flags.
   Future<void> disable() async {
-    await _prefs.setBool(_kEnabled, false);
-    await _prefs.setBool(_kBiometric, false);
+    await _attemptWindowReady;
+    await _attemptStore.delete(key: _kAttemptWindow);
+    await _attemptStore.delete(key: _kCooldownUntil);
     await _storage.delete(key: _kPinSalt);
     await _storage.delete(key: _kPinHash);
+    await _prefs.setBool(_kBiometric, false);
+    await _prefs.setBool(_kEnabled, false);
+    _failedAttempts = 0;
+    _cooldownUntil = null;
+    _attemptWindowHealthy = true;
     locked.value = false;
   }
 
@@ -154,10 +215,39 @@ class AppLockService {
   }
 
   Future<bool> verifyPin(String pin) async {
-    if (cooldownRemaining > 0) return false;
+    // PIN y biometría comparten el mismo estado; no solapar sus escrituras.
+    if (_verifying) return false;
+    _verifying = true;
+    try {
+      return await _verifyPin(pin);
+    } catch (_) {
+      _attemptWindowHealthy = false;
+      debugPrint('[app-lock] almacenamiento de PIN no disponible');
+      return false;
+    } finally {
+      _verifying = false;
+    }
+  }
+
+  Future<bool> _verifyPin(String pin) async {
+    await _attemptWindowReady;
+    if (!_attemptWindowHealthy ||
+        (_cooldownUntil?.isAfter(DateTime.now()) ?? false)) {
+      return false;
+    }
     final salt = await _storage.read(key: _kPinSalt);
     final hash = await _storage.read(key: _kPinHash);
     if (salt == null || hash == null) return false;
+
+    // Reservar antes de comparar: una interrupción o fallo de escritura no
+    // debe permitir probar un PIN sin consumir presupuesto persistido.
+    final attempts = _failedAttempts + 1;
+    final until = attempts >= maxAttemptsBeforeCooldown
+        ? DateTime.now().add(cooldown)
+        : null;
+    await _saveAttemptWindow(until == null ? attempts : 0, until);
+    _failedAttempts = until == null ? attempts : 0;
+    _cooldownUntil = until;
 
     bool ok;
     if (hash.startsWith('pbkdf2:')) {
@@ -181,19 +271,16 @@ class AppLockService {
     }
 
     if (ok) {
+      try {
+        await _attemptStore.delete(key: _kAttemptWindow);
+        await _attemptStore.delete(key: _kCooldownUntil);
+      } catch (_) {
+        _attemptWindowHealthy = false;
+        debugPrint('[app-lock] no se pudo limpiar el límite de PIN');
+        return false;
+      }
       _failedAttempts = 0;
       _cooldownUntil = null;
-      await _storage.delete(key: _kCooldownUntil);
-    } else {
-      _failedAttempts++;
-      if (_failedAttempts >= maxAttemptsBeforeCooldown) {
-        _cooldownUntil = DateTime.now().add(cooldown);
-        _failedAttempts = 0;
-        await _storage.write(
-          key: _kCooldownUntil,
-          value: _cooldownUntil!.toIso8601String(),
-        );
-      }
     }
     return ok;
   }
@@ -212,25 +299,38 @@ class AppLockService {
 
   /// Lanza el prompt biométrico del sistema. true si el usuario verificó.
   Future<bool> authenticateBiometric({required String reason}) async {
+    if (_verifying) return false;
+    _verifying = true;
     authInProgress = true;
+    var clearingWindow = false;
     try {
-      return await _localAuth.authenticate(
+      final authenticated = await _localAuth.authenticate(
         localizedReason: reason,
         options: const AuthenticationOptions(
           biometricOnly: true,
           stickyAuth: true,
         ),
       );
-    } catch (e) {
-      debugPrint('[app-lock] excepción silenciada (se asume false): $e');
+      if (!authenticated) return false;
+      await _attemptWindowReady;
+      clearingWindow = true;
+      await _attemptStore.delete(key: _kAttemptWindow);
+      await _attemptStore.delete(key: _kCooldownUntil);
+      _failedAttempts = 0;
+      _cooldownUntil = null;
+      _attemptWindowHealthy = true;
+      return true;
+    } catch (_) {
+      if (clearingWindow) _attemptWindowHealthy = false;
+      debugPrint('[app-lock] no se pudo completar la verificación biométrica');
       return false;
     } finally {
       authInProgress = false;
+      _verifying = false;
     }
   }
 
   void unlock() {
-    _failedAttempts = 0;
     locked.value = false;
   }
 

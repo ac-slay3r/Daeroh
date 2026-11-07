@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/services.dart';
@@ -11,6 +11,7 @@ import '../../l10n/app_localizations.dart';
 import '../../main.dart';
 import '../services/bridge_manager.dart';
 import '../services/connection_manager.dart';
+import '../services/custom_model_discovery.dart';
 import '../design/modal.dart' show HermesModelGroup, showHermesModelPicker;
 import '../theme/app_theme.dart';
 import '../utils/api_error.dart';
@@ -123,7 +124,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
       _mgr ??= context.findAncestorStateOfType<HermesAppState>()!.bridgeManager;
 
   bool get _fallbackAvailable =>
-      _bridge.connected && _bridge.caps.writableTargets.isNotEmpty;
+      _bridge.connected && _bridge.caps.canEditGlobalFallback(_profile);
 
   @override
   void initState() {
@@ -973,10 +974,10 @@ class _ModelsScreenState extends State<ModelsScreen> {
       context: context,
       title: s.mdlDisconnectProviderTitle(provider.name),
       message: (provider.keyEnv.isNotEmpty && !isOAuth)
-                  ? s.mdlDisconnectApiKeyBody(provider.keyEnv) +
-                        (isActive ? s.mdlDisconnectActiveWarningModel : '')
-                  : s.mdlDisconnectOAuthBody(provider.name) +
-                        (isActive ? s.mdlDisconnectActiveWarning : ''),
+          ? s.mdlDisconnectApiKeyBody(provider.keyEnv) +
+                (isActive ? s.mdlDisconnectActiveWarningModel : '')
+          : s.mdlDisconnectOAuthBody(provider.name) +
+                (isActive ? s.mdlDisconnectActiveWarning : ''),
       actions: [
         HermesDialogAction(
           label: s.commonCancel,
@@ -1168,7 +1169,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
     final ok = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         fullscreenDialog: true,
-        builder: (_) => _OAuthLoginScreen(
+        builder: (_) => ProviderOAuthLoginScreen(
           providerName: provider.name,
           providerSlug: oauthProviderId,
           url: url,
@@ -1247,8 +1248,13 @@ class _ModelsScreenState extends State<ModelsScreen> {
   }
 
   Future<void> _setFallback(List<Map<String, String>> providers) async {
+    // Recheck after any dialog: a profile/scope change must not write global config.
+    if (!_fallbackAvailable) return;
     final client = await _bridgeMgr.clientFor(widget.connection.id);
-    if (client == null) return;
+    if (client == null || !_fallbackAvailable) {
+      client?.close();
+      return;
+    }
     setState(() => _setting = true);
     try {
       await client.setFallback(providers);
@@ -2027,42 +2033,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
     if (!mounted) return;
     setState(() => _liveLoading.add(slug));
     try {
-      List<String> models = [];
-      // Intenta OpenAI-compatible primero, luego /api/tags (Ollama nativo).
-      final r1 = await http
-          .get(Uri.parse('$base/v1/models'))
-          .timeout(const Duration(seconds: 6));
-      if (r1.statusCode == 200) {
-        final data = jsonDecode(r1.body);
-        if (data is Map) {
-          final list = data['data'];
-          if (list is List) {
-            models = list
-                .whereType<Map>()
-                .map((m) => (m['id'] ?? '').toString().trim())
-                .where((id) => id.isNotEmpty)
-                .toList();
-          }
-        }
-      }
-      if (models.isEmpty) {
-        final r2 = await http
-            .get(Uri.parse('$base/api/tags'))
-            .timeout(const Duration(seconds: 6));
-        if (r2.statusCode == 200) {
-          final data = jsonDecode(r2.body);
-          if (data is Map) {
-            final list = data['models'];
-            if (list is List) {
-              models = list
-                  .whereType<Map>()
-                  .map((m) => (m['name'] ?? '').toString().trim())
-                  .where((id) => id.isNotEmpty)
-                  .toList();
-            }
-          }
-        }
-      }
+      final models = await discoverCustomProviderModels(base);
       if (mounted && models.isNotEmpty) {
         setState(() => _liveModels[slug] = models);
       }
@@ -2504,66 +2475,248 @@ class _OAuthLoginScreen extends StatefulWidget {
     required this.code,
     required this.poll,
     this.expiresIn = 0,
+    super.key,
   });
 
   @override
   State<_OAuthLoginScreen> createState() => _OAuthLoginScreenState();
 }
 
-class _OAuthLoginScreenState extends State<_OAuthLoginScreen> {
+class _OAuthLoginScreenState extends State<_OAuthLoginScreen>
+    with WidgetsBindingObserver, RouteAware {
+  static const _fallbackExpiry = Duration(minutes: 5);
+  static const _defaultDelays = [
+    Duration(seconds: 3),
+    Duration(seconds: 3),
+    Duration(seconds: 5),
+    Duration(seconds: 8),
+    Duration(seconds: 12),
+    Duration(seconds: 20),
+  ];
+
   Timer? _timer;
   Timer? _countdown;
+  Timer? _expiryTimer;
   String? _error;
   int _remaining = 0;
+  int _pollIndex = 0;
+  int _generation = 0;
   bool _opened = false;
+  bool _polling = false;
+  bool _appForeground = false;
+  bool _routeCurrent = false;
+  bool _schedulerStarted = false;
+  bool _expired = false;
+  bool _retired = false;
+  bool _completed = false;
+  bool _resumeRecheckPending = false;
+  bool _routeSubscribed = false;
+  Duration? _nextMinimumDelay;
+  late final DateTime _expiresAt;
+
+  ProviderOAuthLoginScreen? get _provider => widget is ProviderOAuthLoginScreen
+      ? widget as ProviderOAuthLoginScreen
+      : null;
+
+  List<Duration> get _pollDelays => _provider?.pollDelays ?? _defaultDelays;
+
+  Future<bool> Function(Uri uri)? get _launchBrowser =>
+      _provider?.launchBrowser;
 
   @override
   void initState() {
     super.initState();
-    _remaining = widget.expiresIn;
-    // Copia el código y abre el navegador automáticamente (un toque menos).
+    final expiry = Duration(
+      seconds: widget.expiresIn > 0
+          ? widget.expiresIn
+          : _fallbackExpiry.inSeconds,
+    );
+    _expiresAt = DateTime.now().add(expiry);
+    _remaining = expiry.inSeconds;
+    _appForeground =
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
       if (widget.code.isNotEmpty) {
         await Clipboard.setData(ClipboardData(text: widget.code));
       }
-      await _open();
+      if (mounted) await _open();
     });
-    _timer = Timer.periodic(const Duration(seconds: 3), (_) => _poll());
-    if (_remaining > 0) {
-      _countdown = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (!mounted) return;
-        setState(() => _remaining = (_remaining - 1).clamp(0, 1 << 30));
-        if (_remaining == 0) {
-          _timer?.cancel();
-          _countdown?.cancel();
-          setState(() => _error = Strings.of(context).mdlCodeExpired);
-        }
-      });
+    _expiryTimer = Timer(expiry, _expire);
+    _countdown = Timer.periodic(const Duration(seconds: 1), (_) {
+      _refreshExpiry();
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _schedulerStarted = true;
+      _scheduleNextPoll();
+    });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (!_routeSubscribed && route is PageRoute<dynamic>) {
+      hermesRouteObserver.subscribe(this, route);
+      _routeSubscribed = true;
+    }
+    _setRouteCurrent(route?.isCurrent == true);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _setAppForeground(state == AppLifecycleState.resumed);
+  }
+
+  @override
+  void didPushNext() => _setRouteCurrent(false);
+
+  @override
+  void didPopNext() => _setRouteCurrent(true);
+
+  @override
+  void didPop() => _retire();
+
+  bool get _canPoll =>
+      !_retired &&
+      _appForeground &&
+      _routeCurrent &&
+      ModalRoute.of(context)?.isCurrent == true;
+
+  void _retire() {
+    if (_retired) return;
+    _retired = true;
+    _appForeground = false;
+    _routeCurrent = false;
+    _resumeRecheckPending = false;
+    _nextMinimumDelay = null;
+    _generation++;
+    _timer?.cancel();
+    _timer = null;
+    _countdown?.cancel();
+    _expiryTimer?.cancel();
+  }
+
+  void _setAppForeground(bool foreground) {
+    if (_appForeground == foreground || !mounted) return;
+    final wasAvailable = _canPoll;
+    _appForeground = foreground;
+    _updatePollingAvailability(wasAvailable);
+  }
+
+  void _setRouteCurrent(bool current) {
+    if (_routeCurrent == current || !mounted) return;
+    final wasAvailable = _canPoll;
+    _routeCurrent = current;
+    _updatePollingAvailability(wasAvailable);
+  }
+
+  void _updatePollingAvailability(bool wasAvailable) {
+    final available = _canPoll;
+    if (available == wasAvailable) return;
+    _generation++;
+    _timer?.cancel();
+    _timer = null;
+    if (!available) {
+      _resumeRecheckPending = false;
+      return;
+    }
+    if (_schedulerStarted && !_completed && _error == null) {
+      if (_refreshExpiry()) return;
+      if (_polling) {
+        _resumeRecheckPending = true;
+      } else {
+        _scheduleNextPoll(immediate: true);
+      }
     }
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
-    _countdown?.cancel();
+    _retire();
+    if (_routeSubscribed) hermesRouteObserver.unsubscribe(this);
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
+  void _scheduleNextPoll({bool immediate = false, Duration? minimumDelay}) {
+    _timer?.cancel();
+    _timer = null;
+    if (!mounted ||
+        !_canPoll ||
+        _completed ||
+        _error != null ||
+        _polling ||
+        _refreshExpiry()) {
+      return;
+    }
+    final delays = _pollDelays;
+    final configured = immediate
+        ? Duration.zero
+        : delays.isEmpty
+        ? const Duration(seconds: 5)
+        : delays[_pollIndex < delays.length ? _pollIndex++ : delays.length - 1];
+    final delay = minimumDelay != null && configured < minimumDelay
+        ? minimumDelay
+        : configured;
+    _timer = Timer(delay, () {
+      _timer = null;
+      unawaited(_poll());
+    });
+  }
+
+  void _expire() {
+    if (!mounted || _retired || _completed || _error != null) return;
+    _expired = true;
+    _generation++;
+    _timer?.cancel();
+    _countdown?.cancel();
+    _expiryTimer?.cancel();
+    setState(() => _error = Strings.of(context).mdlCodeExpired);
+  }
+
+  bool _refreshExpiry() {
+    if (_retired) return true;
+    if (_expired || !DateTime.now().isBefore(_expiresAt)) {
+      _expire();
+      return true;
+    }
+    final remaining = _expiresAt.difference(DateTime.now()).inSeconds;
+    if (mounted && remaining != _remaining) {
+      setState(() => _remaining = remaining.clamp(0, 1 << 30));
+    }
+    return false;
+  }
+
   Future<void> _poll() async {
+    if (!mounted ||
+        !_canPoll ||
+        _completed ||
+        _error != null ||
+        _polling ||
+        _refreshExpiry()) {
+      return;
+    }
+    final generation = _generation;
+    setState(() => _polling = true);
     try {
       final res = await widget.poll();
+      if (!mounted ||
+          _refreshExpiry() ||
+          !_canPoll ||
+          _completed ||
+          generation != _generation) {
+        return;
+      }
       final status = (res['status'] ?? 'pending').toString();
       final normalized = status.toLowerCase();
-      if (kDebugMode) {
-        debugPrint(
-          'OAuth poll ${widget.providerSlug}: status=$status keys=${res.keys.toList()}',
-        );
-      }
-      if (!mounted) return;
       if (!_isPendingStatus(normalized)) {
         _timer?.cancel();
         _countdown?.cancel();
         if (_isSuccessStatus(normalized)) {
+          _completed = true;
           Navigator.of(context).pop(true);
         } else {
           setState(() {
@@ -2576,10 +2729,42 @@ class _OAuthLoginScreenState extends State<_OAuthLoginScreen> {
                     .toString();
           });
         }
+      } else if (normalized == 'slow_down') {
+        _nextMinimumDelay = const Duration(seconds: 5);
+      } else {
+        _nextMinimumDelay = Duration.zero;
       }
-    } catch (e) {
-      if (kDebugMode) debugPrint('OAuth poll ${widget.providerSlug} error: $e');
-      // Reintenta en el siguiente tick.
+    } catch (_) {
+      if (mounted &&
+          !_refreshExpiry() &&
+          _canPoll &&
+          !_completed &&
+          generation == _generation) {
+        _nextMinimumDelay = const Duration(seconds: 5);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _polling = false);
+        final resumeRecheckPending = _resumeRecheckPending;
+        _resumeRecheckPending = false;
+        if (resumeRecheckPending &&
+            _canPoll &&
+            !_completed &&
+            _error == null &&
+            !_refreshExpiry()) {
+          _resumeRecheckPending = false;
+          _scheduleNextPoll(immediate: true);
+        } else if (_canPoll &&
+            !_completed &&
+            _error == null &&
+            generation == _generation &&
+            !_refreshExpiry() &&
+            _nextMinimumDelay != null) {
+          final delay = _nextMinimumDelay!;
+          _nextMinimumDelay = null;
+          _scheduleNextPoll(minimumDelay: delay);
+        }
+      }
     }
   }
 
@@ -2613,10 +2798,12 @@ class _OAuthLoginScreenState extends State<_OAuthLoginScreen> {
     final uri = Uri.tryParse(widget.url);
     if (uri != null) {
       try {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-        if (mounted) setState(() => _opened = true);
-      } catch (e) {
-        debugPrint('[models] excepción silenciada (se ignora sin más): $e');
+        final opened = _launchBrowser != null
+            ? await _launchBrowser!(uri)
+            : await launchUrl(uri, mode: LaunchMode.externalApplication);
+        if (mounted && opened) setState(() => _opened = true);
+      } catch (_) {
+        // Browser launch is best-effort; do not log OAuth URL or state.
       }
     }
   }
@@ -2766,6 +2953,23 @@ class _ProviderKeyScreen extends StatefulWidget {
 
   @override
   State<_ProviderKeyScreen> createState() => _ProviderKeyScreenState();
+}
+
+class ProviderOAuthLoginScreen extends _OAuthLoginScreen {
+  const ProviderOAuthLoginScreen({
+    required super.providerName,
+    required super.providerSlug,
+    required super.url,
+    super.code = '',
+    required super.poll,
+    super.expiresIn = 0,
+    this.launchBrowser,
+    this.pollDelays,
+    super.key,
+  });
+
+  final Future<bool> Function(Uri uri)? launchBrowser;
+  final List<Duration>? pollDelays;
 }
 
 class _ProviderKeyScreenState extends State<_ProviderKeyScreen> {

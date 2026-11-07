@@ -9,6 +9,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import '../utils/private_http_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
@@ -27,6 +28,7 @@ import '../models/session.dart';
 import 'chat_draft_store.dart';
 import 'bridge_client.dart';
 import 'local_transcript_store.dart';
+import 'chat_preview_store.dart';
 import 'mission_bot_chat_store.dart';
 import 'secure_storage.dart';
 import 'turn_outbox_store.dart';
@@ -1072,12 +1074,20 @@ class ConnectionManager {
       () async => LocalTranscriptStore.deleteForConnection(id),
     );
     await bestEffortCleanup(
+      () async => ChatPreviewStore.deleteForConnection(id),
+    );
+    await bestEffortCleanup(
       () async => MissionBotChatStore(prefs).deleteForConnection(id),
     );
-    // Credenciales (Keystore).
-    await _secure.deleteApiKey(id);
-    await _secure.deleteDashboardSecrets(id);
-    await _secure.deleteBridge(id);
+    // Credenciales (Keystore): intentar todas aunque falle otra authority.
+    // Esperar todos los intentos y propagar el error antes de retirar la
+    // conexión, para no anunciar una baja completa si quedan secretos.
+    await Future.wait<void>([
+      _secure.deleteApiKey(id),
+      _secure.deleteDashboardSecrets(id),
+      _secure.deleteBridge(id),
+      _secure.deleteSsh(id),
+    ], eagerError: false);
     // Todos los datos con ámbito de esta conexión (caps, perfil activo, runs,
     // aprobaciones, sesiones archivadas/ocultas, borradores de memoria).
     await _removeConnectionPrefs(id);
@@ -1348,7 +1358,7 @@ class ApiClient {
              ? baseUrl.substring(0, baseUrl.length - 1)
              : baseUrl,
        ),
-       _http = httpClient ?? http.Client();
+       _http = PrivateHttpClient(httpClient ?? http.Client());
 
   Map<String, String> get _headers => {
     'Authorization': 'Bearer $_apiKey',
@@ -1639,7 +1649,10 @@ class ApiClient {
 
   // ── Health check ─────────────────────────────────────────────────────
 
-  Future<bool> healthCheck() async {
+  Future<bool> healthCheck({
+    String? profile,
+    bool verifySessionAccess = true,
+  }) async {
     try {
       final health = await _http
           .get(Uri.parse('$baseUrl/health'), headers: _headers)
@@ -1647,11 +1660,20 @@ class ApiClient {
       if (health.statusCode == 401 || health.statusCode == 403) return false;
       if (health.statusCode != 200) return false;
 
-      // /health may be intentionally public on some deployments. Confirm that
-      // the saved API key can also reach an authenticated endpoint before the
-      // add/update connection dialogs accept it as valid.
+      // /health may be intentionally public on some deployments. Connection
+      // setup confirms its saved key here; Home deliberately skips this probe
+      // so a session-library permission failure remains distinct from agent
+      // transport health.
+      if (!verifySessionAccess) return true;
+      final owner = validateCronProfile(profile);
+      final sessionEndpoint = profileEndpoint('api/sessions', profile: owner);
       final sessions = await _http
-          .get(Uri.parse('$baseUrl/api/sessions'), headers: _headers)
+          .get(
+            Uri.parse(
+              '$baseUrl/$sessionEndpoint',
+            ).replace(queryParameters: const {'limit': '0'}),
+            headers: _headers,
+          )
           .timeout(const Duration(seconds: 10));
       return sessions.statusCode == 200;
     } catch (e) {
@@ -1763,24 +1785,47 @@ class ApiClient {
     required String? profile,
   }) async {
     final connectionId = _connectionId;
-    if (connectionId == null || connectionId.isEmpty) return;
+    if (connectionId == null || connectionId.isEmpty) {
+      // An unbound transport cannot identify a preview owner. Preserve the
+      // confirmed remote-delete result while recording the local cleanup fault;
+      // bound Settings/profile cleanup awaits and reports its own durable error.
+      try {
+        await ChatPreviewStore.deleteForSession(sessionId);
+      } catch (error) {
+        debugPrint('[connection] preview cleanup failed (${error.runtimeType})');
+      }
+      return;
+    }
     final ownerProfile = Session.profileOwner(profile);
+    // The server has already confirmed deletion. Each local store is independent
+    // so a draft/outbox failure cannot retain a private rendered preview.
     try {
       final prefs = await SharedPreferences.getInstance();
       await ChatDraftStore(
         prefs,
       ).clear(connectionId, sessionId, profile: ownerProfile);
+    } catch (error) {
+      debugPrint('[connection] draft cleanup failed (${error.runtimeType})');
+    }
+    try {
       await TurnOutboxStore().deleteForChat(
         connectionId,
         sessionId,
         profile: ownerProfile,
       );
     } catch (error) {
-      // El servidor ya confirmó el borrado: un fallo local de Keystore no debe
-      // convertir esa operación remota correcta en un falso error de UI.
-      debugPrint(
-        '[connection] session recovery cleanup failed (${error.runtimeType})',
+      debugPrint('[connection] outbox cleanup failed (${error.runtimeType})');
+    }
+    try {
+      await ChatPreviewStore.clear(
+        ChatPreviewScope(
+          connectionId: connectionId,
+          profile: ownerProfile,
+          sessionId: sessionId,
+        ),
       );
+    } catch (error) {
+      debugPrint('[connection] preview cleanup failed (${error.runtimeType})');
     }
   }
 
@@ -2442,6 +2487,7 @@ class DashboardClient {
 
   final http.Client _http;
   final String _baseUrl;
+  final String? _connectionId;
   final DateTime Function() _now;
   String? _manualToken;
   String? _basicUser;
@@ -2496,6 +2542,7 @@ class DashboardClient {
     int port = 9119,
     bool useHttps = false,
     String? manualToken,
+    String? connectionId,
     String? basicUser,
     String? basicPass,
     http.Client? httpClientOverride,
@@ -2504,9 +2551,10 @@ class DashboardClient {
          '${useHttps ? 'https' : 'http'}://$host:$port',
        ),
        _manualToken = manualToken,
+       _connectionId = connectionId,
        _basicUser = basicUser,
        _basicPass = basicPass,
-       _http = httpClientOverride ?? http.Client(),
+       _http = PrivateHttpClient(httpClientOverride ?? http.Client()),
        _now = nowOverride ?? DateTime.now;
 
   /// Cliente que respeta el modo de auth de la instancia, leyendo los
@@ -2520,6 +2568,7 @@ class DashboardClient {
       host: conn.dashboardHost,
       port: conn.dashboardPort,
       useHttps: conn.dashboardUseHttps,
+      connectionId: conn.id,
       httpClientOverride: httpClientOverride,
     );
     if (conn.dashboardAuthMode == AuthMode.sessionToken ||
@@ -2574,6 +2623,7 @@ class DashboardClient {
       host: conn.dashboardHost,
       port: conn.dashboardPort,
       useHttps: conn.dashboardUseHttps,
+      connectionId: conn.id,
       manualToken: conn.dashboardAuthMode == AuthMode.sessionToken
           ? secrets?.sessionToken
           : null,
@@ -3782,7 +3832,15 @@ class DashboardClient {
       apiPatch('profiles/$name', body: {'new_name': newName});
 
   /// DELETE /api/profiles/{name} — elimina el perfil.
-  Future<void> deleteProfile(String name) => apiDelete('profiles/$name');
+  Future<void> deleteProfile(String name) async {
+    await apiDelete('profiles/$name');
+    // Only a client bound to a SavedConnection can retire a local owner.
+    // A matching profile name on another server is unrelated private history.
+    final connectionId = _connectionId;
+    if (connectionId != null && connectionId.isNotEmpty) {
+      await ChatPreviewStore.deleteForProfile(connectionId, name);
+    }
+  }
 
   /// GET /api/profiles/{name}/soul → {content, exists}.
   Future<Map<String, dynamic>> getProfileSoul(String name) =>
@@ -4149,6 +4207,22 @@ class DashboardClient {
   Future<List<Map<String, dynamic>>> getSkills({String? profile}) async {
     final data = await apiGetList('skills${_profileQuery(profile)}');
     return data.whereType<Map<String, dynamic>>().toList();
+  }
+
+  /// PUT /api/skills/toggle — enable/disable a skill in [profile]'s own
+  /// config. Named profiles are sent in both the query and the body (the
+  /// server accepts either) so a dropped parameter can never fall back to the
+  /// default profile's global config. Default/empty stay unscoped.
+  Future<Map<String, dynamic>> setSkillEnabled(
+    String name,
+    bool enabled, {
+    String? profile,
+  }) {
+    final scoped = _profileQuery(profile).isNotEmpty;
+    return apiPut(
+      'skills/toggle${_profileQuery(profile)}',
+      body: {'name': name, 'enabled': enabled, if (scoped) 'profile': profile},
+    );
   }
 
   /// GET /api/logs — tail del log elegido con filtros server-side.

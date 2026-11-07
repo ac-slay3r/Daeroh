@@ -13,6 +13,8 @@ import 'package:flutter/foundation.dart';
 
 import '../models/agent_profile.dart';
 import '../models/kanban.dart';
+import '../utils/private_websocket_client.dart';
+import '../utils/transport_privacy.dart';
 import 'connection_manager.dart';
 
 const int kKanbanAttachmentMaxBytes = 25 * 1024 * 1024;
@@ -684,8 +686,10 @@ class KanbanClient {
       token: token,
       board: board,
     );
+    TransportPrivacy.requireAllowed(wsUri.toString());
     final ws = await WebSocket.connect(
       wsUri.toString(),
+      customClient: privateWebSocketHttpClient,
     ).timeout(const Duration(seconds: 10));
     // Sin ping, un socket muerto (cambio wifi→datos, NAT caducado) queda
     // zombi: el board deja de actualizarse SIN error y la reconexión de la

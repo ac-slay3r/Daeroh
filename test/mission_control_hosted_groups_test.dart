@@ -241,6 +241,73 @@ void main() {
     },
   );
 
+  for (final inconsistent in [false, true]) {
+    test('one ${inconsistent ? 'inconsistent' : 'unavailable'} hosted room '
+        'does not hide a healthy room', () async {
+      final healthy = _room(name: 'Healthy', revision: 2);
+      final failed = _room(name: 'Failed', revision: 2, roomId: 'room-failed');
+      final calls = <String>[];
+      final caps = GroupsCapabilities.tryParse(
+        {
+          'protocol_version': 2,
+          'driver': true,
+          'methods': [
+            'groups.capabilities',
+            'groups.list',
+            'groups.state',
+            'groups.log',
+          ],
+          'max_log_limit': 50,
+        },
+        connectionId: 'fixture',
+        generation: 4,
+      )!;
+      final repository = MissionControlRepository(
+        profilesLoader: () async => [],
+        sessionsLoader: () async => [],
+        boardLoader: () async => const KanbanBoard(columns: []),
+        hostedGroupsGateway: MissionHostedGroupsGateway.callbacks(
+          capabilities: () async => caps,
+          list: ({required generation}) async =>
+              inconsistent ? [healthy, failed] : [failed, healthy],
+          state: (roomId, {required generation}) async {
+            calls.add('state:$roomId');
+            if (roomId == failed.roomId) {
+              if (inconsistent) {
+                return _room(name: 'Stale', revision: 1, roomId: failed.roomId);
+              }
+              throw StateError('room unavailable');
+            }
+            return healthy;
+          },
+          log: (roomId, {required generation}) async {
+            calls.add('log:$roomId');
+            return _log(text: 'Healthy message');
+          },
+        ),
+      );
+
+      final snapshot = await repository.load();
+      expect(snapshot.hostedGroupsCapability, MissionCapabilityState.available);
+      expect(snapshot.hostedGroups.rooms.map((room) => room.roomId), [
+        healthy.roomId,
+      ]);
+      expect(
+        snapshot.hostedGroups.logs.single.events.single.publicText,
+        'Healthy message',
+      );
+      expect(snapshot.hostedGroups.roomFailures.keys, [failed.roomId]);
+      expect(
+        snapshot.failures['hostedGroups'],
+        same(snapshot.hostedGroups.roomFailures),
+      );
+      expect(calls, contains('state:${healthy.roomId}'));
+      if (!inconsistent) {
+        expect(calls, isNot(contains('log:${failed.roomId}')));
+      }
+    });
+  }
+
   test(
     'repository exposes every enabled official mutation only through generation',
     () async {
@@ -500,7 +567,9 @@ void main() {
       await _pumpHostedScreen(tester, manager, source);
 
       await _openRoomActions(tester);
-      await tester.tap(find.byKey(const ValueKey('roster-room-action-disband')));
+      await tester.tap(
+        find.byKey(const ValueKey('roster-room-action-disband')),
+      );
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('roster-room-confirm')));
       await tester.pumpAndSettle();
@@ -1501,7 +1570,7 @@ HostedGroupRoom _mixedMemberRoom({int latestSeq = 0}) =>
 final _connection = SavedConnection(
   id: 'screen-connection',
   label: 'Screen',
-  host: 'localhost',
+  host: '127.0.0.1',
   port: 8642,
   apiKey: 'unused',
 );
@@ -1538,12 +1607,10 @@ Future<void> _pumpHostedScreen(
 
 /// The first hosted room row of the Bots roster (rooms live there now; the
 /// separate Work destination is gone).
-Finder _roomRow() => find
-    .byWidgetPredicate((widget) {
-      final key = widget.key;
-      return key is ValueKey<String> && key.value.startsWith('roster-room-row-');
-    })
-    .first;
+Finder _roomRow() => find.byWidgetPredicate((widget) {
+  final key = widget.key;
+  return key is ValueKey<String> && key.value.startsWith('roster-room-row-');
+}).first;
 
 /// Long-press a room row to open its actions sheet.
 Future<void> _openRoomActions(WidgetTester tester) async {

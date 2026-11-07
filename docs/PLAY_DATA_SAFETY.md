@@ -19,6 +19,7 @@ política detectable por el revisor.
 | Texto de las respuestas del chat | ElevenLabs (`api.elevenlabs.io`) o endpoint OpenAI-compatible (`api.openai.com` por defecto) | Solo si el usuario elige TTS «ElevenLabs» o «Compatible con OpenAI» en Ajustes → Voz, con su propia API key |
 | Audio de dictado o conversación | Reconocedor de voz del sistema o servidor STT configurado por el usuario | Solo con esos motores. Sherpa/Whisper procesan en el dispositivo. La continuidad bloqueada está apagada por defecto y exige opt-in independiente |
 | Texto de búsqueda de skills | skills.sh | Solo al buscar en el catálogo de skills |
+| Diagnóstico de fiabilidad allowlist | GlitchTip autoalojado por Daeroh | Solo con DSN compilado sin secret key y después de activar Ajustes → Datos → «Share reliability diagnostics». Envía `flutter`/`platform`, hash truncado de stack, ID efímero de evento, timestamp y contexto de protocolo (SDK/versión, public key y trace ID aleatorio); no texto de error, contenido, identificador de usuario/dispositivo, request, breadcrumb ni adjunto |
 
 Además, las fotos, imágenes y documentos que el usuario adjunta se envían al
 servidor Hermes que él mismo configura. No llegan al desarrollador, pero deben
@@ -30,12 +31,11 @@ huggingface.co/GitHub son GET puros: no envían datos del usuario.)
 
 ## Resumen para el formulario
 
-- **¿La app recopila o comparte datos de usuario?** → La app **no envía datos al
-  desarrollador** (no operamos servidores; el destino principal es el servidor
-  self-hosted del usuario). PERO, en términos de Play, la respuesta segura es:
-  **Sí**. La app transmite mensajes al Hermes y a la IA que configure el
-  usuario, y puede compartir texto/audio con servicios de voz opt-in y
-  búsquedas con skills.sh. El escáner ZXing es local y no comparte datos.
+- **¿La app recopila o comparte datos de usuario?** → **Sí**. La app transmite
+  mensajes al Hermes y a la IA que configure el usuario, y puede compartir
+  texto/audio con servicios de voz opt-in y búsquedas con skills.sh. Si el build
+  incluye el DSN y el usuario opta explícitamente por diagnóstico, también envía
+  eventos de rendimiento/diagnóstico minimizados al GlitchTip autoalojado.
 
 ## Sección por sección
 
@@ -75,9 +75,13 @@ huggingface.co/GitHub son GET puros: no envían datos del usuario.)
   iniciado por el usuario a su servidor. Purpose: App functionality.
 - **App interactions**: la búsqueda del catálogo de skills se envía a skills.sh
   al usarla (sin identificadores de usuario).
-- **App info and performance / Diagnostics**: No por el escáner QR. ZXing se
-  ejecuta localmente y no envía métricas. Revalidar el AAB final por si otra
-  dependencia futura introduce un SDK de diagnóstico.
+- **App info and performance / Diagnostics**: Sí solo en builds con DSN, tras
+  opt-in explícito: fuente fija del fallo (`flutter`/`platform`) y hash truncado
+  de la forma de stack para agrupar errores, además del ID efímero de evento,
+  timestamp y contexto de protocolo (SDK/versión, public key y trace ID
+  aleatorio). Purpose: App functionality. No se incluyen mensajes de error,
+  contenido, identificadores de usuario/dispositivo, requests, adjuntos ni
+  breadcrumbs. En builds sin DSN, marcar No.
 - **Contacts, Calendar, Web browsing, Device IDs**: No.
 
 ### Purposes (audio/mensajes/búsqueda)
@@ -87,8 +91,9 @@ huggingface.co/GitHub son GET puros: no envían datos del usuario.)
 ### Security practices
 - Datos cifrados en tránsito: parcial (ver arriba; TLS hacia terceros).
 - Datos cifrados en reposo: credenciales en Android Keystore / secure storage.
-- Sin SDK publicitario, FCM ni analítica operada por XPeta Lab. El escáner QR
-  ZXing no incluye telemetría ni servicios de Google.
+- Sin SDK publicitario, FCM ni analítica operada por XPeta Lab. El diagnóstico
+  opcional usa GlitchTip autoalojado con una allowlist de evento mínima; el
+  escáner QR ZXing no incluye telemetría ni servicios de Google.
 - `allowBackup=false`: nada viaja a la copia de seguridad de Google.
 - La cola local de turnos y el estado de las notificaciones permanecen solo en
   el dispositivo. No añaden ningún destino de red ni cambian las respuestas del

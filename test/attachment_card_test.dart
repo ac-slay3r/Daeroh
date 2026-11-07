@@ -18,6 +18,57 @@ import 'package:hermes_android/l10n/app_localizations_en.dart';
 import 'package:hermes_android/l10n/app_localizations_es.dart';
 import 'package:video_player/video_player.dart';
 
+// A real file whose hash read can be held pending independently of fake time.
+class _GatedPdfFile implements File {
+  _GatedPdfFile(this.delegate);
+
+  final File delegate;
+  final started = Completer<void>();
+  final release = Completer<void>();
+
+  @override
+  String get path => delegate.path;
+
+  @override
+  Uri get uri => delegate.uri;
+
+  @override
+  Directory get parent => delegate.parent;
+
+  @override
+  Stream<List<int>> openRead([int? start, int? end]) async* {
+    if (!started.isCompleted) started.complete();
+    await release.future;
+    yield* delegate.openRead(start, end);
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+Future<void> _waitForPdfReady(
+  WidgetTester tester, {
+  required bool Function() isReady,
+  required String Function() diagnostics,
+}) async {
+  final elapsed = Stopwatch()..start();
+  const timeout = Duration(seconds: 5);
+  await tester.pump();
+  while (!isReady()) {
+    if (elapsed.elapsed >= timeout) {
+      throw TestFailure(
+        'PDF readiness timed out after $timeout: ${diagnostics()}',
+      );
+    }
+    // Yield to real filesystem/codec work, then rebuild its FutureBuilder.
+    // This interval is polling, not an assumption that rendering has finished.
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 10)),
+    );
+    await tester.pump();
+  }
+}
+
 class _FakeAudioPlayback implements GeneratedAudioPlayback {
   final durations = StreamController<Duration>.broadcast();
   final positions = StreamController<Duration>.broadcast();
@@ -1330,85 +1381,133 @@ void main() {
     expect((openedExternally, shared, saved), (1, 1, 1));
   });
 
-  testWidgets('PDF generated preview uses opaque cache keys and page zero', (
-    tester,
-  ) async {
-    final directory = Directory.systemTemp.createTempSync('generated-pdf-');
-    addTearDown(() => directory.deleteSync(recursive: true));
-    final connectionKey = 'a' * 64;
-    final fileKey = 'b' * 64;
-    final cacheDirectory = Directory(
-      '${directory.path}/generated_media/$connectionKey',
-    )..createSync(recursive: true);
-    final file = File('${cacheDirectory.path}/$fileKey.pdf')
-      ..writeAsBytesSync(utf8.encode('%PDF-1.4\n'));
-    final pngBytes = base64Decode(
-      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC'
-      'AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
-    );
-    MethodCall? renderCall;
-    const channel = MethodChannel('hermes/document_preview');
-    final messenger =
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-    messenger.setMockMethodCallHandler(channel, (call) async {
-      renderCall = call;
-      return <String, Object>{'pngBytes': pngBytes, 'pageCount': 3};
-    });
-    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
-    var opened = 0;
-    var shared = 0;
-    var saved = 0;
-
-    await tester.runAsync(() async {
-      await tester.pumpWidget(
-        host(
-          GeneratedPdfPreviewCard(
-            file: file,
-            name: 'report.pdf',
-            sizeBytes: file.lengthSync(),
-            onOpen: () => opened++,
-            onShare: () => shared++,
-            onSave: () => saved++,
-          ),
-        ),
+  for (final delayedRead in [false, true]) {
+    testWidgets('PDF generated preview uses opaque cache keys and page zero'
+        '${delayedRead ? ' with delayed File.openRead beyond 50ms' : ''}', (
+      tester,
+    ) async {
+      final directory = Directory.systemTemp.createTempSync('generated-pdf-');
+      addTearDown(() => directory.deleteSync(recursive: true));
+      final connectionKey = 'a' * 64;
+      final fileKey = 'b' * 64;
+      final cacheDirectory = Directory(
+        '${directory.path}/generated_media/$connectionKey',
+      )..createSync(recursive: true);
+      final file = File('${cacheDirectory.path}/$fileKey.pdf')
+        ..writeAsBytesSync(utf8.encode('%PDF-1.4\n'));
+      final pngBytes = base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC'
+        'AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
       );
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      MethodCall? renderCall;
+      const channel = MethodChannel('hermes/document_preview');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        renderCall = call;
+        return <String, Object>{'pngBytes': pngBytes, 'pageCount': 3};
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+      var opened = 0;
+      var shared = 0;
+      var saved = 0;
+
+      _GatedPdfFile? gated;
+      if (delayedRead) {
+        // Futures awaited by runAsync must originate in its real async zone.
+        await tester.runAsync(() async {
+          gated = _GatedPdfFile(file);
+        });
+        addTearDown(() {
+          if (!gated!.release.isCompleted) gated!.release.complete();
+        });
+      }
+
+      await tester.runAsync(() async {
+        await tester.pumpWidget(
+          host(
+            GeneratedPdfPreviewCard(
+              file: gated ?? file,
+              name: 'report.pdf',
+              sizeBytes: file.lengthSync(),
+              onOpen: () => opened++,
+              onShare: () => shared++,
+              onSave: () => saved++,
+            ),
+          ),
+        );
+      });
+
+      if (gated != null) {
+        await tester.runAsync(() async {
+          await gated!.started.future.timeout(
+            const Duration(seconds: 5),
+            onTimeout: () => throw TestFailure('PDF openRead did not start'),
+          );
+          // Regression checkpoint only: hold actual I/O beyond the old wait.
+          await Future<void>.delayed(const Duration(milliseconds: 75));
+        });
+        await tester.pump(const Duration(milliseconds: 50));
+        expect(renderCall, isNull);
+        expect(
+          find.byKey(const ValueKey('generated-pdf-loading')),
+          findsOneWidget,
+        );
+        await tester.pump(const Duration(seconds: 5));
+        expect(renderCall, isNull, reason: 'fake time cannot release real I/O');
+        await tester.runAsync(() async => gated!.release.complete());
+      }
+      await _waitForPdfReady(
+        tester,
+        isReady: () =>
+            renderCall != null &&
+            find
+                .byKey(const ValueKey('generated-pdf-thumbnail'))
+                .evaluate()
+                .isNotEmpty,
+        diagnostics: () =>
+            'renderCall=${renderCall?.method}, '
+            'loading=${find.byKey(const ValueKey('generated-pdf-loading')).evaluate().length}, '
+            'delayedRead=$delayedRead',
+      );
+
+      expect(renderCall?.method, 'renderPdfPage');
+      final arguments = renderCall?.arguments as Map<Object?, Object?>;
+      expect(arguments['page'], 0);
+      expect(arguments['generatedConnectionKey'], connectionKey);
+      expect(arguments['generatedFileKey'], fileKey);
+      expect(arguments.containsKey('path'), isFalse);
+      expect(arguments['storageKey'], arguments['expectedSha256']);
+      final thumbnail = find.byKey(
+        const ValueKey<String>('generated-pdf-thumbnail'),
+      );
+      final caption = find.byKey(
+        const ValueKey<String>('generated-pdf-caption'),
+      );
+      final card = find.byKey(
+        const ValueKey<String>('generated-pdf-preview-card'),
+      );
+      final actions = find.byKey(
+        const ValueKey<String>('generated-pdf-actions'),
+      );
+      expect(thumbnail, findsOneWidget);
+      expect(find.textContaining('3 páginas'), findsOneWidget);
+      expect(tester.getRect(thumbnail).width, tester.getRect(caption).width);
+      expect(
+        tester.getRect(thumbnail).bottom,
+        lessThanOrEqualTo(tester.getRect(caption).top),
+      );
+      final thumbnailRect = tester.getRect(thumbnail);
+      expect(thumbnailRect.width / thumbnailRect.height, closeTo(1, 0.01));
+      expect(tester.getRect(thumbnail).height, lessThanOrEqualTo(320));
+      expect(tester.getRect(card).left, tester.getRect(actions).left);
+
+      await tester.tap(find.text('Abrir'));
+      await tester.tap(find.text('Compartir'));
+      await tester.tap(find.text('Guardar'));
+      expect((opened, shared, saved), (1, 1, 1));
     });
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 50));
-
-    expect(renderCall?.method, 'renderPdfPage');
-    final arguments = renderCall?.arguments as Map<Object?, Object?>;
-    expect(arguments['page'], 0);
-    expect(arguments['generatedConnectionKey'], connectionKey);
-    expect(arguments['generatedFileKey'], fileKey);
-    expect(arguments.containsKey('path'), isFalse);
-    expect(arguments['storageKey'], arguments['expectedSha256']);
-    final thumbnail = find.byKey(
-      const ValueKey<String>('generated-pdf-thumbnail'),
-    );
-    final caption = find.byKey(const ValueKey<String>('generated-pdf-caption'));
-    final card = find.byKey(
-      const ValueKey<String>('generated-pdf-preview-card'),
-    );
-    final actions = find.byKey(const ValueKey<String>('generated-pdf-actions'));
-    expect(thumbnail, findsOneWidget);
-    expect(find.textContaining('3 páginas'), findsOneWidget);
-    expect(tester.getRect(thumbnail).width, tester.getRect(caption).width);
-    expect(
-      tester.getRect(thumbnail).bottom,
-      lessThanOrEqualTo(tester.getRect(caption).top),
-    );
-    final thumbnailRect = tester.getRect(thumbnail);
-    expect(thumbnailRect.width / thumbnailRect.height, closeTo(1, 0.01));
-    expect(tester.getRect(thumbnail).height, lessThanOrEqualTo(320));
-    expect(tester.getRect(card).left, tester.getRect(actions).left);
-
-    await tester.tap(find.text('Abrir'));
-    await tester.tap(find.text('Compartir'));
-    await tester.tap(find.text('Guardar'));
-    expect((opened, shared, saved), (1, 1, 1));
-  });
+  }
 
   testWidgets('PDF viewer renders pages lazily with per-page zoom', (
     tester,
@@ -1464,11 +1563,17 @@ void main() {
           ),
         ),
       );
-      await Future<void>.delayed(const Duration(milliseconds: 50));
     });
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 50));
-    await tester.pump();
+    // The viewer first reads file bytes asynchronously before rendering pages.
+    await _waitForPdfReady(
+      tester,
+      isReady: () => find
+          .byKey(const ValueKey('attachment-pdf-page-0'))
+          .evaluate()
+          .isNotEmpty,
+      diagnostics: () =>
+          'viewer page zero missing; renderedPages=$renderedPages',
+    );
 
     expect(renderedPages, contains(0));
     expect(renderedPages, isNot(contains(2)));

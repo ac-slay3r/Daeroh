@@ -130,19 +130,40 @@ class RunRegistry {
   static const _prefix = 'runs_';
   static const _maxRecords = 50;
 
+  // SharedPreferences is a singleton within the app isolate. Scope queues to
+  // that store and key, not to a screen/registry instance. Other connections
+  // remain independent; cross-isolate/native writers require another protocol.
+  static final _stores = Expando<Map<String, _RunRegistryState>>();
+
   final SharedPreferences _prefs;
   final String _key;
   final String _connectionId;
-  List<RunRecord> _records;
+  final _RunRegistryState _state;
 
-  RunRegistry._(this._prefs, this._key, this._connectionId, this._records);
+  RunRegistry._(this._prefs, this._key, this._connectionId, this._state);
 
   static Future<RunRegistry> load(
     SharedPreferences prefs,
     String connectionId,
   ) async {
     final key = '$_prefix$connectionId';
-    final raw = prefs.getString(key);
+    final states = _stores[prefs] ??= {};
+    final state = states.putIfAbsent(key, _RunRegistryState.new);
+    final registry = RunRegistry._(prefs, key, connectionId, state);
+    await state.serialize(() async {
+      await prefs.reload();
+      final records = registry._read();
+      if (records.any((record) => record.connId != connectionId)) {
+        await registry._persist(registry._owned(records));
+      } else {
+        state.records = records;
+      }
+    });
+    return registry;
+  }
+
+  List<RunRecord> _read() {
+    final raw = _prefs.getString(_key);
     var records = <RunRecord>[];
     if (raw != null) {
       try {
@@ -158,46 +179,38 @@ class RunRegistry {
         records = [];
       }
     }
-    final ownershipChanged = records.any(
-      (record) => record.connId != connectionId,
-    );
-    final ownedRecords = records
-        .map(
-          (record) => record.connId == connectionId
-              ? record
-              : record.copyWith(connId: connectionId),
-        )
-        .toList();
-    if (ownershipChanged) {
-      await prefs.setString(
-        key,
-        jsonEncode(ownedRecords.map((record) => record.toJson()).toList()),
-      );
-    }
-    return RunRegistry._(prefs, key, connectionId, ownedRecords);
+    return records;
   }
 
-  /// Más reciente primero.
+  List<RunRecord> _owned(List<RunRecord> records) => records
+      .map(
+        (record) => record.connId == _connectionId
+            ? record
+            : record.copyWith(connId: _connectionId),
+      )
+      .toList();
+
+  /// Más reciente primero. All instances see the last successful load/write;
+  /// pending or failed optimistic SharedPreferences cache writes stay hidden.
   List<RunRecord> get records {
-    final sorted = [..._records]
+    final sorted = [..._state.records]
       ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
     return sorted;
   }
 
-  Future<void> add(RunRecord record) async {
+  Future<void> add(RunRecord record) => _mutate((records) {
     final profile = _normalizeRunProfile(record.profile);
     final owned = record.copyWith(connId: _connectionId, profile: profile);
-    _records.removeWhere(
+    records.removeWhere(
       (r) => r.runId == owned.runId && r.profile == owned.profile,
     );
-    _records.add(owned);
+    records.add(owned);
     // Mantener el registro acotado: los más antiguos salen primero.
-    if (_records.length > _maxRecords) {
-      _records.sort((a, b) => a.createdAt.compareTo(b.createdAt));
-      _records = _records.sublist(_records.length - _maxRecords);
+    if (records.length > _maxRecords) {
+      records.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+      records.removeRange(0, records.length - _maxRecords);
     }
-    await _persist();
-  }
+  });
 
   Future<void> update(
     String runId, {
@@ -208,13 +221,13 @@ class RunRegistry {
     String? progressLabel,
     String? lastEvent,
     double? updatedAt,
-  }) async {
+  }) => _mutate((records) {
     final ownerProfile = _normalizeRunProfile(profile);
-    final i = _records.indexWhere(
+    final i = records.indexWhere(
       (r) => r.runId == runId && r.profile == ownerProfile,
     );
     if (i < 0) return;
-    _records[i] = _records[i].copyWith(
+    records[i] = records[i].copyWith(
       lastStatus: lastStatus,
       output: output,
       error: error,
@@ -222,26 +235,49 @@ class RunRegistry {
       lastEvent: lastEvent,
       updatedAt: updatedAt,
     );
-    await _persist();
-  }
+  });
 
-  Future<void> remove(String runId, {String profile = 'default'}) async {
+  Future<void> remove(String runId, {String profile = 'default'}) => _mutate((
+    records,
+  ) {
     final ownerProfile = _normalizeRunProfile(profile);
-    _records.removeWhere((r) => r.runId == runId && r.profile == ownerProfile);
-    await _persist();
-  }
+    records.removeWhere((r) => r.runId == runId && r.profile == ownerProfile);
+  });
 
   /// Vacía el historial local de ejecuciones de esta conexión. No afecta al
   /// servidor (que ya no las conserva): solo limpia la lista del móvil.
-  Future<void> clear() async {
-    _records = [];
-    await _persist();
-  }
+  Future<void> clear() => _mutate((records) => records.clear());
 
-  Future<void> _persist() => _prefs.setString(
-    _key,
-    jsonEncode(_records.map((r) => r.toJson()).toList()),
-  );
+  Future<void> _mutate(void Function(List<RunRecord>) change) =>
+      _state.serialize(() async {
+        // Reload after earlier persistence settles, dropping optimistic cache
+        // changes left by a false/throwing platform write before reading again.
+        await _prefs.reload();
+        final records = _owned(_read());
+        change(records);
+        await _persist(records);
+      });
+
+  Future<void> _persist(List<RunRecord> records) async {
+    final saved = await _prefs.setString(
+      _key,
+      jsonEncode(records.map((r) => r.toJson()).toList()),
+    );
+    if (!saved) throw StateError('RunRegistry persistence failed');
+    _state.records = records;
+  }
+}
+
+class _RunRegistryState {
+  List<RunRecord> records = [];
+  Future<void> _tail = Future.value();
+
+  Future<void> serialize(Future<void> Function() operation) {
+    final result = _tail.then((_) => operation());
+    // Report failure to this caller without poisoning subsequent operations.
+    _tail = result.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    return result;
+  }
 }
 
 String _normalizeRunProfile(String value) {

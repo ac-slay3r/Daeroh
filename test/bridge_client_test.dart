@@ -8,6 +8,26 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 void main() {
+  test('Dashboard rotation is blocked before any bridge request', () async {
+    var requests = 0;
+    final client = BridgeClient(
+      baseUrl: 'http://127.0.0.1:9131',
+      token: 'bridge-test-token',
+      httpClient: MockClient((request) async {
+        requests++;
+        return http.Response(jsonEncode({'ok': true}), 200);
+      }),
+    );
+    await expectLater(
+      client.setDashboardCredentials(username: 'admin', password: 'new-secret'),
+      throwsA(isA<BridgeException>().having(
+        (e) => e.code, 'code', 'dashboard_rotation_unavailable',
+      )),
+    );
+    expect(requests, 0);
+    client.close();
+  });
+
   group('BridgeCapabilities.fromJson', () {
     test('parsea scopes y operaciones', () {
       final caps = BridgeCapabilities.fromJson({
@@ -19,6 +39,7 @@ void main() {
           'skills_remove': true,
           'memory_write': true,
           'soul_write': false,
+          'fallback_write': true,
           'logs_extended': true,
         },
       });
@@ -28,6 +49,9 @@ void main() {
       expect(caps.skillsInstall, isTrue);
       expect(caps.memoryWrite, isTrue);
       expect(caps.soulWrite, isFalse);
+      expect(caps.fallbackWrite, isTrue);
+      expect(caps.canEditGlobalFallback(''), isTrue);
+      expect(caps.canEditGlobalFallback('other-owner'), isFalse);
       expect(caps.cronDelete, isFalse);
       expect(caps.selfUpdate, isFalse);
       expect(caps.auditRead, isTrue); // logs_extended implica audit_read
@@ -39,6 +63,7 @@ void main() {
       const caps = BridgeCapabilities.offline;
       expect(caps.online, isFalse);
       expect(caps.anyWrite, isFalse);
+      expect(caps.fallbackWrite, isFalse);
       expect(caps.cronDelete, isFalse);
       expect(caps.selfUpdate, isFalse);
       expect(caps.scopes, isEmpty);
@@ -51,6 +76,20 @@ void main() {
 
       expect(caps.selfUpdate, isTrue);
       expect(caps.anyWrite, isTrue);
+    });
+    test('config scope and unrelated targets do not grant fallback write', () {
+      final caps = BridgeCapabilities.fromJson({
+        'scopes': ['read', 'config'],
+        'targets': {'model': {'writable': true}},
+        'operations': {'memory_write': true},
+      });
+      expect(caps.fallbackWrite, isFalse);
+      expect(caps.canEditGlobalFallback(''), isFalse);
+      final readOnly = BridgeCapabilities.fromJson({
+        'read_only': true,
+        'operations': {'fallback_write': true},
+      });
+      expect(readOnly.canEditGlobalFallback(''), isFalse);
     });
   });
 
@@ -346,8 +385,11 @@ void main() {
   });
 
   group('healthDiagnose clasifica la causa real', () {
-    BridgeClient clientWith(MockClient mock) =>
-        BridgeClient(baseUrl: 'http://h:9131', token: 't', httpClient: mock);
+    BridgeClient clientWith(MockClient mock) => BridgeClient(
+      baseUrl: 'http://127.0.0.1:9131',
+      token: 't',
+      httpClient: mock,
+    );
 
     test('200 status ok → reach ok', () async {
       final c = clientWith(
@@ -570,7 +612,7 @@ void main() {
 
     // Token reconocible para verificar que NUNCA aparece en logs/diagnóstico.
     BridgeClient clientWith(MockClient mock) => BridgeClient(
-      baseUrl: 'http://h:9131',
+      baseUrl: 'http://127.0.0.1:9131',
       token: 'SUPERSECRET-TOKEN',
       httpClient: mock,
     );

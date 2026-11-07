@@ -2768,7 +2768,7 @@ class _OllamaInstallNotif {
   ) async {
     await notifications?.operationProgress(
       id: _notificationId,
-      title: 'Hermes Console',
+      title: 'Daeroh',
       body: text,
     );
   }
