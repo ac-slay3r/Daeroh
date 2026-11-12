@@ -130,13 +130,7 @@ class _ServerSetupScreenState extends State<ServerSetupScreen> {
                 _commandCopied = false;
               }),
             ),
-            if (_platform == ServerHostPlatform.windows) ...[
-              const SizedBox(height: 10),
-              HermesInfoBanner(
-                str.setupWslPowerShellHint,
-                icon: Icons.terminal_rounded,
-              ),
-            ],
+
             if (_platform != null) ...[
               _StepHeader(
                 step: 2,

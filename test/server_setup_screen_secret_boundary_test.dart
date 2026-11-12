@@ -30,6 +30,8 @@ void main() {
       await tester.tap(find.text('Linux / Termux'));
       await tester.pumpAndSettle();
 
+      expect(find.text('Copia para una terminal de confianza'), findsOneWidget);
+
       final scrollable = find.byType(Scrollable).first;
       final guidanceToggle = find.text(
         '¿Necesitas contexto? Copiar consulta de solo lectura',
@@ -39,8 +41,6 @@ void main() {
         180,
         scrollable: scrollable,
       );
-      expect(find.text('Copia para una terminal de confianza'), findsOneWidget);
-
       await tester.ensureVisible(guidanceToggle);
       await tester.pumpAndSettle();
       await tester.tap(guidanceToggle.hitTestable());

@@ -24,6 +24,7 @@ import 'package:hermes_android/core/theme/app_theme.dart';
 import 'package:hermes_android/core/widgets/hermes_app_bar.dart';
 import 'package:hermes_android/l10n/app_localizations.dart';
 import 'package:http/testing.dart';
+import 'package:hermes_android/core/services/server_setup_generator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Envuelve la pantalla bajo test con el tema y la localización que necesita
@@ -55,7 +56,10 @@ class _EmptyHomeClient extends ApiClient {
       );
 
   @override
-  Future<bool> healthCheck({String? profile, bool verifySessionAccess = true}) async => true;
+  Future<bool> healthCheck({
+    String? profile,
+    bool verifySessionAccess = true,
+  }) async => true;
 
   @override
   Future<List<Session>> getSessions({
@@ -101,7 +105,10 @@ class _DeferredHomeClient extends ApiClient {
   final Completer<bool> health = Completer<bool>();
 
   @override
-  Future<bool> healthCheck({String? profile, bool verifySessionAccess = true}) => health.future;
+  Future<bool> healthCheck({
+    String? profile,
+    bool verifySessionAccess = true,
+  }) => health.future;
 
   @override
   Future<List<Session>> getSessions({
@@ -483,7 +490,9 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('mostrar QR ofrece PowerShell en Windows', (tester) async {
+    testWidgets('mostrar QR rechaza Windows sin ofrecer comandos de servidor', (
+      tester,
+    ) async {
       final manager = await emptyManager();
       await tester.pumpWidget(
         _host(
@@ -495,13 +504,14 @@ void main() {
       await tester.tap(find.text('Windows / WSL2'));
       await tester.pump();
 
-      expect(find.textContaining('fuera de WSL'), findsOneWidget);
-      await tester.drag(find.byType(ListView), const Offset(0, -620));
-      await tester.pump();
-
-      expect(find.textContaining('hermes-pair.ps1'), findsOneWidget);
-      expect(find.textContaining('| iex'), findsOneWidget);
+      expect(
+        find.text(ServerSetupGenerator.unsupportedPlatformCommand),
+        findsOneWidget,
+      );
+      expect(find.textContaining('hermes-pair.ps1'), findsNothing);
+      expect(find.textContaining('| iex'), findsNothing);
       expect(find.textContaining('hermes-pair.sh'), findsNothing);
+      expect(find.textContaining('fuera de WSL'), findsNothing);
       expect(tester.takeException(), isNull);
     });
   });
