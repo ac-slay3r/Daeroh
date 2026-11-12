@@ -16,7 +16,7 @@ void main() {
       source,
       contains('systemctl --user is-active --quiet hermes-gateway.service'),
     );
-    expect(source, isNot(contains('0.0.0.0')));
+    expect(source, contains('loopback and 0.0.0.0 are not reachable'));
     expect(source, isNot(contains('daemon-reload')));
     expect(source, isNot(contains('enable ')));
     expect(source, isNot(contains('restart ')));

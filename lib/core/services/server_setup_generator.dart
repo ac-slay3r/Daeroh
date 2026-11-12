@@ -18,7 +18,7 @@ class ServerSetupGenerator {
   static const String setupScriptName = 'hermes-mobile-setup.sh';
   static const String pairScriptName = 'hermes-pair.sh';
   static const String setupScriptSha256 =
-      '0c4ee6bd43dc7361606e3a467acbc70fe8d31fbbf32914c30f020f9db0108a84';
+      '6222e0a2a012794e5e37264249c0a58885a15274770d72e34d3d05a552698f75';
   static const String pairScriptSha256 = setupScriptSha256;
 
   static String _verifiedDownloadCommand(String name, String sha256) =>

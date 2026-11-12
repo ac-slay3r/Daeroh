@@ -18,6 +18,11 @@ class BridgeReleaseTarget {
   });
 }
 
+typedef BridgeReleaseTargetResolver = Future<BridgeReleaseTarget> Function();
+typedef BridgeReleaseDownloader = Future<BridgeRelease> Function(
+  BridgeReleaseTarget target,
+);
+
 class BridgeRelease {
   final String version;
   final String source;
