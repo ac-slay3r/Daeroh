@@ -6179,7 +6179,7 @@
   "setupCopyCommand": "Copiar comando",
   "setupPromptCopied": "Consulta de solo lectura copiada",
   "setupAgentCurlNote": "La consulta solo pide contexto general. Los comandos de preparación y la salida de emparejado permanecen en tu terminal de confianza, fuera de la conversación con el modelo.",
-  "setupSshCurlNote": "El comando descarga y ejecuta el instalador público de Hermes Console (github.com/xP3ta/hermes-setup); puedes leerlo antes de ejecutarlo. Pone en marcha el gateway, el dashboard y el puente, y te devuelve un enlace de emparejado.",
+  "setupSshCurlNote": "El comando descarga el script de emparejado de Daeroh a un fichero, verifica su SHA-256 y luego lo ejecuta. Adopta Gateway y Dashboard sanos existentes y muestra un QR de emparejado.",
   "setupWhatItDoes": "Qué hace exactamente",
   "setupBulletInstall": "Instala hermes_bridge.py con el gestor de servicios propio de tu sistema.",
   "setupBulletToken": "Reutiliza o genera un token único y lo guarda en el directorio de datos de Hermes.",

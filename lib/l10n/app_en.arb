@@ -5117,7 +5117,7 @@
   "setupCopyCommand": "Copy command",
   "setupPromptCopied": "Read-only question copied",
   "setupAgentCurlNote": "The question only requests high-level context. Setup commands and pairing output stay in your trusted terminal, outside the model conversation.",
-  "setupSshCurlNote": "The command downloads and runs the public Hermes Console installer (github.com/xP3ta/hermes-setup); you can read it before running it. It brings up the gateway, the dashboard and the bridge, and returns a pairing link.",
+  "setupSshCurlNote": "The command downloads the Daeroh pairing script to a file, verifies its SHA-256, then runs it. It adopts healthy existing Gateway and Dashboard services and shows a pairing QR.",
   "setupWhatItDoes": "What it does exactly",
   "setupBulletInstall": "Installs hermes_bridge.py with your system's native service manager.",
   "setupBulletToken": "Reuses or generates a unique server token and stores it in the Hermes data directory.",

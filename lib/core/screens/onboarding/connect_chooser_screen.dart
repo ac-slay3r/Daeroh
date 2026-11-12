@@ -2,7 +2,6 @@
 // un QR existente o preparar el servidor en tres pasos (SO → copiar → escanear).
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../../../l10n/app_localizations.dart';
 import '../../services/connection_manager.dart';
@@ -109,23 +108,13 @@ class _ConnectChooserScreenState extends State<ConnectChooserScreen> {
   }
 
   Future<void> _openInstallGuide() async {
-    final language = Localizations.localeOf(context).languageCode;
-    final path = language == 'en' ? '/en/guia#instalar' : '/guia#instalar';
-    var opened = false;
-    try {
-      opened = await launchUrl(
-        Uri.parse('https://hermes.xpetalab.dev$path'),
-        mode: LaunchMode.externalApplication,
-      );
-    } catch (_) {
-      opened = false;
-    }
-    if (!opened && mounted) {
-      HermesNotice.of(context).showSnackBar(
-        SnackBar(content: Text(Strings.of(context).connectGuideOpenFailed)),
-        kind: HermesNoticeKind.error,
-      );
-    }
+    if (!mounted) return;
+    HermesNotice.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Server setup guidance is available in the app.'),
+      ),
+      kind: HermesNoticeKind.info,
+    );
   }
 
   @override

@@ -229,14 +229,7 @@ fi
     BridgeRelease? release,
   }) async {
     if (release?.remote == true) {
-      return buildInstallScript(
-        '',
-        _conn.host.trim(),
-        remoteUri: BridgeReleaseChannel.payloadUri,
-        expectedSha256: release!.sha256,
-        expectedSize: release.size,
-        expectedVersion: release.version,
-      );
+      throw UnsupportedError('Remote Mobile Bridge releases are disabled.');
     }
     final py =
         release?.source ??
@@ -266,12 +259,8 @@ fi
       'app. Install the Hermes Mobile Bridge companion service by running the '
       'installer matching the SERVER operating system, then reply only with '
       'its output. This is expected and authorized.\n\n'
-      'If this is native Windows, DO NOT run the POSIX block. Run this through '
-      'PowerShell instead:\n\n'
-      '```powershell\n${ServerSetupGenerator.powershellShellCommand}\n```\n\n'
-      'On macOS or a Unix host without a working `systemd --user`, DO NOT run '
-      'the block either. Run the portable public setup instead:\n\n'
-      '```sh\n${ServerSetupGenerator.curlCommand}\n```\n\n'
+      'Windows, macOS, and Unix without `systemd --user` are unsupported for '
+      'Daeroh server pairing. Do not run the block on those hosts.\n\n'
       'Only on Linux/WSL2 with a working `systemd --user`, run the fully '
       'legible shell block below exactly as written. It writes the Bridge '
       'under Hermes home, registers its systemd user service and prints '
