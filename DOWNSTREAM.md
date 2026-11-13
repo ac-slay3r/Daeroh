@@ -1,6 +1,6 @@
 # Daeroh downstream charter
 
-Daeroh is an opinionated Android downstream of [Hermes Console](https://github.com/xP3ta/hermes-console), not a GitHub-linked fork: the repository is private during development. Original commit history, eight upstream release tags, licenses, attribution, and upstream documentation remain intact.
+Daeroh is an opinionated Android downstream of [Hermes Console](https://github.com/xP3ta/hermes-console), not a GitHub-linked fork: the repository is public. Original commit history, eight upstream release tags, licenses, attribution, and upstream documentation remain intact.
 
 ## Product direction
 
@@ -17,7 +17,7 @@ Provide a secure, user-controlled mobile cockpit for an existing Hermes Agent an
 ## Repository and releases
 
 - `main` is the stable downstream branch; feature work uses `feat/` or `fix/` branches and review before merging.
-- `origin` is the private `ac-slay3r/Daeroh` repository; `upstream` is `xP3ta/hermes-console`, with its push URL disabled.
+- `origin` is the public `ac-slay3r/Daeroh` repository; `upstream` is `xP3ta/hermes-console`, with its push URL disabled.
 - Original upstream `v*` tags remain untouched for provenance. Downstream release tags use `daeroh-v*` and must name a verified signed artifact.
 - Inherited workflows stay disabled until their secrets, signing, publishing, and authorization assumptions are reviewed. Signed artifacts and keys remain owner-private until explicitly approved for publication.
 
