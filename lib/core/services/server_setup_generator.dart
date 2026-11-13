@@ -3,8 +3,8 @@ import 'pairing_link.dart';
 /// Operating system of the computer that runs Hermes Agent, not the phone.
 enum ServerHostPlatform { linux, macos, windows }
 
-/// Generates copy-only commands. The Linux command is intentionally fail-closed
-/// until the owner chooses a Daeroh-controlled distribution origin.
+/// Generates copy-only commands. Linux downloads the reviewed scripts from a
+/// commit-pinned Daeroh repository origin and verifies their SHA-256 before use.
 class ServerSetupGenerator {
   const ServerSetupGenerator();
 
@@ -12,9 +12,10 @@ class ServerSetupGenerator {
   static const int dashboardPort = 9119;
   static const int bridgePort = 9131;
 
-  /// The sole distribution-origin input. It is intentionally not a URL while
-  /// hosting/repository visibility remains an owner decision.
-  static const String setupScriptOriginEnvironment = 'DAEROH_SETUP_ORIGIN';
+  /// Immutable source location. The SHA-256 pins below remain the execution
+  /// authorization after download.
+  static const String setupScriptOrigin =
+      'https://raw.githubusercontent.com/ac-slay3r/Daeroh/ec1438ce2e60a8cbc35f13e8285d13d34df9cce5/scripts';
   static const String setupScriptName = 'hermes-mobile-setup.sh';
   static const String pairScriptName = 'hermes-pair.sh';
   static const String setupScriptSha256 =
@@ -22,9 +23,9 @@ class ServerSetupGenerator {
   static const String pairScriptSha256 = setupScriptSha256;
 
   static String _verifiedDownloadCommand(String name, String sha256) =>
-      'origin="\${$setupScriptOriginEnvironment:?set a Daeroh-controlled HTTPS origin}"; '
       'file="\$(mktemp)"; trap \'rm -f "\$file"\' EXIT; '
-      'curl --fail --location --proto \'=https\' --tlsv1.2 "\$origin/$name" -o "\$file" && '
+      'curl --fail --location --proto \'=https\' --tlsv1.2 '
+      '"$setupScriptOrigin/$name" -o "\$file" && '
       'printf \'%s  %s\\n\' "$sha256" "\$file" | sha256sum -c - && sh "\$file"';
 
   static final String curlCommand = _verifiedDownloadCommand(

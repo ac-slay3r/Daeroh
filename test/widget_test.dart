@@ -482,11 +482,19 @@ void main() {
 
       await tester.tap(find.text('Linux / Termux'));
       await tester.pump();
-      await tester.drag(find.byType(ListView), const Offset(0, -420));
+      final pageScroll = find.byType(Scrollable).first;
+      await tester.scrollUntilVisible(
+        find.text('Ya veo el QR · abrir cámara'),
+        160,
+        scrollable: pageScroll,
+      );
       await tester.pump();
 
       expect(find.text('Ya veo el QR · abrir cámara'), findsOneWidget);
-      expect(find.textContaining('hermes-pair.sh'), findsOneWidget);
+      expect(
+        find.textContaining('hermes-pair.sh', skipOffstage: false),
+        findsOneWidget,
+      );
       expect(tester.takeException(), isNull);
     });
 

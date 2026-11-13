@@ -1,15 +1,98 @@
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/services/pairing_link.dart';
 import 'package:hermes_android/core/services/server_setup_generator.dart';
 
 void main() {
-  test('pairing command is a verified download, not pipe-to-shell', () {
-    expect(ServerSetupGenerator.curlCommand, contains('sha256sum -c -'));
-    expect(ServerSetupGenerator.curlCommand, contains('sh "\$file"'));
-    expect(ServerSetupGenerator.curlCommand, isNot(contains('| sh "')));
+  test('Linux commands download the commit-pinned scripts before execution', () {
+    const origin =
+        'https://raw.githubusercontent.com/ac-slay3r/Daeroh/ec1438ce2e60a8cbc35f13e8285d13d34df9cce5/scripts';
+    final commands = <({String name, String command})>[
+      (
+        name: ServerSetupGenerator.setupScriptName,
+        command: ServerSetupGenerator.curlCommand,
+      ),
+      (
+        name: ServerSetupGenerator.pairScriptName,
+        command: ServerSetupGenerator.pairCommand,
+      ),
+    ];
+
+    for (final entry in commands) {
+      expect(entry.command, contains('$origin/${entry.name}'));
+      expect(entry.command, contains("--proto '=https'"));
+      expect(entry.command, contains(ServerSetupGenerator.setupScriptSha256));
+      expect(entry.command, contains('sha256sum -c -'));
+      expect(
+        entry.command.indexOf('sha256sum -c -'),
+        lessThan(entry.command.indexOf(r'sh "$file"')),
+      );
+      expect(entry.command, isNot(matches(RegExp(r'\|\s*(?:sh|bash)\b'))));
+    }
   });
+
+  test('setup script origin is a raw GitHub URL pinned to a full commit', () {
+    expect(
+      ServerSetupGenerator.setupScriptOrigin,
+      matches(
+        RegExp(
+          r'^https://raw\.githubusercontent\.com/ac-slay3r/Daeroh/[0-9a-f]{40}/scripts$',
+        ),
+      ),
+    );
+  });
+
+  test('in-repository setup scripts match the embedded SHA-256 pin', () {
+    for (final name in <String>[
+      ServerSetupGenerator.setupScriptName,
+      ServerSetupGenerator.pairScriptName,
+    ]) {
+      final bytes = File('scripts/$name').readAsBytesSync();
+      expect(
+        sha256.convert(bytes).toString(),
+        ServerSetupGenerator.setupScriptSha256,
+      );
+    }
+  });
+
+  test(
+    'tampered local download fails closed before script execution',
+    () async {
+      final fixture = await Directory.systemTemp.createTemp(
+        'daeroh-setup-tamper-',
+      );
+      addTearDown(() => fixture.delete(recursive: true));
+      final bin = Directory('${fixture.path}/bin')..createSync();
+      final marker = File('${fixture.path}/executed');
+      final curl = File('${bin.path}/curl');
+      curl.writeAsStringSync('''#!/bin/sh
+while [ "\$#" -gt 0 ]; do
+  if [ "\$1" = '-o' ]; then
+    printf 'touch -- "\$DAEROH_TAMPER_MARKER"\\n' > "\$2"
+    exit 0
+  fi
+  shift
+done
+exit 2
+''');
+      await Process.run('chmod', ['700', curl.path]);
+
+      final result = await Process.run(
+        'sh',
+        ['-c', ServerSetupGenerator.curlCommand],
+        environment: <String, String>{
+          ...Platform.environment,
+          'PATH': '${bin.path}:${Platform.environment['PATH']}',
+          'DAEROH_TAMPER_MARKER': marker.path,
+        },
+      );
+
+      expect(result.exitCode, isNonZero);
+      expect(marker.existsSync(), isFalse);
+    },
+  );
 
   test('setup script is Linux-only and contains no service mutation', () {
     final source = File('scripts/hermes-mobile-setup.sh').readAsStringSync();
