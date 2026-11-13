@@ -1452,12 +1452,17 @@ DateTime? _transcriptTimestamp(Map<String, dynamic> message) {
   }
 }
 
-/// Evidencia pura de si un turno con transporte iniciado ya está en el
-/// transcript durable. Solo una fila de usuario real posterior a la frontera
-/// persistida al enviar ([PreparedTurn.retryBoundary]) puede ser el turno:
-/// ninguna fila nueva → no entregado; exactamente una y con el mismo texto →
-/// entregado; cualquier otra cosa → desconocido (fail-closed).
+/// Para el settlement que exige timestamp de creación, una sola fila coincidente
+/// y temporalmente válida demuestra entrega aunque luego haya otros prompts
+/// reales no coincidentes. Dos coincidencias siguen siendo ambiguas; fuera de
+/// ese settlement se conserva la regla estricta de una sola fila nueva.
 const Duration _deliveredRowClockSkew = Duration(minutes: 2);
+
+Set<String> _ambiguousTurnTextCandidates(PreparedTurn turn) => <String>{
+  turn.text.trim(),
+  turn.fullText.trim(),
+  stripBotMentionNote(turn.desktopText ?? '').trim(),
+}..remove('');
 
 @visibleForTesting
 AmbiguousRetryEvidence ambiguousTurnTranscriptEvidence(
@@ -1487,11 +1492,7 @@ AmbiguousRetryEvidence ambiguousTurnTranscriptEvidence(
     if (index < 0) return AmbiguousRetryEvidence.unknown;
     start = index + 1;
   }
-  final candidates = <String>{
-    turn.text.trim(),
-    turn.fullText.trim(),
-    stripBotMentionNote(turn.desktopText ?? '').trim(),
-  }..remove('');
+  final candidates = _ambiguousTurnTextCandidates(turn);
   var newUsers = 0;
   var matching = 0;
   for (final message in chronological.skip(start)) {
@@ -1514,7 +1515,7 @@ AmbiguousRetryEvidence ambiguousTurnTranscriptEvidence(
     matching++;
   }
   if (newUsers == 0) return AmbiguousRetryEvidence.notDelivered;
-  if (newUsers == 1 && matching == 1) {
+  if (matching == 1 && (requireRowAfterTurnCreation || newUsers == 1)) {
     return AmbiguousRetryEvidence.delivered;
   }
   return AmbiguousRetryEvidence.unknown;
@@ -21166,6 +21167,23 @@ class ActiveChat {
         // Solo con frontera de identidad o transcript vacío al enviar: sin
         // ella no hay forma segura de atribuir la fila a este turno.
         final boundaryKind = item.turn.retryBoundary?.kind;
+        final candidateTexts = _ambiguousTurnTextCandidates(item.turn);
+        // Dos envíos locales con texto atribuible idéntico compiten por la misma
+        // fila durable. Aunque solo haya una coincidencia, no se puede retirar
+        // ninguno sin arriesgar perder el otro.
+        final hasSameTextQueuedTurn =
+            candidateTexts.isNotEmpty &&
+            _preparedTurnQueue.any(
+              (other) =>
+                  !identical(other, item) &&
+                  _ambiguousTurnTextCandidates(
+                    other.turn,
+                  ).any(candidateTexts.contains),
+            );
+        if (hasSameTextQueuedTurn) {
+          _queuedDeliveryUnknownAt[clientTurnId] = chronological.length;
+          continue;
+        }
         final evidence =
             boundaryKind == PreparedTurnRetryBoundaryKind.identity ||
                 boundaryKind == PreparedTurnRetryBoundaryKind.empty

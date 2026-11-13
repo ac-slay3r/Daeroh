@@ -1813,7 +1813,7 @@ void main() {
 
     Future<(ActiveChat, _MemoryOutbox, _DesktopGateway)> restored(
       List<Map<String, dynamic>> transcript,
-      PreparedTurn turn,
+      Object turns,
     ) async {
       final store = _MemoryOutbox();
       final gateway = _DesktopGateway();
@@ -1840,7 +1840,10 @@ void main() {
         storedMessageLoader: (_, _) async => transcript,
       );
       addTearDown(chat.dispose);
-      await chat.restoreQueuedTurns([turn], store);
+      await chat.restoreQueuedTurns(
+        turns is PreparedTurn ? [turns] : turns as Iterable<PreparedTurn>,
+        store,
+      );
       await Future<void>.delayed(const Duration(milliseconds: 50));
       return (chat, store, gateway);
     }
@@ -1860,6 +1863,182 @@ void main() {
         expect(gateway.submitCalls, 0);
       },
     );
+
+    test('dos turnos encolados con el mismo texto siguen bloqueados', () async {
+      final first = ambiguous('texto compartido');
+      final second = _queuedPrepared(
+        'q-2',
+        'texto compartido',
+      ).copyWith(state: PreparedTurnState.ambiguous, retryBoundary: boundary);
+      final (chat, store, gateway) = await restored(
+        [row(10, 'user', 'antes'), row(11, 'user', 'texto compartido')],
+        [first, second],
+      );
+      expect(chat.queuedTurns, hasLength(2));
+      expect(chat.queuedEntries, hasLength(2));
+      expect(store.deletes, isEmpty);
+      expect(gateway.submitCalls, 0);
+    });
+
+    test(
+      'dos entregas distintas se eliminan en orden y drenan la cola sin submit',
+      () async {
+        final first = ambiguous('primera entrega');
+        final second = _queuedPrepared(
+          'q-2',
+          'segunda entrega',
+        ).copyWith(state: PreparedTurnState.ambiguous, retryBoundary: boundary);
+        final (chat, store, gateway) = await restored(
+          [
+            row(10, 'user', 'antes'),
+            row(11, 'user', 'primera entrega'),
+            row(12, 'user', 'segunda entrega'),
+          ],
+          [first, second],
+        );
+        expect(chat.queuedTurns, isEmpty);
+        expect(chat.queuedEntries, isEmpty);
+        expect(store.deletes.map((turn) => turn.clientTurnId), ['q-1', 'q-2']);
+        expect(gateway.submitCalls, 0);
+      },
+    );
+
+    test(
+      'la entrega seguida por otro prompt typed se retira sin reenviar',
+      () async {
+        final turn = ambiguous('entregado y seguido');
+        final (chat, store, gateway) = await restored([
+          row(10, 'user', 'antes'),
+          row(11, 'user', 'entregado y seguido'),
+          row(12, 'user', '¿qué pasó después?'),
+        ], turn);
+        expect(chat.queuedTurns, isEmpty);
+        expect(chat.queuedEntries, isEmpty);
+        expect(store.deletes.map((t) => t.clientTurnId), contains('q-1'));
+        expect(gateway.submitCalls, 0);
+      },
+    );
+
+    test(
+      'la entrega seguida por varios rows incluso notificación se retira sin reenviar',
+      () async {
+        final turn = ambiguous('entregado antes de avisos');
+        final (chat, store, gateway) = await restored([
+          row(10, 'user', 'antes'),
+          row(11, 'user', 'entregado antes de avisos'),
+          row(12, 'user', 'prompt posterior'),
+          row(13, 'user', '[Kanban] tarea completada'),
+          row(14, 'user', 'otro prompt posterior'),
+        ], turn);
+        expect(chat.queuedTurns, isEmpty);
+        expect(chat.queuedEntries, isEmpty);
+        expect(store.deletes.map((t) => t.clientTurnId), contains('q-1'));
+        expect(gateway.submitCalls, 0);
+      },
+    );
+
+    test('dos filas coincidentes siguen siendo dudosas', () {
+      final turn = ambiguous('mismo texto');
+      expect(
+        ambiguousTurnTranscriptEvidence(turn, [
+          row(10, 'user', 'antes'),
+          row(11, 'user', 'mismo texto'),
+          row(12, 'user', 'mismo texto'),
+        ], requireRowAfterTurnCreation: true),
+        AmbiguousRetryEvidence.unknown,
+      );
+    });
+
+    test('coincidencia anterior a creación menos skew sigue siendo dudosa', () {
+      final original = ambiguous('anterior');
+      final turn = PreparedTurn(
+        connectionId: original.connectionId,
+        sessionId: original.sessionId,
+        clientTurnId: original.clientTurnId,
+        createdAtMs: 10000 * 1000,
+        updatedAtMs: 10000 * 1000,
+        text: original.text,
+        fullText: original.fullText,
+        attachments: original.attachments,
+        model: original.model,
+        profile: original.profile,
+        state: original.state,
+        retryBoundary: original.retryBoundary,
+      );
+      expect(
+        ambiguousTurnTranscriptEvidence(turn, [
+          row(10, 'user', 'antes'),
+          row(11, 'user', 'anterior', timestamp: 9000),
+        ], requireRowAfterTurnCreation: true),
+        AmbiguousRetryEvidence.unknown,
+      );
+    });
+
+    test(
+      'timestamp ausente o inválido en coincidencia sigue siendo dudoso',
+      () {
+        final turn = ambiguous('sin reloj');
+        for (final timestamp in <Object?>[null, 'inválido', -1]) {
+          final matching = <String, dynamic>{
+            'id': 11,
+            'role': 'user',
+            'content': 'sin reloj',
+            if (timestamp != null) 'timestamp': timestamp,
+          };
+          expect(
+            ambiguousTurnTranscriptEvidence(turn, [
+              row(10, 'user', 'antes'),
+              matching,
+            ], requireRowAfterTurnCreation: true),
+            AmbiguousRetryEvidence.unknown,
+          );
+        }
+      },
+    );
+
+    test('fronteras ausente y unknown siguen siendo dudosas', () {
+      final turn = ambiguous('hola');
+      final absentBoundary = PreparedTurn(
+        connectionId: turn.connectionId,
+        sessionId: turn.sessionId,
+        clientTurnId: turn.clientTurnId,
+        createdAtMs: turn.createdAtMs,
+        updatedAtMs: turn.updatedAtMs,
+        text: turn.text,
+        fullText: turn.fullText,
+        attachments: turn.attachments,
+        model: turn.model,
+        profile: turn.profile,
+        state: turn.state,
+      );
+      final transcript = [row(11, 'user', 'hola')];
+      for (final candidate in [
+        absentBoundary,
+        turn.copyWith(retryBoundary: const PreparedTurnRetryBoundary.unknown()),
+      ]) {
+        expect(
+          ambiguousTurnTranscriptEvidence(
+            candidate,
+            transcript,
+            requireRowAfterTurnCreation: true,
+          ),
+          AmbiguousRetryEvidence.unknown,
+        );
+      }
+    });
+
+    test('aliases de identidad inconsistentes siguen siendo dudosos', () {
+      final turn = ambiguous(
+        'hola',
+      ).copyWith(retryBoundary: PreparedTurnRetryBoundary.identity(rowId: 10));
+      expect(
+        ambiguousTurnTranscriptEvidence(turn, [
+          {...row(10, 'user', 'antes'), 'row_id': 99},
+          row(11, 'user', 'hola'),
+        ], requireRowAfterTurnCreation: true),
+        AmbiguousRetryEvidence.unknown,
+      );
+    });
 
     test('sin evidencia se conserva como pendiente y no se reenvía', () async {
       final turn = ambiguous('mensaje nuevo');
