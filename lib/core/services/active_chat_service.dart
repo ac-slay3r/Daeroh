@@ -1453,17 +1453,23 @@ DateTime? _transcriptTimestamp(Map<String, dynamic> message) {
 }
 
 /// Evidencia pura de si un turno con transporte iniciado ya está en el
-/// transcript durable. Solo una fila de usuario real posterior a la frontera
-/// persistida al enviar ([PreparedTurn.retryBoundary]) puede ser el turno:
-/// ninguna fila nueva → no entregado; exactamente una y con el mismo texto →
-/// entregado; cualquier otra cosa → desconocido (fail-closed).
+/// transcript durable. El modo normal y el marcado conservan el contrato
+/// histórico. La relajación explícita es solo para la cola cuando hay más de
+/// una fila nueva de usuario: exige una única coincidencia durable inequívoca.
 const Duration _deliveredRowClockSkew = Duration(minutes: 2);
+
+Set<String> _ambiguousTurnTextCandidates(PreparedTurn turn) => <String>{
+  turn.text.trim(),
+  turn.fullText.trim(),
+  stripBotMentionNote(turn.desktopText ?? '').trim(),
+}..remove('');
 
 @visibleForTesting
 AmbiguousRetryEvidence ambiguousTurnTranscriptEvidence(
   PreparedTurn turn,
   List<Map<String, dynamic>> chronological, {
   bool requireRowAfterTurnCreation = false,
+  bool allowRelaxedQueuedSettlement = false,
 }) {
   final boundary = turn.retryBoundary;
   if (boundary == null ||
@@ -1487,37 +1493,74 @@ AmbiguousRetryEvidence ambiguousTurnTranscriptEvidence(
     if (index < 0) return AmbiguousRetryEvidence.unknown;
     start = index + 1;
   }
-  final candidates = <String>{
-    turn.text.trim(),
-    turn.fullText.trim(),
-    stripBotMentionNote(turn.desktopText ?? '').trim(),
-  }..remove('');
-  var newUsers = 0;
-  var matching = 0;
-  for (final message in chronological.skip(start)) {
-    if (!isRealUserTurn(message)) continue;
-    newUsers++;
-    final content = stripBotMentionNote(
-      (message['content'] ?? '').toString(),
-    ).trim();
-    if (!candidates.contains(content)) continue;
-    if (requireRowAfterTurnCreation) {
-      // Una fila con el mismo texto anterior a la creación del turno no puede
-      // ser este turno (p. ej. el mismo «ok» enviado antes por otra vía).
-      final at = _transcriptTimestamp(message);
-      if (at == null ||
-          at.millisecondsSinceEpoch <
-              turn.createdAtMs - _deliveredRowClockSkew.inMilliseconds) {
-        continue;
-      }
+
+  final afterBoundary = chronological.skip(start).toList(growable: false);
+  final newUsers = afterBoundary.where(isRealUserTurn).toList(growable: false);
+  // `isRealUserTurn` deliberately includes plain optimistic projections and
+  // rows without a durable identity. They retain legacy counting below, but
+  // must not authorize the queue-only multi-row relaxation before durable
+  // server rows arrive.
+  bool isDurableRealUserRow(Map<String, dynamic> message) {
+    if (!isRealUserTurn(message) || message['_optimistic'] == true) {
+      return false;
     }
-    matching++;
+    if (!transcriptIdentityAliasesAreConsistent(message)) return false;
+    return _transcriptMessageIdentity(message)?.isDurable ?? false;
   }
-  if (newUsers == 0) return AmbiguousRetryEvidence.notDelivered;
-  if (newUsers == 1 && matching == 1) {
-    return AmbiguousRetryEvidence.delivered;
+
+  final durableNewUsers = afterBoundary
+      .where(isDurableRealUserRow)
+      .toList(growable: false);
+  final candidates = _ambiguousTurnTextCandidates(turn);
+  bool matchesText(Map<String, dynamic> message) => candidates.contains(
+    stripBotMentionNote((message['content'] ?? '').toString()).trim(),
+  );
+
+  // Byte-for-byte legacy decision shape: default, composer, and a queue with
+  // one (or zero) new user row keep bounded skew and no new metadata gates.
+  if (!allowRelaxedQueuedSettlement || durableNewUsers.length <= 1) {
+    var matching = 0;
+    for (final message in newUsers) {
+      if (!matchesText(message)) continue;
+      if (requireRowAfterTurnCreation) {
+        final at = _transcriptTimestamp(message);
+        if (at == null ||
+            at.millisecondsSinceEpoch <
+                turn.createdAtMs - _deliveredRowClockSkew.inMilliseconds) {
+          continue;
+        }
+      }
+      matching++;
+    }
+    if (newUsers.isEmpty) return AmbiguousRetryEvidence.notDelivered;
+    return newUsers.length == 1 && matching == 1
+        ? AmbiguousRetryEvidence.delivered
+        : AmbiguousRetryEvidence.unknown;
   }
-  return AmbiguousRetryEvidence.unknown;
+
+  // Queue-only multi-row relaxation: any textual duplicate after the boundary
+  // is ambiguous. The unique matching row must itself be a durable real-user
+  // row with a non-optimistic, internally consistent identity and no clock
+  // tolerance. Attachments remain fail-closed in this new mode.
+  if (!requireRowAfterTurnCreation || turn.activeAttachments.isNotEmpty) {
+    return AmbiguousRetryEvidence.unknown;
+  }
+  final occurrences = afterBoundary.where(matchesText).toList(growable: false);
+  if (occurrences.length != 1) return AmbiguousRetryEvidence.unknown;
+  final match = occurrences.single;
+  final at = _transcriptTimestamp(match);
+  final identity = transcriptIdentityAliasesAreConsistent(match)
+      ? _transcriptMessageIdentity(match)
+      : null;
+  if (!isRealUserTurn(match) ||
+      at == null ||
+      at.millisecondsSinceEpoch < turn.createdAtMs ||
+      match['_optimistic'] == true ||
+      identity == null ||
+      !identity.isDurable) {
+    return AmbiguousRetryEvidence.unknown;
+  }
+  return AmbiguousRetryEvidence.delivered;
 }
 
 TranscriptMessageIdentity? _desktopSnapshotTranscriptIdentity(
@@ -7105,6 +7148,16 @@ class ActiveChat {
   final Queue<_QueuedTextTurn> _messageQueue = Queue<_QueuedTextTurn>();
   final Queue<QueuedPreparedTurn> _preparedTurnQueue =
       Queue<QueuedPreparedTurn>();
+
+  // ChatScreen registra el lote no encolado recuperado antes de restaurar la
+  // cola. Así una fila textual no puede liquidar un owner del composer y otro
+  // de la cola cuando ambos compiten por la misma evidencia.
+  PreparedTurn? _composerTurnAwaitingTranscriptSettlement;
+
+  void setComposerTurnAwaitingTranscriptSettlement(PreparedTurn? turn) {
+    _composerTurnAwaitingTranscriptSettlement = turn;
+  }
+
   final SplayTreeSet<int> _pendingPreparedQueueOrders = SplayTreeSet<int>();
   final Set<String> _pendingPreparedTurnIds = <String>{};
   final Map<String, _PreparedTurnOwner> _preparedTurnOwners = {};
@@ -21166,6 +21219,30 @@ class ActiveChat {
         // Solo con frontera de identidad o transcript vacío al enviar: sin
         // ella no hay forma segura de atribuir la fila a este turno.
         final boundaryKind = item.turn.retryBoundary?.kind;
+        final candidateTexts = _ambiguousTurnTextCandidates(item.turn);
+        final composerCandidateTexts =
+            _composerTurnAwaitingTranscriptSettlement == null
+            ? const <String>{}
+            : _ambiguousTurnTextCandidates(
+                _composerTurnAwaitingTranscriptSettlement!,
+              );
+        // Dos envíos locales con texto atribuible idéntico compiten por la misma
+        // fila durable. Incluye el turno recuperado del composer: aunque no
+        // vive en la cola, la misma fila no puede liquidar ambos owners.
+        final hasSameTextOutstandingTurn =
+            candidateTexts.isNotEmpty &&
+            (_preparedTurnQueue.any(
+                  (other) =>
+                      !identical(other, item) &&
+                      _ambiguousTurnTextCandidates(
+                        other.turn,
+                      ).any(candidateTexts.contains),
+                ) ||
+                composerCandidateTexts.any(candidateTexts.contains));
+        if (hasSameTextOutstandingTurn) {
+          _queuedDeliveryUnknownAt[clientTurnId] = chronological.length;
+          continue;
+        }
         final evidence =
             boundaryKind == PreparedTurnRetryBoundaryKind.identity ||
                 boundaryKind == PreparedTurnRetryBoundaryKind.empty
@@ -21173,6 +21250,7 @@ class ActiveChat {
                 item.turn,
                 chronological,
                 requireRowAfterTurnCreation: true,
+                allowRelaxedQueuedSettlement: true,
               )
             : AmbiguousRetryEvidence.unknown;
         if (evidence != AmbiguousRetryEvidence.delivered) {

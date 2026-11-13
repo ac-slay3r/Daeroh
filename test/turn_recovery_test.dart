@@ -1813,8 +1813,9 @@ void main() {
 
     Future<(ActiveChat, _MemoryOutbox, _DesktopGateway)> restored(
       List<Map<String, dynamic>> transcript,
-      PreparedTurn turn,
-    ) async {
+      Object turns, {
+      PreparedTurn? composerPending,
+    }) async {
       final store = _MemoryOutbox();
       final gateway = _DesktopGateway();
       final chat = ActiveChat(
@@ -1840,7 +1841,11 @@ void main() {
         storedMessageLoader: (_, _) async => transcript,
       );
       addTearDown(chat.dispose);
-      await chat.restoreQueuedTurns([turn], store);
+      chat.setComposerTurnAwaitingTranscriptSettlement(composerPending);
+      await chat.restoreQueuedTurns(
+        turns is PreparedTurn ? [turns] : turns as Iterable<PreparedTurn>,
+        store,
+      );
       await Future<void>.delayed(const Duration(milliseconds: 50));
       return (chat, store, gateway);
     }
@@ -1861,6 +1866,301 @@ void main() {
       },
     );
 
+    test('dos turnos encolados con el mismo texto siguen bloqueados', () async {
+      final first = ambiguous('texto compartido');
+      final second = _queuedPrepared(
+        'q-2',
+        'texto compartido',
+      ).copyWith(state: PreparedTurnState.ambiguous, retryBoundary: boundary);
+      final (chat, store, gateway) = await restored(
+        [row(10, 'user', 'antes'), row(11, 'user', 'texto compartido')],
+        [first, second],
+      );
+      expect(chat.queuedTurns, hasLength(2));
+      expect(chat.queuedEntries, hasLength(2));
+      expect(store.deletes, isEmpty);
+      expect(gateway.submitCalls, 0);
+    });
+
+    test(
+      'dos entregas distintas se eliminan en orden y drenan la cola sin submit',
+      () async {
+        final first = ambiguous('primera entrega');
+        final second = _queuedPrepared(
+          'q-2',
+          'segunda entrega',
+        ).copyWith(state: PreparedTurnState.ambiguous, retryBoundary: boundary);
+        final (chat, store, gateway) = await restored(
+          [
+            row(10, 'user', 'antes'),
+            row(11, 'user', 'primera entrega'),
+            row(12, 'user', 'segunda entrega'),
+          ],
+          [first, second],
+        );
+        expect(chat.queuedTurns, isEmpty);
+        expect(chat.queuedEntries, isEmpty);
+        expect(store.deletes.map((turn) => turn.clientTurnId), ['q-1', 'q-2']);
+        expect(gateway.submitCalls, 0);
+      },
+    );
+
+    test(
+      'la entrega seguida por otro prompt typed se retira sin reenviar',
+      () async {
+        final turn = ambiguous('entregado y seguido');
+        final (chat, store, gateway) = await restored([
+          row(10, 'user', 'antes'),
+          row(11, 'user', 'entregado y seguido'),
+          row(12, 'user', '¿qué pasó después?'),
+        ], turn);
+        expect(chat.queuedTurns, isEmpty);
+        expect(chat.queuedEntries, isEmpty);
+        expect(store.deletes.map((t) => t.clientTurnId), contains('q-1'));
+        expect(gateway.submitCalls, 0);
+      },
+    );
+
+    test(
+      'la entrega seguida por varios rows incluso notificación se retira sin reenviar',
+      () async {
+        final turn = ambiguous('entregado antes de avisos');
+        final (chat, store, gateway) = await restored([
+          row(10, 'user', 'antes'),
+          row(11, 'user', 'entregado antes de avisos'),
+          row(12, 'user', 'prompt posterior'),
+          row(13, 'user', '[Kanban] tarea completada'),
+          row(14, 'user', 'otro prompt posterior'),
+        ], turn);
+        expect(chat.queuedTurns, isEmpty);
+        expect(chat.queuedEntries, isEmpty);
+        expect(store.deletes.map((t) => t.clientTurnId), contains('q-1'));
+        expect(gateway.submitCalls, 0);
+      },
+    );
+
+    test(
+      'proyección optimistic posterior no retira la cola aunque el match durable exista',
+      () async {
+        final turn = ambiguous('same');
+        final (chat, store, gateway) = await restored([
+          row(10, 'user', 'antes', timestamp: 0),
+          row(11, 'user', 'same', timestamp: 2),
+          {...row(12, 'user', 'other', timestamp: 3), '_optimistic': true},
+        ], turn);
+        expect(chat.queuedTurns, hasLength(1));
+        expect(chat.queuedEntries.single.blocked, isTrue);
+        expect(store.deletes, isEmpty);
+        expect(gateway.submitCalls, 0);
+      },
+    );
+
+    test(
+      'proyecciones optimistic no cuentan para abrir la relajación',
+      () async {
+        Future<void> expectRetained(
+          String label,
+          PreparedTurn turn,
+          List<Map<String, dynamic>> transcript,
+        ) async {
+          final (chat, store, gateway) = await restored(transcript, turn);
+          expect(chat.queuedTurns, hasLength(1), reason: label);
+          expect(store.deletes, isEmpty, reason: label);
+          expect(gateway.submitCalls, 0, reason: label);
+        }
+
+        final matching = row(11, 'user', 'same', timestamp: 2);
+        final optimistic = {
+          ...row(12, 'user', 'other', timestamp: 3),
+          '_optimistic': true,
+        };
+        await expectRetained(
+          'optimistic before durable match',
+          ambiguous('same'),
+          [row(10, 'user', 'antes', timestamp: 0), optimistic, matching],
+        );
+        await expectRetained('two optimistic extras', ambiguous('same'), [
+          row(10, 'user', 'antes', timestamp: 0),
+          matching,
+          optimistic,
+          {...row(13, 'user', 'other two', timestamp: 4), '_optimistic': true},
+        ]);
+        await expectRetained('non-durable extra keeps base outcome', ambiguous('same'), [
+          row(10, 'user', 'antes', timestamp: 0),
+          matching,
+          {'role': 'user', 'content': 'unidentified other', 'timestamp': 4},
+        ]);
+        await expectRetained(
+          'inconsistent-identity extra keeps base outcome',
+          ambiguous('same'),
+          [
+            row(10, 'user', 'antes', timestamp: 0),
+            matching,
+            {...row(13, 'user', 'inconsistent other', timestamp: 4), 'row_id': 99},
+          ],
+        );
+        final original = ambiguous('same');
+        final preCreation = PreparedTurn(
+          connectionId: original.connectionId,
+          sessionId: original.sessionId,
+          clientTurnId: original.clientTurnId,
+          createdAtMs: 2000,
+          updatedAtMs: 2000,
+          text: original.text,
+          fullText: original.fullText,
+          desktopText: original.desktopText,
+          attachments: original.attachments,
+          model: original.model,
+          profile: original.profile,
+          state: original.state,
+          queued: original.queued,
+          retryBoundary: original.retryBoundary,
+        );
+        await expectRetained(
+          'pre-creation match keeps base outcome',
+          preCreation,
+          [
+            row(10, 'user', 'antes', timestamp: 0),
+            row(11, 'user', 'same', timestamp: 1),
+            optimistic,
+          ],
+        );
+        await expectRetained(
+          'attachment turn keeps base outcome',
+          ambiguous('same').copyWith(
+            fullText: 'same\n[Attachment: report.txt]',
+            attachments: const [
+              AttachmentDraft(
+                type: AttachmentType.document,
+                name: 'report.txt',
+                mimeType: 'text/plain',
+                sizeBytes: 4,
+                localPath: '/synthetic/report.txt',
+              ),
+            ],
+          ),
+          [
+            row(10, 'user', 'antes', timestamp: 0),
+            row(11, 'user', 'same', timestamp: 2),
+            optimistic,
+          ],
+        );
+
+        final (chat, store, gateway) = await restored([
+          row(10, 'user', 'antes', timestamp: 0),
+          matching,
+          optimistic,
+          row(13, 'user', 'durable other', timestamp: 4),
+        ], ambiguous('same'));
+        expect(chat.queuedTurns, isEmpty);
+        expect(store.deletes, hasLength(1));
+        expect(gateway.submitCalls, 0);
+      },
+    );
+
+    test('dos filas coincidentes siguen siendo dudosas', () {
+      final turn = ambiguous('mismo texto');
+      expect(
+        ambiguousTurnTranscriptEvidence(turn, [
+          row(10, 'user', 'antes'),
+          row(11, 'user', 'mismo texto'),
+          row(12, 'user', 'mismo texto'),
+        ], requireRowAfterTurnCreation: true),
+        AmbiguousRetryEvidence.unknown,
+      );
+    });
+
+    test('coincidencia anterior a creación menos skew sigue siendo dudosa', () {
+      final original = ambiguous('anterior');
+      final turn = PreparedTurn(
+        connectionId: original.connectionId,
+        sessionId: original.sessionId,
+        clientTurnId: original.clientTurnId,
+        createdAtMs: 10000 * 1000,
+        updatedAtMs: 10000 * 1000,
+        text: original.text,
+        fullText: original.fullText,
+        attachments: original.attachments,
+        model: original.model,
+        profile: original.profile,
+        state: original.state,
+        retryBoundary: original.retryBoundary,
+      );
+      expect(
+        ambiguousTurnTranscriptEvidence(turn, [
+          row(10, 'user', 'antes'),
+          row(11, 'user', 'anterior', timestamp: 9000),
+        ], requireRowAfterTurnCreation: true),
+        AmbiguousRetryEvidence.unknown,
+      );
+    });
+
+    test(
+      'timestamp ausente o inválido en coincidencia sigue siendo dudoso',
+      () {
+        final turn = ambiguous('sin reloj');
+        for (final timestamp in <Object?>[null, 'inválido', -1]) {
+          final matching = <String, dynamic>{
+            'id': 11,
+            'role': 'user',
+            'content': 'sin reloj',
+            if (timestamp != null) 'timestamp': timestamp,
+          };
+          expect(
+            ambiguousTurnTranscriptEvidence(turn, [
+              row(10, 'user', 'antes'),
+              matching,
+            ], requireRowAfterTurnCreation: true),
+            AmbiguousRetryEvidence.unknown,
+          );
+        }
+      },
+    );
+
+    test('fronteras ausente y unknown siguen siendo dudosas', () {
+      final turn = ambiguous('hola');
+      final absentBoundary = PreparedTurn(
+        connectionId: turn.connectionId,
+        sessionId: turn.sessionId,
+        clientTurnId: turn.clientTurnId,
+        createdAtMs: turn.createdAtMs,
+        updatedAtMs: turn.updatedAtMs,
+        text: turn.text,
+        fullText: turn.fullText,
+        attachments: turn.attachments,
+        model: turn.model,
+        profile: turn.profile,
+        state: turn.state,
+      );
+      final transcript = [row(11, 'user', 'hola')];
+      for (final candidate in [
+        absentBoundary,
+        turn.copyWith(retryBoundary: const PreparedTurnRetryBoundary.unknown()),
+      ]) {
+        expect(
+          ambiguousTurnTranscriptEvidence(
+            candidate,
+            transcript,
+            requireRowAfterTurnCreation: true,
+          ),
+          AmbiguousRetryEvidence.unknown,
+        );
+      }
+    });
+
+    test('aliases de identidad inconsistentes siguen siendo dudosos', () {
+      final turn = ambiguous(
+        'hola',
+      ).copyWith(retryBoundary: PreparedTurnRetryBoundary.identity(rowId: 10));
+      expect(
+        ambiguousTurnTranscriptEvidence(turn, [
+          {...row(10, 'user', 'antes'), 'row_id': 99},
+          row(11, 'user', 'hola'),
+        ], requireRowAfterTurnCreation: true),
+        AmbiguousRetryEvidence.unknown,
+      );
+    });
+
     test('sin evidencia se conserva como pendiente y no se reenvía', () async {
       final turn = ambiguous('mensaje nuevo');
       final (chat, store, gateway) = await restored([
@@ -1870,6 +2170,276 @@ void main() {
       expect(chat.queuedEntries.single.blocked, isTrue);
       expect(store.deletes, isEmpty);
       expect(gateway.submitCalls, 0);
+    });
+
+    test('composer y cola con el mismo texto conservan ambos owners', () async {
+      final queued = ambiguous('propiedad compartida');
+      final composer = queued.copyWith(queued: false);
+      final (chat, store, gateway) = await restored(
+        [
+          row(10, 'user', 'antes'),
+          row(11, 'user', 'propiedad compartida'),
+          row(12, 'user', 'posterior'),
+        ],
+        queued,
+        composerPending: composer,
+      );
+      expect(chat.queuedTurns, hasLength(1));
+      expect(store.deletes, isEmpty);
+      expect(gateway.submitCalls, 0);
+    });
+
+    test('relajado falla cerrado para filas competidoras no durables', () {
+      final turn = ambiguous('duplicado inválido');
+      final base = [
+        row(10, 'user', 'antes'),
+        row(11, 'user', 'duplicado inválido'),
+        {
+          'id': 12,
+          'role': 'user',
+          'content': 'duplicado inválido',
+          'timestamp': 'invalid',
+        },
+        row(13, 'user', 'posterior'),
+      ];
+      expect(
+        ambiguousTurnTranscriptEvidence(
+          turn,
+          base,
+          requireRowAfterTurnCreation: true,
+          allowRelaxedQueuedSettlement: true,
+        ),
+        AmbiguousRetryEvidence.unknown,
+      );
+      for (final badMatch in [
+        {...row(11, 'user', 'duplicado inválido'), 'row_id': 99},
+        {...row(11, 'user', 'duplicado inválido'), '_optimistic': true},
+      ]) {
+        expect(
+          ambiguousTurnTranscriptEvidence(
+            turn,
+            [row(10, 'user', 'antes'), badMatch, row(12, 'user', 'posterior')],
+            requireRowAfterTurnCreation: true,
+            allowRelaxedQueuedSettlement: true,
+          ),
+          AmbiguousRetryEvidence.unknown,
+        );
+      }
+    });
+
+    test('composer multi-row remains unsettled as base', () async {
+      final composer = ambiguous('composer multi-row').copyWith(queued: false);
+      final (chat, store, gateway) = await restored([
+        row(10, 'user', 'antes'),
+        row(11, 'user', 'composer multi-row'),
+        row(12, 'user', 'posterior'),
+      ], const <PreparedTurn>[]);
+      expect(await chat.composerTurnDeliveredPerTranscript(composer), isFalse);
+      expect(store.deletes, isEmpty);
+      expect(gateway.submitCalls, 0);
+    });
+
+    test('la cola conserva los siete casos legacy de una sola fila', () async {
+      for (final scenario in <String>[
+        'plain',
+        'skew-minus-one-second',
+        'skew-minus-two-minutes',
+        'attachment-full-payload',
+        'row-id-only',
+        'message-id-only',
+        'no-durable-identity',
+      ]) {
+        final attachment = scenario == 'attachment-full-payload';
+        final base = PreparedTurn(
+          connectionId: 'conn-test',
+          sessionId: 'session-test',
+          clientTurnId: 'legacy-$scenario',
+          createdAtMs: 121000,
+          updatedAtMs: 121000,
+          text: 'legacy $scenario',
+          fullText: 'legacy $scenario',
+          desktopText: 'legacy $scenario',
+          attachments: const [],
+          model: 'hermes-agent',
+          profile: '',
+          state: PreparedTurnState.ambiguous,
+          queued: true,
+          retryBoundary: boundary,
+        );
+        final turn = attachment
+            ? base.copyWith(
+                fullText: 'legacy $scenario\n[Attachment: report.txt]',
+                attachments: const [
+                  AttachmentDraft(
+                    type: AttachmentType.document,
+                    name: 'report.txt',
+                    mimeType: 'text/plain',
+                    sizeBytes: 4,
+                    localPath: '/synthetic/report.txt',
+                  ),
+                ],
+              )
+            : base;
+        final timestamp = switch (scenario) {
+          'skew-minus-one-second' => 120.0,
+          'skew-minus-two-minutes' => 1.0,
+          _ => 122.0,
+        };
+        final matching = <String, dynamic>{
+          'role': 'user',
+          'content': attachment ? turn.fullText : turn.text,
+          'timestamp': timestamp,
+          if (scenario == 'row-id-only') 'row_id': 11,
+          if (scenario == 'message-id-only') 'message_id': 'm-11',
+          if (scenario == 'plain') 'id': 11,
+        };
+        final transcript = [row(10, 'user', 'antes', timestamp: 0), matching];
+        expect(
+          ambiguousTurnTranscriptEvidence(
+            turn,
+            transcript,
+            requireRowAfterTurnCreation: true,
+          ),
+          AmbiguousRetryEvidence.delivered,
+          reason: scenario,
+        );
+        final (chat, store, gateway) = await restored(transcript, turn);
+        expect(chat.queuedTurns, isEmpty, reason: scenario);
+        expect(store.deletes, hasLength(1), reason: scenario);
+        expect(gateway.submitCalls, 0, reason: scenario);
+      }
+    });
+
+    test('default and flagged legacy representative matrix match base', () {
+      final turn = ambiguous('matrix');
+      final cases =
+          <
+            (
+              List<Map<String, dynamic>>,
+              AmbiguousRetryEvidence,
+              AmbiguousRetryEvidence,
+            )
+          >[
+            (
+              [row(10, 'user', 'before'), row(11, 'user', 'matrix')],
+              AmbiguousRetryEvidence.delivered,
+              AmbiguousRetryEvidence.delivered,
+            ),
+            (
+              [row(10, 'user', 'before')],
+              AmbiguousRetryEvidence.notDelivered,
+              AmbiguousRetryEvidence.notDelivered,
+            ),
+            (
+              [row(10, 'user', 'before'), row(11, 'user', 'other')],
+              AmbiguousRetryEvidence.unknown,
+              AmbiguousRetryEvidence.unknown,
+            ),
+            (
+              [
+                row(10, 'user', 'before'),
+                row(11, 'user', 'matrix', timestamp: -1),
+              ],
+              AmbiguousRetryEvidence.delivered,
+              AmbiguousRetryEvidence.unknown,
+            ),
+          ];
+      for (final (transcript, defaultExpected, flaggedExpected) in cases) {
+        expect(
+          ambiguousTurnTranscriptEvidence(turn, transcript),
+          defaultExpected,
+        );
+        expect(
+          ambiguousTurnTranscriptEvidence(
+            turn,
+            transcript,
+            requireRowAfterTurnCreation: true,
+          ),
+          flaggedExpected,
+        );
+      }
+    });
+
+    test('relajado explícito conserva fallo cerrado de los negativos', () {
+      final turn = ambiguous('relajado');
+      final transcript = [
+        row(10, 'user', 'antes', timestamp: 0),
+        row(11, 'user', 'relajado', timestamp: 2),
+        row(12, 'user', 'posterior', timestamp: 3),
+      ];
+      expect(
+        ambiguousTurnTranscriptEvidence(
+          turn,
+          transcript,
+          requireRowAfterTurnCreation: true,
+          allowRelaxedQueuedSettlement: true,
+        ),
+        AmbiguousRetryEvidence.delivered,
+      );
+      for (final badMatch in [
+        {...transcript[1], '_optimistic': true},
+        {...transcript[1], 'row_id': 99},
+        {...transcript[1], 'timestamp': 0.999},
+      ]) {
+        expect(
+          ambiguousTurnTranscriptEvidence(
+            turn,
+            [transcript.first, badMatch, transcript.last],
+            requireRowAfterTurnCreation: true,
+            allowRelaxedQueuedSettlement: true,
+          ),
+          AmbiguousRetryEvidence.unknown,
+        );
+      }
+    });
+
+    test('relajado no atribuye adjuntos ni reloj anterior a creación', () {
+      final attachmentTurn = ambiguous('solo texto').copyWith(
+        fullText: '[📎 report.txt]\nsolo texto\n⟦adjunto⟧\nsintético',
+        attachments: const [
+          AttachmentDraft(
+            type: AttachmentType.document,
+            name: 'report.txt',
+            mimeType: 'text/plain',
+            sizeBytes: 4,
+            localPath: '/synthetic/report.txt',
+            uploadState: AttachmentUploadState.attached,
+          ),
+        ],
+      );
+      expect(
+        ambiguousTurnTranscriptEvidence(attachmentTurn, [
+          row(10, 'user', 'antes'),
+          row(11, 'user', 'solo texto'),
+          row(12, 'user', 'posterior'),
+        ], requireRowAfterTurnCreation: true),
+        AmbiguousRetryEvidence.unknown,
+      );
+      final original = ambiguous('sin skew');
+      final later = PreparedTurn(
+        connectionId: original.connectionId,
+        sessionId: original.sessionId,
+        clientTurnId: original.clientTurnId,
+        createdAtMs: 10000 * 1000,
+        updatedAtMs: 10000 * 1000,
+        text: original.text,
+        fullText: original.fullText,
+        desktopText: original.desktopText,
+        attachments: original.attachments,
+        model: original.model,
+        profile: original.profile,
+        state: original.state,
+        queued: original.queued,
+        retryBoundary: original.retryBoundary,
+      );
+      expect(
+        ambiguousTurnTranscriptEvidence(later, [
+          row(10, 'user', 'antes', timestamp: 9999),
+          row(11, 'user', 'sin skew', timestamp: 9999),
+          row(12, 'user', 'posterior', timestamp: 10001),
+        ], requireRowAfterTurnCreation: true),
+        AmbiguousRetryEvidence.unknown,
+      );
     });
   });
 }
