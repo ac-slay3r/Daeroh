@@ -1496,6 +1496,21 @@ AmbiguousRetryEvidence ambiguousTurnTranscriptEvidence(
 
   final afterBoundary = chronological.skip(start).toList(growable: false);
   final newUsers = afterBoundary.where(isRealUserTurn).toList(growable: false);
+  // `isRealUserTurn` deliberately includes plain optimistic projections and
+  // rows without a durable identity. They retain legacy counting below, but
+  // must not authorize the queue-only multi-row relaxation before durable
+  // server rows arrive.
+  bool isDurableRealUserRow(Map<String, dynamic> message) {
+    if (!isRealUserTurn(message) || message['_optimistic'] == true) {
+      return false;
+    }
+    if (!transcriptIdentityAliasesAreConsistent(message)) return false;
+    return _transcriptMessageIdentity(message)?.isDurable ?? false;
+  }
+
+  final durableNewUsers = afterBoundary
+      .where(isDurableRealUserRow)
+      .toList(growable: false);
   final candidates = _ambiguousTurnTextCandidates(turn);
   bool matchesText(Map<String, dynamic> message) => candidates.contains(
     stripBotMentionNote((message['content'] ?? '').toString()).trim(),
@@ -1503,7 +1518,7 @@ AmbiguousRetryEvidence ambiguousTurnTranscriptEvidence(
 
   // Byte-for-byte legacy decision shape: default, composer, and a queue with
   // one (or zero) new user row keep bounded skew and no new metadata gates.
-  if (!allowRelaxedQueuedSettlement || newUsers.length <= 1) {
+  if (!allowRelaxedQueuedSettlement || durableNewUsers.length <= 1) {
     var matching = 0;
     for (final message in newUsers) {
       if (!matchesText(message)) continue;

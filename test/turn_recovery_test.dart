@@ -1939,6 +1939,125 @@ void main() {
       },
     );
 
+    test(
+      'proyección optimistic posterior no retira la cola aunque el match durable exista',
+      () async {
+        final turn = ambiguous('same');
+        final (chat, store, gateway) = await restored([
+          row(10, 'user', 'antes', timestamp: 0),
+          row(11, 'user', 'same', timestamp: 2),
+          {...row(12, 'user', 'other', timestamp: 3), '_optimistic': true},
+        ], turn);
+        expect(chat.queuedTurns, hasLength(1));
+        expect(chat.queuedEntries.single.blocked, isTrue);
+        expect(store.deletes, isEmpty);
+        expect(gateway.submitCalls, 0);
+      },
+    );
+
+    test(
+      'proyecciones optimistic no cuentan para abrir la relajación',
+      () async {
+        Future<void> expectRetained(
+          String label,
+          PreparedTurn turn,
+          List<Map<String, dynamic>> transcript,
+        ) async {
+          final (chat, store, gateway) = await restored(transcript, turn);
+          expect(chat.queuedTurns, hasLength(1), reason: label);
+          expect(store.deletes, isEmpty, reason: label);
+          expect(gateway.submitCalls, 0, reason: label);
+        }
+
+        final matching = row(11, 'user', 'same', timestamp: 2);
+        final optimistic = {
+          ...row(12, 'user', 'other', timestamp: 3),
+          '_optimistic': true,
+        };
+        await expectRetained(
+          'optimistic before durable match',
+          ambiguous('same'),
+          [row(10, 'user', 'antes', timestamp: 0), optimistic, matching],
+        );
+        await expectRetained('two optimistic extras', ambiguous('same'), [
+          row(10, 'user', 'antes', timestamp: 0),
+          matching,
+          optimistic,
+          {...row(13, 'user', 'other two', timestamp: 4), '_optimistic': true},
+        ]);
+        await expectRetained('non-durable extra keeps base outcome', ambiguous('same'), [
+          row(10, 'user', 'antes', timestamp: 0),
+          matching,
+          {'role': 'user', 'content': 'unidentified other', 'timestamp': 4},
+        ]);
+        await expectRetained(
+          'inconsistent-identity extra keeps base outcome',
+          ambiguous('same'),
+          [
+            row(10, 'user', 'antes', timestamp: 0),
+            matching,
+            {...row(13, 'user', 'inconsistent other', timestamp: 4), 'row_id': 99},
+          ],
+        );
+        final original = ambiguous('same');
+        final preCreation = PreparedTurn(
+          connectionId: original.connectionId,
+          sessionId: original.sessionId,
+          clientTurnId: original.clientTurnId,
+          createdAtMs: 2000,
+          updatedAtMs: 2000,
+          text: original.text,
+          fullText: original.fullText,
+          desktopText: original.desktopText,
+          attachments: original.attachments,
+          model: original.model,
+          profile: original.profile,
+          state: original.state,
+          queued: original.queued,
+          retryBoundary: original.retryBoundary,
+        );
+        await expectRetained(
+          'pre-creation match keeps base outcome',
+          preCreation,
+          [
+            row(10, 'user', 'antes', timestamp: 0),
+            row(11, 'user', 'same', timestamp: 1),
+            optimistic,
+          ],
+        );
+        await expectRetained(
+          'attachment turn keeps base outcome',
+          ambiguous('same').copyWith(
+            fullText: 'same\n[Attachment: report.txt]',
+            attachments: const [
+              AttachmentDraft(
+                type: AttachmentType.document,
+                name: 'report.txt',
+                mimeType: 'text/plain',
+                sizeBytes: 4,
+                localPath: '/synthetic/report.txt',
+              ),
+            ],
+          ),
+          [
+            row(10, 'user', 'antes', timestamp: 0),
+            row(11, 'user', 'same', timestamp: 2),
+            optimistic,
+          ],
+        );
+
+        final (chat, store, gateway) = await restored([
+          row(10, 'user', 'antes', timestamp: 0),
+          matching,
+          optimistic,
+          row(13, 'user', 'durable other', timestamp: 4),
+        ], ambiguous('same'));
+        expect(chat.queuedTurns, isEmpty);
+        expect(store.deletes, hasLength(1));
+        expect(gateway.submitCalls, 0);
+      },
+    );
+
     test('dos filas coincidentes siguen siendo dudosas', () {
       final turn = ambiguous('mismo texto');
       expect(
