@@ -17136,7 +17136,97 @@ void main() {
         if (scenario == 'attachment-bare') {
           expect(remaining.single.activeAttachments, hasLength(1));
         }
+        final reloadedDraft = await ChatDraftStore(
+          await SharedPreferences.getInstance(),
+        ).load(connection.id, 'sess-test', profile: 'default');
+        expect(reloadedDraft.text, prompt);
+        expect(reloadedDraft.preparedTurnClientTurnId, composer.clientTurnId);
         expect(chat.queuedTurns.length, scenario == 'cross-lane' ? 1 : 0);
+      },
+    );
+  }
+
+  for (final scenario in ['prior-single', 'invalid-single']) {
+    testWidgets(
+      'composer single-row legacy clock guard retains durable work: $scenario',
+      (tester) async {
+        final connection = _remoteConn('composer-clock-$scenario');
+        const prompt = 'composer clock guarded prompt';
+        final now = DateTime.now().millisecondsSinceEpoch;
+        final composer = PreparedTurn(
+          connectionId: connection.id,
+          sessionId: 'sess-test',
+          clientTurnId: 'composer-clock-$scenario',
+          createdAtMs: now,
+          updatedAtMs: now,
+          text: prompt,
+          fullText: prompt,
+          attachments: const [],
+          model: 'hermes-agent',
+          profile: 'default',
+          state: PreparedTurnState.ambiguous,
+          retryBoundary: PreparedTurnRetryBoundary.identity(rowId: 10),
+        );
+        secureStore['chat_turn_outbox_v1'] = jsonEncode({
+          composer.storageId: composer.toJson(),
+        });
+        secureStore[ChatDraftStore.keyForTesting(
+          connection.id,
+          'sess-test',
+          profile: 'default',
+        )] = jsonEncode({
+          'savedAt': now,
+          'text': prompt,
+          'preparedTurnClientTurnId': composer.clientTurnId,
+          'attachments': const <Object>[],
+        });
+        final timestamp = now / 1000;
+        final transcript = <Map<String, dynamic>>[
+          {
+            'id': 10,
+            'role': 'user',
+            'content': 'before',
+            'timestamp': timestamp - 60,
+          },
+          {
+            'id': 11,
+            'role': 'user',
+            'content': prompt,
+            'timestamp': scenario == 'prior-single'
+                ? timestamp - 180
+                : 'invalid',
+          },
+        ];
+        final gateway = _SubmissionGateway();
+        await pumpChat(
+          tester,
+          connection: connection,
+          desktopGateway: gateway,
+          storedMessageLoader: (_, _) async => transcript,
+        );
+        for (var frame = 0; frame < 80; frame++) {
+          await tester.pump(const Duration(milliseconds: 20));
+        }
+        final remaining = await TurnOutboxStore().loadAllForChat(
+          connection.id,
+          'sess-test',
+          profile: 'default',
+        );
+        final visibleText = tester
+            .widget<TextField>(find.byType(TextField).last)
+            .controller
+            ?.text;
+        final reloadedDraft = await ChatDraftStore(
+          await SharedPreferences.getInstance(),
+        ).load(connection.id, 'sess-test', profile: 'default');
+        expect(gateway.submissions, isEmpty);
+        expect(remaining.map((turn) => turn.clientTurnId), [
+          composer.clientTurnId,
+        ]);
+        expect(visibleText, prompt);
+        expect(reloadedDraft.text, prompt);
+        expect(reloadedDraft.preparedTurnClientTurnId, composer.clientTurnId);
+        expect(tester.takeException(), isNull);
       },
     );
   }

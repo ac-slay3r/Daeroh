@@ -2088,6 +2088,7 @@ void main() {
           turn,
           base,
           requireRowAfterTurnCreation: true,
+          allowRelaxedQueuedSettlement: true,
         ),
         AmbiguousRetryEvidence.unknown,
       );
@@ -2096,11 +2097,178 @@ void main() {
         {...row(11, 'user', 'duplicado inválido'), '_optimistic': true},
       ]) {
         expect(
-          ambiguousTurnTranscriptEvidence(turn, [
-            row(10, 'user', 'antes'),
-            badMatch,
-            row(12, 'user', 'posterior'),
-          ], requireRowAfterTurnCreation: true),
+          ambiguousTurnTranscriptEvidence(
+            turn,
+            [row(10, 'user', 'antes'), badMatch, row(12, 'user', 'posterior')],
+            requireRowAfterTurnCreation: true,
+            allowRelaxedQueuedSettlement: true,
+          ),
+          AmbiguousRetryEvidence.unknown,
+        );
+      }
+    });
+
+    test('composer multi-row remains unsettled as base', () async {
+      final composer = ambiguous('composer multi-row').copyWith(queued: false);
+      final (chat, store, gateway) = await restored([
+        row(10, 'user', 'antes'),
+        row(11, 'user', 'composer multi-row'),
+        row(12, 'user', 'posterior'),
+      ], const <PreparedTurn>[]);
+      expect(await chat.composerTurnDeliveredPerTranscript(composer), isFalse);
+      expect(store.deletes, isEmpty);
+      expect(gateway.submitCalls, 0);
+    });
+
+    test('la cola conserva los siete casos legacy de una sola fila', () async {
+      for (final scenario in <String>[
+        'plain',
+        'skew-minus-one-second',
+        'skew-minus-two-minutes',
+        'attachment-full-payload',
+        'row-id-only',
+        'message-id-only',
+        'no-durable-identity',
+      ]) {
+        final attachment = scenario == 'attachment-full-payload';
+        final base = PreparedTurn(
+          connectionId: 'conn-test',
+          sessionId: 'session-test',
+          clientTurnId: 'legacy-$scenario',
+          createdAtMs: 121000,
+          updatedAtMs: 121000,
+          text: 'legacy $scenario',
+          fullText: 'legacy $scenario',
+          desktopText: 'legacy $scenario',
+          attachments: const [],
+          model: 'hermes-agent',
+          profile: '',
+          state: PreparedTurnState.ambiguous,
+          queued: true,
+          retryBoundary: boundary,
+        );
+        final turn = attachment
+            ? base.copyWith(
+                fullText: 'legacy $scenario\n[Attachment: report.txt]',
+                attachments: const [
+                  AttachmentDraft(
+                    type: AttachmentType.document,
+                    name: 'report.txt',
+                    mimeType: 'text/plain',
+                    sizeBytes: 4,
+                    localPath: '/synthetic/report.txt',
+                  ),
+                ],
+              )
+            : base;
+        final timestamp = switch (scenario) {
+          'skew-minus-one-second' => 120.0,
+          'skew-minus-two-minutes' => 1.0,
+          _ => 122.0,
+        };
+        final matching = <String, dynamic>{
+          'role': 'user',
+          'content': attachment ? turn.fullText : turn.text,
+          'timestamp': timestamp,
+          if (scenario == 'row-id-only') 'row_id': 11,
+          if (scenario == 'message-id-only') 'message_id': 'm-11',
+          if (scenario == 'plain') 'id': 11,
+        };
+        final transcript = [row(10, 'user', 'antes', timestamp: 0), matching];
+        expect(
+          ambiguousTurnTranscriptEvidence(
+            turn,
+            transcript,
+            requireRowAfterTurnCreation: true,
+          ),
+          AmbiguousRetryEvidence.delivered,
+          reason: scenario,
+        );
+        final (chat, store, gateway) = await restored(transcript, turn);
+        expect(chat.queuedTurns, isEmpty, reason: scenario);
+        expect(store.deletes, hasLength(1), reason: scenario);
+        expect(gateway.submitCalls, 0, reason: scenario);
+      }
+    });
+
+    test('default and flagged legacy representative matrix match base', () {
+      final turn = ambiguous('matrix');
+      final cases =
+          <
+            (
+              List<Map<String, dynamic>>,
+              AmbiguousRetryEvidence,
+              AmbiguousRetryEvidence,
+            )
+          >[
+            (
+              [row(10, 'user', 'before'), row(11, 'user', 'matrix')],
+              AmbiguousRetryEvidence.delivered,
+              AmbiguousRetryEvidence.delivered,
+            ),
+            (
+              [row(10, 'user', 'before')],
+              AmbiguousRetryEvidence.notDelivered,
+              AmbiguousRetryEvidence.notDelivered,
+            ),
+            (
+              [row(10, 'user', 'before'), row(11, 'user', 'other')],
+              AmbiguousRetryEvidence.unknown,
+              AmbiguousRetryEvidence.unknown,
+            ),
+            (
+              [
+                row(10, 'user', 'before'),
+                row(11, 'user', 'matrix', timestamp: -1),
+              ],
+              AmbiguousRetryEvidence.delivered,
+              AmbiguousRetryEvidence.unknown,
+            ),
+          ];
+      for (final (transcript, defaultExpected, flaggedExpected) in cases) {
+        expect(
+          ambiguousTurnTranscriptEvidence(turn, transcript),
+          defaultExpected,
+        );
+        expect(
+          ambiguousTurnTranscriptEvidence(
+            turn,
+            transcript,
+            requireRowAfterTurnCreation: true,
+          ),
+          flaggedExpected,
+        );
+      }
+    });
+
+    test('relajado explícito conserva fallo cerrado de los negativos', () {
+      final turn = ambiguous('relajado');
+      final transcript = [
+        row(10, 'user', 'antes', timestamp: 0),
+        row(11, 'user', 'relajado', timestamp: 2),
+        row(12, 'user', 'posterior', timestamp: 3),
+      ];
+      expect(
+        ambiguousTurnTranscriptEvidence(
+          turn,
+          transcript,
+          requireRowAfterTurnCreation: true,
+          allowRelaxedQueuedSettlement: true,
+        ),
+        AmbiguousRetryEvidence.delivered,
+      );
+      for (final badMatch in [
+        {...transcript[1], '_optimistic': true},
+        {...transcript[1], 'row_id': 99},
+        {...transcript[1], 'timestamp': 0.999},
+      ]) {
+        expect(
+          ambiguousTurnTranscriptEvidence(
+            turn,
+            [transcript.first, badMatch, transcript.last],
+            requireRowAfterTurnCreation: true,
+            allowRelaxedQueuedSettlement: true,
+          ),
           AmbiguousRetryEvidence.unknown,
         );
       }

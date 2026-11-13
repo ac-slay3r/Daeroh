@@ -1452,11 +1452,12 @@ DateTime? _transcriptTimestamp(Map<String, dynamic> message) {
   }
 }
 
-/// Para el settlement que exige timestamp de creación, una sola fila durable,
-/// coincidente y posterior a la creación demuestra entrega aunque luego haya
-/// otros prompts reales no coincidentes. Cualquier segunda coincidencia, incluso
-/// sin reloj válido, sigue siendo ambigua; fuera de ese settlement se conserva
-/// la regla estricta de una sola fila nueva.
+/// Evidencia pura de si un turno con transporte iniciado ya está en el
+/// transcript durable. El modo normal y el marcado conservan el contrato
+/// histórico. La relajación explícita es solo para la cola cuando hay más de
+/// una fila nueva de usuario: exige una única coincidencia durable inequívoca.
+const Duration _deliveredRowClockSkew = Duration(minutes: 2);
+
 Set<String> _ambiguousTurnTextCandidates(PreparedTurn turn) => <String>{
   turn.text.trim(),
   turn.fullText.trim(),
@@ -1468,6 +1469,7 @@ AmbiguousRetryEvidence ambiguousTurnTranscriptEvidence(
   PreparedTurn turn,
   List<Map<String, dynamic>> chronological, {
   bool requireRowAfterTurnCreation = false,
+  bool allowRelaxedQueuedSettlement = false,
 }) {
   final boundary = turn.retryBoundary;
   if (boundary == null ||
@@ -1491,52 +1493,59 @@ AmbiguousRetryEvidence ambiguousTurnTranscriptEvidence(
     if (index < 0) return AmbiguousRetryEvidence.unknown;
     start = index + 1;
   }
-  // El transcript durable no publica una representación documentada que pruebe
-  // el lote binario congelado. Nunca se retira automáticamente un turno con
-  // adjuntos por una coincidencia textual parcial.
-  if (requireRowAfterTurnCreation && turn.activeAttachments.isNotEmpty) {
-    return AmbiguousRetryEvidence.unknown;
-  }
+
+  final afterBoundary = chronological.skip(start).toList(growable: false);
+  final newUsers = afterBoundary.where(isRealUserTurn).toList(growable: false);
   final candidates = _ambiguousTurnTextCandidates(turn);
-  var newUsers = 0;
-  var matching = 0;
-  var matchingOccurrences = 0;
-  for (final message in chronological.skip(start)) {
-    if (!isRealUserTurn(message)) continue;
-    newUsers++;
-    final content = stripBotMentionNote(
-      (message['content'] ?? '').toString(),
-    ).trim();
-    if (!candidates.contains(content)) continue;
-    if (!requireRowAfterTurnCreation) {
+  bool matchesText(Map<String, dynamic> message) => candidates.contains(
+    stripBotMentionNote((message['content'] ?? '').toString()).trim(),
+  );
+
+  // Byte-for-byte legacy decision shape: default, composer, and a queue with
+  // one (or zero) new user row keep bounded skew and no new metadata gates.
+  if (!allowRelaxedQueuedSettlement || newUsers.length <= 1) {
+    var matching = 0;
+    for (final message in newUsers) {
+      if (!matchesText(message)) continue;
+      if (requireRowAfterTurnCreation) {
+        final at = _transcriptTimestamp(message);
+        if (at == null ||
+            at.millisecondsSinceEpoch <
+                turn.createdAtMs - _deliveredRowClockSkew.inMilliseconds) {
+          continue;
+        }
+      }
       matching++;
-      continue;
     }
-    // Toda repetición textual compite por la atribución, incluso si su reloj o
-    // identidad no permiten admitirla como entrega durable.
-    matchingOccurrences++;
-    final at = _transcriptTimestamp(message);
-    final identity = transcriptIdentityAliasesAreConsistent(message)
-        ? _transcriptMessageIdentity(message)
-        : null;
-    if (at == null ||
-        at.millisecondsSinceEpoch < turn.createdAtMs ||
-        message['_optimistic'] == true ||
-        identity == null ||
-        !identity.isDurable) {
-      continue;
-    }
-    matching++;
-  }
-  if (newUsers == 0) return AmbiguousRetryEvidence.notDelivered;
-  if (requireRowAfterTurnCreation) {
-    return matchingOccurrences == 1 && matching == 1
+    if (newUsers.isEmpty) return AmbiguousRetryEvidence.notDelivered;
+    return newUsers.length == 1 && matching == 1
         ? AmbiguousRetryEvidence.delivered
         : AmbiguousRetryEvidence.unknown;
   }
-  return matching == 1 && newUsers == 1
-      ? AmbiguousRetryEvidence.delivered
-      : AmbiguousRetryEvidence.unknown;
+
+  // Queue-only multi-row relaxation: any textual duplicate after the boundary
+  // is ambiguous. The unique matching row must itself be a durable real-user
+  // row with a non-optimistic, internally consistent identity and no clock
+  // tolerance. Attachments remain fail-closed in this new mode.
+  if (!requireRowAfterTurnCreation || turn.activeAttachments.isNotEmpty) {
+    return AmbiguousRetryEvidence.unknown;
+  }
+  final occurrences = afterBoundary.where(matchesText).toList(growable: false);
+  if (occurrences.length != 1) return AmbiguousRetryEvidence.unknown;
+  final match = occurrences.single;
+  final at = _transcriptTimestamp(match);
+  final identity = transcriptIdentityAliasesAreConsistent(match)
+      ? _transcriptMessageIdentity(match)
+      : null;
+  if (!isRealUserTurn(match) ||
+      at == null ||
+      at.millisecondsSinceEpoch < turn.createdAtMs ||
+      match['_optimistic'] == true ||
+      identity == null ||
+      !identity.isDurable) {
+    return AmbiguousRetryEvidence.unknown;
+  }
+  return AmbiguousRetryEvidence.delivered;
 }
 
 TranscriptMessageIdentity? _desktopSnapshotTranscriptIdentity(
@@ -15892,7 +15901,11 @@ class ActiveChat {
       return false;
     }
     final delivered =
-        ambiguousTurnTranscriptEvidence(turn, chronological) ==
+        ambiguousTurnTranscriptEvidence(
+          turn,
+          chronological,
+          requireRowAfterTurnCreation: true,
+        ) ==
         AmbiguousRetryEvidence.delivered;
     if (delivered) {
       _queuedDeliveryUnknownAt.remove(turn.clientTurnId);
@@ -21222,6 +21235,7 @@ class ActiveChat {
                 item.turn,
                 chronological,
                 requireRowAfterTurnCreation: true,
+                allowRelaxedQueuedSettlement: true,
               )
             : AmbiguousRetryEvidence.unknown;
         if (evidence != AmbiguousRetryEvidence.delivered) {
