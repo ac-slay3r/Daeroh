@@ -1,15 +1,71 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/services/bridge_release_channel.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/remote_bridge_installer.dart';
 
 void main() {
-  test('packaged bridge script embeds supplied source and keeps loopback opt-in off', () {
-    final script = RemoteBridgeInstaller.buildInstallScript('c3VwcGxpZWQ=', '127.0.0.1');
-    expect(script, contains("printf %s 'c3VwcGxpZWQ=' | base64 -d | gunzip"));
-    expect(script, isNot(contains('--i-know-what-im-doing')));
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('supplied bridge source is compressed into the install script', () async {
+    const source = 'VERSION = "9.8.7"\nprint("synthetic")\n';
+    final api = ApiClient(
+      baseUrl: 'http://127.0.0.1:8642',
+      apiKey: 'synthetic',
+    );
+    try {
+      final script = await RemoteBridgeInstaller(
+        api,
+        SavedConnection(
+          id: 'id',
+          label: 'fixture',
+          host: '127.0.0.1',
+          port: 8642,
+          apiKey: 'synthetic',
+        ),
+      ).installScript(bridgeSource: source);
+      final match = RegExp(r"printf %s '([A-Za-z0-9+/=]+)'").firstMatch(script);
+      expect(match, isNotNull);
+      expect(
+        utf8.decode(gzip.decode(base64.decode(match!.group(1)!))),
+        source,
+      );
+    } finally {
+      api.close();
+    }
+  });
+
+  test('packaged bridge asset is reconstructed into the service script', () async {
+    final api = ApiClient(
+      baseUrl: 'http://127.0.0.1:8642',
+      apiKey: 'synthetic',
+    );
+    try {
+      final script = await RemoteBridgeInstaller(
+        api,
+        SavedConnection(
+          id: 'id',
+          label: 'fixture',
+          host: '127.0.0.1',
+          port: 8642,
+          apiKey: 'synthetic',
+        ),
+      ).installScript();
+      final match = RegExp(r"printf %s '([A-Za-z0-9+/=]+)'").firstMatch(script);
+      expect(match, isNotNull);
+      expect(
+        utf8.decode(gzip.decode(base64.decode(match!.group(1)!))),
+        await rootBundle.loadString('assets/bridge/hermes_bridge.py'),
+      );
+      expect(script, contains('UNIT_FILE="\$UNIT_DIR/hermes-bridge.service"'));
+      expect(script, contains('ExecStart=\$VP \$TARGET'));
+      expect(script, isNot(contains('--i-know-what-im-doing')));
+    } finally {
+      api.close();
+    }
   });
 
   test('remote releases are disabled', () async {

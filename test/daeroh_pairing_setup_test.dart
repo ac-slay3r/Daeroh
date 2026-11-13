@@ -476,6 +476,11 @@ void main() {
       final slowBody = await fixture.run().timeout(const Duration(seconds: 8));
       bodyWatch.stop();
       expect(slowBody.exitCode, isNonZero);
+      expect(fixture.trickleBodyStarted, isTrue);
+      expect(
+        bodyWatch.elapsed,
+        greaterThanOrEqualTo(const Duration(seconds: 1)),
+      );
       expect(bodyWatch.elapsed, lessThan(const Duration(seconds: 3)));
       fixture.trickleBody = false;
       final timely = await fixture.run(showLink: true);
@@ -534,6 +539,7 @@ class _PairingFixture {
   String expectedToken = '';
   bool trickle = false;
   bool trickleBody = false;
+  bool trickleBodyStarted = false;
   _DashboardMode dashboardMode = _DashboardMode.ok;
 
   static Future<_PairingFixture> start({bool startDashboard = false}) async {
@@ -626,9 +632,16 @@ fi
       return;
     }
     if (trickleBody) {
+      final authorized = requests.last == 'Bearer $expectedToken';
+      if (!authorized) {
+        request.response.statusCode = HttpStatus.unauthorized;
+        await request.response.close();
+        return;
+      }
       final socket = await request.response.detachSocket(writeHeaders: false);
-      socket.add('HTTP/1.1 401 Unauthorized\\r\\nContent-Length: 8\\r\\n\\r\\n'.codeUnits);
+      socket.add('HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n'.codeUnits);
       await socket.flush();
+      trickleBodyStarted = true;
       for (final byte in '12345678'.codeUnits) {
         socket.add([byte]);
         await socket.flush();
