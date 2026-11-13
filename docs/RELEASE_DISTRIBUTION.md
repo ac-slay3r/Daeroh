@@ -212,3 +212,11 @@ digests. It validates only and never publishes or uploads.
 7. Only in that approved publication operation, produce/verify provenance and
    publish the exact six-file direct allowlist, or upload only the private AAB to
    Play. Never substitute `full`, `play` or `qa` artifacts across lanes.
+
+## Update page build configuration
+
+Direct-distribution builds that should expose an update page must pass
+`--dart-define=DAEROH_UPDATE_PAGE_URL=<approved-http-or-https-url>` to Flutter.
+The value is intentionally not stored in source. If it is omitted or invalid,
+the app does not show an update-page action and never falls back to another
+distribution channel.
