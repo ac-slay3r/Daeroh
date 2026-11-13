@@ -2503,6 +2503,7 @@ class _ChatScreenState extends State<ChatScreen>
       return;
     }
     _preparedTurn = loaded;
+    _chat.setComposerTurnAwaitingTranscriptSettlement(loaded);
     var prepared = loaded;
     // Mientras se reconcilia y se restaura la cola, el settle por transcript
     // no puede liquidar este turno: al terminar, la restauración lo volvería
@@ -2687,6 +2688,7 @@ class _ChatScreenState extends State<ChatScreen>
     }
     if (!mounted || !identical(_preparedTurn, prepared)) return;
     _preparedTurn = null;
+    _chat.setComposerTurnAwaitingTranscriptSettlement(null);
     _composerPreparedTurnClientTurnId = null;
     // La cola restaurada quedó suspendida mientras este turno era ambiguo.
     _chat.resumeQueueDrainAfterComposerTurnResolved();
@@ -2758,6 +2760,7 @@ class _ChatScreenState extends State<ChatScreen>
     }
     if (identical(_preparedTurn, prepared)) {
       _preparedTurn = null;
+      _chat.setComposerTurnAwaitingTranscriptSettlement(null);
       _composerPreparedTurnClientTurnId = null;
     }
     if (!mounted || !composerStillMatches) return;

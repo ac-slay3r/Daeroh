@@ -1452,12 +1452,11 @@ DateTime? _transcriptTimestamp(Map<String, dynamic> message) {
   }
 }
 
-/// Para el settlement que exige timestamp de creación, una sola fila coincidente
-/// y temporalmente válida demuestra entrega aunque luego haya otros prompts
-/// reales no coincidentes. Dos coincidencias siguen siendo ambiguas; fuera de
-/// ese settlement se conserva la regla estricta de una sola fila nueva.
-const Duration _deliveredRowClockSkew = Duration(minutes: 2);
-
+/// Para el settlement que exige timestamp de creación, una sola fila durable,
+/// coincidente y posterior a la creación demuestra entrega aunque luego haya
+/// otros prompts reales no coincidentes. Cualquier segunda coincidencia, incluso
+/// sin reloj válido, sigue siendo ambigua; fuera de ese settlement se conserva
+/// la regla estricta de una sola fila nueva.
 Set<String> _ambiguousTurnTextCandidates(PreparedTurn turn) => <String>{
   turn.text.trim(),
   turn.fullText.trim(),
@@ -1492,9 +1491,16 @@ AmbiguousRetryEvidence ambiguousTurnTranscriptEvidence(
     if (index < 0) return AmbiguousRetryEvidence.unknown;
     start = index + 1;
   }
+  // El transcript durable no publica una representación documentada que pruebe
+  // el lote binario congelado. Nunca se retira automáticamente un turno con
+  // adjuntos por una coincidencia textual parcial.
+  if (requireRowAfterTurnCreation && turn.activeAttachments.isNotEmpty) {
+    return AmbiguousRetryEvidence.unknown;
+  }
   final candidates = _ambiguousTurnTextCandidates(turn);
   var newUsers = 0;
   var matching = 0;
+  var matchingOccurrences = 0;
   for (final message in chronological.skip(start)) {
     if (!isRealUserTurn(message)) continue;
     newUsers++;
@@ -1502,23 +1508,35 @@ AmbiguousRetryEvidence ambiguousTurnTranscriptEvidence(
       (message['content'] ?? '').toString(),
     ).trim();
     if (!candidates.contains(content)) continue;
-    if (requireRowAfterTurnCreation) {
-      // Una fila con el mismo texto anterior a la creación del turno no puede
-      // ser este turno (p. ej. el mismo «ok» enviado antes por otra vía).
-      final at = _transcriptTimestamp(message);
-      if (at == null ||
-          at.millisecondsSinceEpoch <
-              turn.createdAtMs - _deliveredRowClockSkew.inMilliseconds) {
-        continue;
-      }
+    if (!requireRowAfterTurnCreation) {
+      matching++;
+      continue;
+    }
+    // Toda repetición textual compite por la atribución, incluso si su reloj o
+    // identidad no permiten admitirla como entrega durable.
+    matchingOccurrences++;
+    final at = _transcriptTimestamp(message);
+    final identity = transcriptIdentityAliasesAreConsistent(message)
+        ? _transcriptMessageIdentity(message)
+        : null;
+    if (at == null ||
+        at.millisecondsSinceEpoch < turn.createdAtMs ||
+        message['_optimistic'] == true ||
+        identity == null ||
+        !identity.isDurable) {
+      continue;
     }
     matching++;
   }
   if (newUsers == 0) return AmbiguousRetryEvidence.notDelivered;
-  if (matching == 1 && (requireRowAfterTurnCreation || newUsers == 1)) {
-    return AmbiguousRetryEvidence.delivered;
+  if (requireRowAfterTurnCreation) {
+    return matchingOccurrences == 1 && matching == 1
+        ? AmbiguousRetryEvidence.delivered
+        : AmbiguousRetryEvidence.unknown;
   }
-  return AmbiguousRetryEvidence.unknown;
+  return matching == 1 && newUsers == 1
+      ? AmbiguousRetryEvidence.delivered
+      : AmbiguousRetryEvidence.unknown;
 }
 
 TranscriptMessageIdentity? _desktopSnapshotTranscriptIdentity(
@@ -7106,6 +7124,16 @@ class ActiveChat {
   final Queue<_QueuedTextTurn> _messageQueue = Queue<_QueuedTextTurn>();
   final Queue<QueuedPreparedTurn> _preparedTurnQueue =
       Queue<QueuedPreparedTurn>();
+
+  // ChatScreen registra el lote no encolado recuperado antes de restaurar la
+  // cola. Así una fila textual no puede liquidar un owner del composer y otro
+  // de la cola cuando ambos compiten por la misma evidencia.
+  PreparedTurn? _composerTurnAwaitingTranscriptSettlement;
+
+  void setComposerTurnAwaitingTranscriptSettlement(PreparedTurn? turn) {
+    _composerTurnAwaitingTranscriptSettlement = turn;
+  }
+
   final SplayTreeSet<int> _pendingPreparedQueueOrders = SplayTreeSet<int>();
   final Set<String> _pendingPreparedTurnIds = <String>{};
   final Map<String, _PreparedTurnOwner> _preparedTurnOwners = {};
@@ -15864,11 +15892,7 @@ class ActiveChat {
       return false;
     }
     final delivered =
-        ambiguousTurnTranscriptEvidence(
-          turn,
-          chronological,
-          requireRowAfterTurnCreation: true,
-        ) ==
+        ambiguousTurnTranscriptEvidence(turn, chronological) ==
         AmbiguousRetryEvidence.delivered;
     if (delivered) {
       _queuedDeliveryUnknownAt.remove(turn.clientTurnId);
@@ -21168,19 +21192,26 @@ class ActiveChat {
         // ella no hay forma segura de atribuir la fila a este turno.
         final boundaryKind = item.turn.retryBoundary?.kind;
         final candidateTexts = _ambiguousTurnTextCandidates(item.turn);
+        final composerCandidateTexts =
+            _composerTurnAwaitingTranscriptSettlement == null
+            ? const <String>{}
+            : _ambiguousTurnTextCandidates(
+                _composerTurnAwaitingTranscriptSettlement!,
+              );
         // Dos envíos locales con texto atribuible idéntico compiten por la misma
-        // fila durable. Aunque solo haya una coincidencia, no se puede retirar
-        // ninguno sin arriesgar perder el otro.
-        final hasSameTextQueuedTurn =
+        // fila durable. Incluye el turno recuperado del composer: aunque no
+        // vive en la cola, la misma fila no puede liquidar ambos owners.
+        final hasSameTextOutstandingTurn =
             candidateTexts.isNotEmpty &&
-            _preparedTurnQueue.any(
-              (other) =>
-                  !identical(other, item) &&
-                  _ambiguousTurnTextCandidates(
-                    other.turn,
-                  ).any(candidateTexts.contains),
-            );
-        if (hasSameTextQueuedTurn) {
+            (_preparedTurnQueue.any(
+                  (other) =>
+                      !identical(other, item) &&
+                      _ambiguousTurnTextCandidates(
+                        other.turn,
+                      ).any(candidateTexts.contains),
+                ) ||
+                composerCandidateTexts.any(candidateTexts.contains));
+        if (hasSameTextOutstandingTurn) {
           _queuedDeliveryUnknownAt[clientTurnId] = chronological.length;
           continue;
         }

@@ -1813,8 +1813,9 @@ void main() {
 
     Future<(ActiveChat, _MemoryOutbox, _DesktopGateway)> restored(
       List<Map<String, dynamic>> transcript,
-      Object turns,
-    ) async {
+      Object turns, {
+      PreparedTurn? composerPending,
+    }) async {
       final store = _MemoryOutbox();
       final gateway = _DesktopGateway();
       final chat = ActiveChat(
@@ -1840,6 +1841,7 @@ void main() {
         storedMessageLoader: (_, _) async => transcript,
       );
       addTearDown(chat.dispose);
+      chat.setComposerTurnAwaitingTranscriptSettlement(composerPending);
       await chat.restoreQueuedTurns(
         turns is PreparedTurn ? [turns] : turns as Iterable<PreparedTurn>,
         store,
@@ -2049,6 +2051,108 @@ void main() {
       expect(chat.queuedEntries.single.blocked, isTrue);
       expect(store.deletes, isEmpty);
       expect(gateway.submitCalls, 0);
+    });
+
+    test('composer y cola con el mismo texto conservan ambos owners', () async {
+      final queued = ambiguous('propiedad compartida');
+      final composer = queued.copyWith(queued: false);
+      final (chat, store, gateway) = await restored(
+        [
+          row(10, 'user', 'antes'),
+          row(11, 'user', 'propiedad compartida'),
+          row(12, 'user', 'posterior'),
+        ],
+        queued,
+        composerPending: composer,
+      );
+      expect(chat.queuedTurns, hasLength(1));
+      expect(store.deletes, isEmpty);
+      expect(gateway.submitCalls, 0);
+    });
+
+    test('relajado falla cerrado para filas competidoras no durables', () {
+      final turn = ambiguous('duplicado inválido');
+      final base = [
+        row(10, 'user', 'antes'),
+        row(11, 'user', 'duplicado inválido'),
+        {
+          'id': 12,
+          'role': 'user',
+          'content': 'duplicado inválido',
+          'timestamp': 'invalid',
+        },
+        row(13, 'user', 'posterior'),
+      ];
+      expect(
+        ambiguousTurnTranscriptEvidence(
+          turn,
+          base,
+          requireRowAfterTurnCreation: true,
+        ),
+        AmbiguousRetryEvidence.unknown,
+      );
+      for (final badMatch in [
+        {...row(11, 'user', 'duplicado inválido'), 'row_id': 99},
+        {...row(11, 'user', 'duplicado inválido'), '_optimistic': true},
+      ]) {
+        expect(
+          ambiguousTurnTranscriptEvidence(turn, [
+            row(10, 'user', 'antes'),
+            badMatch,
+            row(12, 'user', 'posterior'),
+          ], requireRowAfterTurnCreation: true),
+          AmbiguousRetryEvidence.unknown,
+        );
+      }
+    });
+
+    test('relajado no atribuye adjuntos ni reloj anterior a creación', () {
+      final attachmentTurn = ambiguous('solo texto').copyWith(
+        fullText: '[📎 report.txt]\nsolo texto\n⟦adjunto⟧\nsintético',
+        attachments: const [
+          AttachmentDraft(
+            type: AttachmentType.document,
+            name: 'report.txt',
+            mimeType: 'text/plain',
+            sizeBytes: 4,
+            localPath: '/synthetic/report.txt',
+            uploadState: AttachmentUploadState.attached,
+          ),
+        ],
+      );
+      expect(
+        ambiguousTurnTranscriptEvidence(attachmentTurn, [
+          row(10, 'user', 'antes'),
+          row(11, 'user', 'solo texto'),
+          row(12, 'user', 'posterior'),
+        ], requireRowAfterTurnCreation: true),
+        AmbiguousRetryEvidence.unknown,
+      );
+      final original = ambiguous('sin skew');
+      final later = PreparedTurn(
+        connectionId: original.connectionId,
+        sessionId: original.sessionId,
+        clientTurnId: original.clientTurnId,
+        createdAtMs: 10000 * 1000,
+        updatedAtMs: 10000 * 1000,
+        text: original.text,
+        fullText: original.fullText,
+        desktopText: original.desktopText,
+        attachments: original.attachments,
+        model: original.model,
+        profile: original.profile,
+        state: original.state,
+        queued: original.queued,
+        retryBoundary: original.retryBoundary,
+      );
+      expect(
+        ambiguousTurnTranscriptEvidence(later, [
+          row(10, 'user', 'antes', timestamp: 9999),
+          row(11, 'user', 'sin skew', timestamp: 9999),
+          row(12, 'user', 'posterior', timestamp: 10001),
+        ], requireRowAfterTurnCreation: true),
+        AmbiguousRetryEvidence.unknown,
+      );
     });
   });
 }

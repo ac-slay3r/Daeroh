@@ -17002,6 +17002,145 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  for (final scenario in [
+    'cross-lane',
+    'invalid-duplicate',
+    'attachment-bare',
+  ]) {
+    testWidgets(
+      'settlement transcript conserva composer no probado: $scenario',
+      (tester) async {
+        final connection = _remoteConn('settlement-guard-$scenario');
+        const prompt = 'same synthetic message';
+        final now = DateTime.now().millisecondsSinceEpoch;
+        final composer = PreparedTurn(
+          connectionId: connection.id,
+          sessionId: 'sess-test',
+          clientTurnId: 'settlement-composer',
+          createdAtMs: now,
+          updatedAtMs: now,
+          text: prompt,
+          fullText: scenario == 'attachment-bare'
+              ? '[📎 report.txt]\n$prompt\n⟦adjunto⟧\nsynthetic payload'
+              : prompt,
+          desktopText: scenario == 'attachment-bare'
+              ? '[📎 report.txt]\n$prompt'
+              : null,
+          attachments: scenario == 'attachment-bare'
+              ? const [
+                  AttachmentDraft(
+                    type: AttachmentType.document,
+                    name: 'report.txt',
+                    mimeType: 'text/plain',
+                    sizeBytes: 4,
+                    localPath: '/synthetic/report.txt',
+                    uploadState: AttachmentUploadState.attached,
+                    remoteRef: 'synthetic-ref',
+                    remoteSessionId: 'rt-test',
+                    remoteTransport: AttachmentRemoteTransport.desktop,
+                  ),
+                ]
+              : const [],
+          model: 'hermes-agent',
+          profile: 'default',
+          state: PreparedTurnState.ambiguous,
+          retryBoundary: PreparedTurnRetryBoundary.identity(rowId: 10),
+        );
+        final queued = PreparedTurn(
+          connectionId: connection.id,
+          sessionId: 'sess-test',
+          clientTurnId: 'settlement-queued',
+          createdAtMs: now + 1,
+          updatedAtMs: now + 1,
+          queueOrder: 1,
+          text: prompt,
+          fullText: prompt,
+          attachments: const [],
+          model: 'hermes-agent',
+          profile: 'default',
+          queued: true,
+          restoresComposer: false,
+          state: PreparedTurnState.ambiguous,
+          retryBoundary: PreparedTurnRetryBoundary.identity(rowId: 10),
+        );
+        secureStore['chat_turn_outbox_v1'] = jsonEncode({
+          composer.storageId: composer.toJson(),
+          if (scenario == 'cross-lane') queued.storageId: queued.toJson(),
+        });
+        secureStore[ChatDraftStore.keyForTesting(
+          connection.id,
+          'sess-test',
+          profile: 'default',
+        )] = jsonEncode({
+          'savedAt': now,
+          'text': prompt,
+          'preparedTurnClientTurnId': composer.clientTurnId,
+          'attachments': scenario == 'attachment-bare'
+              ? composer.attachments.map((item) => item.toJson()).toList()
+              : const <Object>[],
+        });
+        final timestamp = now / 1000;
+        final transcript = <Map<String, dynamic>>[
+          {
+            'id': 10,
+            'role': 'user',
+            'content': 'before',
+            'timestamp': timestamp - 60,
+          },
+          {
+            'id': 11,
+            'role': 'user',
+            'content': prompt,
+            'timestamp': timestamp + 1,
+          },
+          if (scenario == 'invalid-duplicate')
+            {
+              'id': 12,
+              'role': 'user',
+              'content': prompt,
+              'timestamp': 'invalid',
+            },
+          {
+            'id': 13,
+            'role': 'user',
+            'content': 'later unrelated',
+            'timestamp': timestamp + 3,
+          },
+        ];
+        final gateway = _SubmissionGateway();
+        final chat = await pumpChat(
+          tester,
+          connection: connection,
+          desktopGateway: gateway,
+          storedMessageLoader: (_, _) async => transcript,
+        );
+        for (var frame = 0; frame < 80; frame++) {
+          await tester.pump(const Duration(milliseconds: 20));
+        }
+        final remaining = await TurnOutboxStore().loadAllForChat(
+          connection.id,
+          'sess-test',
+          profile: 'default',
+        );
+        expect(gateway.submissions, isEmpty);
+        expect(tester.takeException(), isNull);
+        expect(remaining, hasLength(scenario == 'cross-lane' ? 2 : 1));
+        expect(remaining.first.clientTurnId, composer.clientTurnId);
+        expect(
+          tester
+              .widget<TextField>(find.byType(TextField).last)
+              .controller
+              ?.text,
+          prompt,
+        );
+        if (scenario == 'attachment-bare') {
+          expect(remaining.single.activeAttachments, hasLength(1));
+        }
+        expect(chat.queuedTurns.length, scenario == 'cross-lane' ? 1 : 0);
+      },
+    );
+  }
+
   group('turno del composer ya entregado sin turn.status', () {
     Future<(String, _SubmissionGateway)> openWith(
       WidgetTester tester, {
