@@ -50,6 +50,9 @@ void main() {
         ServerHostPlatform.linux,
       );
       expect(find.text(guidance), findsOneWidget);
+      expect(guidance, contains('Do not run commands'));
+      expect(guidance, contains('Do not retrieve links, QR codes, tokens, keys'));
+      expect(guidance, contains('Never ask the owner to paste them into chat'));
       expect(guidance, isNot(contains(ServerSetupGenerator.curlCommand)));
       expect(guidance, isNot(contains('hermes://pair')));
 

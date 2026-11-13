@@ -6,6 +6,12 @@ import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/remote_bridge_installer.dart';
 
 void main() {
+  test('packaged bridge script embeds supplied source and keeps loopback opt-in off', () {
+    final script = RemoteBridgeInstaller.buildInstallScript('c3VwcGxpZWQ=', '127.0.0.1');
+    expect(script, contains("printf %s 'c3VwcGxpZWQ=' | base64 -d | gunzip"));
+    expect(script, isNot(contains('--i-know-what-im-doing')));
+  });
+
   test('remote releases are disabled', () async {
     final api = ApiClient(
       baseUrl: 'http://127.0.0.1:8642',

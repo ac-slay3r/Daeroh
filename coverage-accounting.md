@@ -1,6 +1,6 @@
 # Pairing candidate coverage accounting
 
-This inventory is the exact 93 removed `test`, `group`, and `testWidgets` declarations in `git diff --unified=0 98a04c80d579dd76dcc7fa55f36e03d4e13b6a0b a9aeadde7dc62ccc9f95a265b7d18c4bbbfccf9b -- test`. Descriptions are resolved from the base source; no anonymous `test(` rows remain. “Retained” entries name the exact final test that exercises the stated surviving behavior.
+This inventory is the exact 93 historical removed `test`, `group`, and `testWidgets` declarations in `git diff --unified=0 98a04c80d579dd76dcc7fa55f36e03d4e13b6a0b a9aeadde7dc62ccc9f95a265b7d18c4bbbfccf9b -- test`. The current candidate also removes the post-base declaration `real fixture script output round-trips through PairingLink`; it is deliberately outside this historical inventory. Descriptions are resolved from the base source; no anonymous `test(` rows remain. “Retained” entries name the exact final test that executes the stated surviving behavior.
 
 | # | Removed declaration | Disposition |
 |---:|---|---|
@@ -23,18 +23,18 @@ This inventory is the exact 93 removed `test`, `group`, and `testWidgets` declar
 | 017 | `test/remote_bridge_installer_test.dart:37` — devuelve el instalador PowerShell cuando se solicita Windows | behaviour intentionally removed (Windows server setup is unsupported) |
 | 018 | `test/remote_bridge_installer_test.dart:47` — el prompt remoto bifurca Windows y Unix antes de ejecutar | behaviour intentionally removed (Windows server setup is unsupported) |
 | 019 | `test/remote_bridge_installer_test.dart:59` — RemoteBridgeInstaller.installScript | behaviour intentionally removed (remote Bridge distribution is disabled; packaged-only channel remains) |
-| 020 | `test/remote_bridge_installer_test.dart:60` — script legible que reconstruye el bridge y arma el servicio | behaviour intentionally removed (remote Bridge distribution is disabled; packaged-only channel remains) |
-| 021 | `test/remote_bridge_installer_test.dart:128` — loopback bind does not request public-listener opt-in | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
-| 022 | `test/remote_bridge_installer_test.dart:135` — puede instalar exactamente el source remoto ya verificado | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
+| 020 | `test/remote_bridge_installer_test.dart:60` — script legible que reconstruye el bridge y arma el servicio | retained → `packaged bridge script embeds supplied source and keeps loopback opt-in off` in `test/remote_bridge_installer_test.dart` |
+| 021 | `test/remote_bridge_installer_test.dart:128` — loopback bind does not request public-listener opt-in | retained → `packaged bridge script embeds supplied source and keeps loopback opt-in off` in `test/remote_bridge_installer_test.dart` |
+| 022 | `test/remote_bridge_installer_test.dart:135` — puede instalar exactamente el source remoto ya verificado | retained → `packaged bridge script embeds supplied source and keeps loopback opt-in off` in `test/remote_bridge_installer_test.dart` |
 | 023 | `test/remote_bridge_installer_test.dart:155` — release remota usa descarga fijada y no incrusta 146 KiB en el run | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
 | 024 | `test/remote_bridge_installer_test.dart:188` — restaura programa, env y unidad si el servicio no arranca | retained → `packaged bridge rollback restores program, env and unit after failed start` in `test/remote_bridge_installer_test.dart` |
 | 025 | `test/server_setup_generator_test.dart:64` — ServerSetupGenerator.agentPrompt | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
-| 026 | `test/server_setup_generator_test.dart:67` — la ayuda al agente es solo lectura y no cruza secretos al LLM | retained → `el setup es manual y la ayuda no entrega secretos ni comandos al LLM` in `test/server_setup_screen_secret_boundary_test.dart` |
+| 026 | `test/server_setup_generator_test.dart:67` — la ayuda al agente es solo lectura y no cruza secretos al LLM | retained → `el setup es manual y la ayuda no entrega secretos ni comandos al LLM` in `test/server_setup_screen_secret_boundary_test.dart` (literal generator constraints plus displayed UI guidance) |
 | 027 | `test/server_setup_generator_test.dart:97` — limita la ayuda a contexto general sin autorizar cambios | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
-| 028 | `test/server_setup_generator_test.dart:105` — cabe en un mensaje de Telegram (límite ~4096 chars) | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
-| 029 | `test/server_setup_generator_test.dart:111` — prohíbe leer datos del servidor o pedirlos por chat | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
+| 028 | `test/server_setup_generator_test.dart:105` — cabe en un mensaje de Telegram (límite ~4096 chars) | retained → `pairing guidance remains short and refuses server secrets` in `test/server_setup_generator_test.dart` |
+| 029 | `test/server_setup_generator_test.dart:111` — prohíbe leer datos del servidor o pedirlos por chat | retained → `pairing guidance remains short and refuses server secrets` in `test/server_setup_generator_test.dart` |
 | 030 | `test/server_setup_generator_test.dart:120` — mantiene la salida de emparejado fuera del chat | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
-| 031 | `test/server_setup_generator_test.dart:127` — no contiene secretos del repo | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
+| 031 | `test/server_setup_generator_test.dart:127` — no contiene secretos del repo | retained → `pairing guidance remains short and refuses server secrets` in `test/server_setup_generator_test.dart` |
 | 032 | `test/server_setup_generator_test.dart:133` — ServerSetupGenerator.curlCommand | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
 | 033 | `test/server_setup_generator_test.dart:134` — una línea corta y auditable que apunta al script público | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
 | 034 | `test/server_setup_generator_test.dart:147` — ofrece comandos nativos separados por plataforma | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
@@ -48,7 +48,7 @@ This inventory is the exact 93 removed `test`, `group`, and `testWidgets` declar
 | 042 | `test/server_setup_generator_test.dart:280` — valida las tres unidades systemd antes de arrancarlas | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
 | 043 | `test/server_setup_generator_test.dart:293` — pinta un QR del enlace, no solo texto (U-20) | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
 | 044 | `test/server_setup_generator_test.dart:301` — muestra progreso real por etapas y un resumen final | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
-| 045 | `test/server_setup_generator_test.dart:310` — elige una IP privada alcanzable y bloquea loopback | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
+| 045 | `test/server_setup_generator_test.dart:310` — elige una IP privada alcanzable y bloquea loopback | retained (automatic interface selection was removed, but the reachable private/CGNAT literal and loopback guard remains) → `strict ranges and endpoint-auth contract are guarded` in `test/daeroh_pairing_setup_test.dart` |
 | 046 | `test/server_setup_generator_test.dart:321` — cubre mesh CGNAT y nunca genera un QR HTTP público | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
 | 047 | `test/server_setup_generator_test.dart:329` — emite un enlace hermes://pair | retained → `real Python parses admitted environment syntax without changing keys` in `test/daeroh_pairing_setup_test.dart` |
 | 048 | `test/server_setup_generator_test.dart:334` — incluye el script del bridge reutilizado | behaviour intentionally removed (remote Bridge distribution is disabled; packaged-only channel remains) |
@@ -68,11 +68,11 @@ This inventory is the exact 93 removed `test`, `group`, and `testWidgets` declar
 | 062 | `test/server_setup_generator_test.dart:575` — bloquea HTTP público antes de transmitir el token | retained → `strict ranges and endpoint-auth contract are guarded` in `test/daeroh_pairing_setup_test.dart` |
 | 063 | `test/server_setup_generator_test.dart:589` — hermes-mobile-setup.ps1 (Windows nativo) | behaviour intentionally removed (Windows server setup is unsupported) |
 | 064 | `test/server_setup_generator_test.dart:592` — usa el instalador oficial y el layout nativo de Hermes | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
-| 065 | `test/server_setup_generator_test.dart:599` — permite una instalación oficial limpia sin cortarla a los 180s | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
+| 065 | `test/server_setup_generator_test.dart:599` — permite una instalación oficial limpia sin cortarla a los 180s | product no longer offers Windows setup; legacy scripts retained for the smoke tool; their tests removed because the product flow is unsupported |
 | 066 | `test/server_setup_generator_test.dart:614` — reutiliza el dist real y tolera el primer build del Dashboard | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
 | 067 | `test/server_setup_generator_test.dart:633` — verifica manifest, tamano, SHA-256, version y compilacion | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
 | 068 | `test/server_setup_generator_test.dart:642` — persiste procesos por usuario sin exponer el token en argumentos | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
-| 069 | `test/server_setup_generator_test.dart:656` — el firewall solo abre TCP en perfiles privados | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
+| 069 | `test/server_setup_generator_test.dart:656` — el firewall solo abre TCP en perfiles privados | product no longer offers Windows setup; legacy scripts retained for the smoke tool; their tests removed because the product flow is unsupported |
 | 070 | `test/server_setup_generator_test.dart:665` — eleva solo la regla de Firewall y conserva la cuenta del usuario | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
 | 071 | `test/server_setup_generator_test.dart:675` — comprueba servicios reales y URL del teléfono antes del QR | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
 | 072 | `test/server_setup_generator_test.dart:698` — integra el lifecycle seguro e idempotente del tester | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
@@ -80,7 +80,7 @@ This inventory is the exact 93 removed `test`, `group`, and `testWidgets` declar
 | 074 | `test/server_setup_generator_test.dart:721` — la auditoría valida contratos exactos sin registrar comandos | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
 | 075 | `test/server_setup_generator_test.dart:730` — clasifica MagicDNS de Tailscale como red mesh | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
 | 076 | `test/server_setup_generator_test.dart:735` — los servicios persistentes son VBS ocultos y conservan Node | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
-| 077 | `test/server_setup_generator_test.dart:751` — genera PNG por stdin sin imprimir credenciales | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
+| 077 | `test/server_setup_generator_test.dart:751` — genera PNG por stdin sin imprimir credenciales | product no longer offers Windows setup; legacy scripts retained for the smoke tool; their tests removed because the product flow is unsupported |
 | 078 | `test/server_setup_generator_test.dart:759` — mantiene overrides HTTPS y los restart tasks allowlisted | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
 | 079 | `test/server_setup_generator_test.dart:769` — hermes-mobile-setup.vbs (lanzador Windows) | behaviour intentionally removed (Windows server setup is unsupported) |
 | 080 | `test/server_setup_generator_test.dart:772` — oculta PowerShell y solo abre el PNG al terminar | behaviour intentionally removed (Windows server setup is unsupported) |
@@ -91,11 +91,19 @@ This inventory is the exact 93 removed `test`, `group`, and `testWidgets` declar
 | 085 | `test/server_setup_generator_test.dart:813` — QR con fallback: qrencode > uv > venv pip > enlace verificado | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
 | 086 | `test/server_setup_generator_test.dart:824` — hermes-pair.ps1 (Windows nativo) | behaviour intentionally removed (Windows server setup is unsupported) |
 | 087 | `test/server_setup_generator_test.dart:827` — lee pairing verificado, comprueba servicios y emite QR/enlace | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
-| 088 | `test/server_setup_generator_test.dart:844` — ServerSetupGenerator.buildPairingLink (formato) | behaviour intentionally removed (mutating legacy installer/QR setup replaced by read-only existing-service pairing) |
-| 089 | `test/server_setup_generator_test.dart:845` — el enlace generado parsea con PairingLink.tryParse | retained → `real Python parses admitted environment syntax without changing keys` in `test/daeroh_pairing_setup_test.dart` |
+| 088 | `test/server_setup_generator_test.dart:844` — ServerSetupGenerator.buildPairingLink (formato) | retained → `buildPairingLink round-trips dashboard bridge and bridge token` in `test/server_setup_generator_test.dart` |
+| 089 | `test/server_setup_generator_test.dart:845` — el enlace generado parsea con PairingLink.tryParse | retained → `buildPairingLink round-trips dashboard bridge and bridge token` in `test/server_setup_generator_test.dart` |
 | 090 | `test/windows_pairing_upgrade_contract_test.dart:6` — Windows pairing upgrade contract | behaviour intentionally removed (Windows server setup is unsupported) |
-| 091 | `test/windows_pairing_upgrade_contract_test.dart:13` — repairs legacy installs instead of trapping users in a retry loop | behaviour intentionally removed (Windows server setup is unsupported) |
-| 092 | `test/windows_pairing_upgrade_contract_test.dart:31` — repairs missing credentials and malformed pairing metadata | behaviour intentionally removed (Windows server setup is unsupported) |
-| 093 | `test/windows_pairing_upgrade_contract_test.dart:50` — checks the downloaded installer identity before executing it | behaviour intentionally removed (Windows server setup is unsupported) |
+| 091 | `test/windows_pairing_upgrade_contract_test.dart:13` — repairs legacy installs instead of trapping users in a retry loop | product no longer offers Windows setup; legacy scripts retained for the smoke tool; their tests removed because the product flow is unsupported |
+| 092 | `test/windows_pairing_upgrade_contract_test.dart:31` — repairs missing credentials and malformed pairing metadata | product no longer offers Windows setup; legacy scripts retained for the smoke tool; their tests removed because the product flow is unsupported |
+| 093 | `test/windows_pairing_upgrade_contract_test.dart:50` — checks the downloaded installer identity before executing it | product no longer offers Windows setup; legacy scripts retained for the smoke tool; their tests removed because the product flow is unsupported |
 
-Reconciliation: 93 rows = 4 retained + 89 behaviours intentionally removed; no missing rows.
+## Mechanical reconciliation
+
+The table is machine-checkable: `grep -c '^| [0-9][0-9][0-9] .*| retained' coverage-accounting.md` yields 13 and `grep -c '^| [0-9][0-9][0-9] .*behaviour intentionally removed' coverage-accounting.md` yields 74; the six legacy Windows rows use the scoped retained-script disposition, so 13 + 74 + 6 = 93. For every retained row, extract its backticked name and exact-name-search its cited file with `grep -F`.
+
+Reconciliation: 93 historical rows = 13 retained + 74 behaviours intentionally removed + 6 legacy Windows retained-script dispositions; no missing historical rows.
+
+## Changes after the historical base→`a9aeadde` inventory
+
+The current candidate additionally removes the post-base declaration `real fixture script output round-trips through PairingLink`. The Windows widget declaration was renamed to `Windows pairing setup is explicitly unsupported`; neither later change is silently counted in the 93-row historical tally.

@@ -366,6 +366,47 @@ void main() {
     }
   });
 
+  test('strict ranges and endpoint-auth contract are guarded', () async {
+    final fixture = await _PairingFixture.start();
+    addTearDown(fixture.close);
+    await fixture.writeEnv('API_SERVER_KEY=range-token\n'.codeUnits);
+    fixture.expectedToken = 'range-token';
+    for (final host in [
+      '10.attacker.example', '192.168.1.1.attacker.example',
+      '100.100.100.100.attacker.example', '10.999.999.999', '203.0.113.2',
+      '127.0.0.1', '0.0.0.0', '010.0.0.1', '0x0a.0.0.1', '10.0.0.1.',
+      ' 10.0.0.1', '\n10.0.0.1', '10.0.1', '10.0.0.1.2', '100.63.0.1',
+      '100.128.0.1', '172.15.0.1', '172.32.0.1',
+    ]) {
+      fixture.requests.clear();
+      final result = await fixture.run(host: host);
+      expect(result.exitCode, isNonZero, reason: host);
+      expect('${result.stdout}${result.stderr}', isNot(contains('hermes://pair?')));
+      expect(fixture.requests, isEmpty, reason: host);
+    }
+    for (final host in ['10.77.0.1', '172.16.0.1', '192.168.0.1', '100.64.0.1']) {
+      fixture.requests.clear();
+      final result = await fixture.run(host: host, showLink: true);
+      expect(result.exitCode, 0, reason: '$host: ${result.stderr}');
+      expect(_pairingLink(result.stdout).host, host);
+      expect(fixture.requests, ['Bearer daeroh-pairing-wrong-bearer', 'Bearer range-token']);
+    }
+  });
+
+  test('synthetic key is absent from real Python and QR child argv and environment', () async {
+    final fixture = await _PairingFixture.start();
+    addTearDown(fixture.close);
+    const key = 'synthetic-argv-environment-secret';
+    await fixture.writeEnv('API_SERVER_KEY=$key\n'.codeUnits);
+    fixture.expectedToken = key;
+    final result = await fixture.run(showLink: true, captureChildren: true);
+    expect(result.exitCode, 0, reason: result.stderr.toString());
+    for (final capture in await fixture.childCaptures()) {
+      expect(capture, isNot(contains(key)));
+    }
+    expect(await fixture.qrInput(), contains('token=$key'));
+  });
+
   test(
     'dashboard uses api health, rejects redirects, and reports state',
     () async {
@@ -380,7 +421,7 @@ void main() {
       expect(confirmed.exitCode, 0, reason: confirmed.stderr.toString());
       expect(
         _pairingLink(confirmed.stdout).dashboardUrl,
-        'http://${fixture.host.address}:${fixture.dashboard!.port}',
+        'http://10.77.0.1:${fixture.dashboard!.port}',
       );
       expect(fixture.dashboardPaths, ['/api/health']);
 
@@ -393,7 +434,7 @@ void main() {
       expect(redirected.exitCode, 0, reason: redirected.stderr.toString());
       expect(_pairingLink(redirected.stdout).dashboardUrl, isNull);
       expect(fixture.dashboardPaths, ['/api/health']);
-      final closed = await fixture.run(dashboardPort: fixture.dashboard!.port);
+      final closed = await fixture.run(dashboardPort: await fixture.closedPort());
       expect(closed.exitCode, 0, reason: closed.stderr.toString());
       expect(
         closed.stderr,
@@ -430,9 +471,19 @@ void main() {
       expect(slow.exitCode, isNonZero);
       expect(watch.elapsed, lessThan(const Duration(seconds: 3)));
       fixture.trickle = false;
+      fixture.trickleBody = true;
+      final bodyWatch = Stopwatch()..start();
+      final slowBody = await fixture.run().timeout(const Duration(seconds: 8));
+      bodyWatch.stop();
+      expect(slowBody.exitCode, isNonZero);
+      expect(bodyWatch.elapsed, lessThan(const Duration(seconds: 3)));
+      fixture.trickleBody = false;
       final timely = await fixture.run(showLink: true);
       expect(timely.exitCode, 0, reason: timely.stderr.toString());
       expect(_pairingLink(timely.stdout).token, 'deadline-token');
+      final nonTty = await fixture.run();
+      expect(nonTty.exitCode, 0, reason: nonTty.stderr.toString());
+      expect(nonTty.stdout, isEmpty);
     },
   );
 
@@ -482,18 +533,45 @@ class _PairingFixture {
   final dashboardPaths = <String>[];
   String expectedToken = '';
   bool trickle = false;
+  bool trickleBody = false;
   _DashboardMode dashboardMode = _DashboardMode.ok;
 
   static Future<_PairingFixture> start({bool startDashboard = false}) async {
     final root = await Directory.systemTemp.createTemp('daeroh-pair-real-');
-    final host = await _privateAddress();
+    final host = InternetAddress.loopbackIPv4;
     final gateway = await HttpServer.bind(host, 0);
     final fixture = _PairingFixture._(root, host, gateway);
+    expect(gateway.address.address, '127.0.0.1');
     await Directory('${root.path}/home').create();
     final bin = Directory('${root.path}/bin')..createSync();
     final systemctl = File('${bin.path}/systemctl')
       ..writeAsStringSync('#!/bin/sh\nexit 0\n');
     await _makeExecutable(systemctl);
+    File('${root.path}/sitecustomize.py').writeAsStringSync('''
+import json, os, socket, sys
+capture = os.environ.get("PAIR_PYTHON_CAPTURE")
+if capture:
+    with open(capture, "w", encoding="utf-8") as output:
+        json.dump({"argv": sys.argv, "environment": dict(os.environ)}, output)
+_connect = socket.create_connection
+def create_connection(address, *args, **kwargs):
+    host, port = address
+    if host in {"10.77.0.1", "172.16.0.1", "192.168.0.1", "100.64.0.1"}:
+        address = ("127.0.0.1", port)
+    return _connect(address, *args, **kwargs)
+socket.create_connection = create_connection
+''');
+    final qrencode = File('${bin.path}/qrencode')
+      ..writeAsStringSync('''#!/bin/sh
+if [ -n "\${PAIR_QR_ARGV_CAPTURE:-}" ]; then
+  printf '%s\\n' "\$@" > "\$PAIR_QR_ARGV_CAPTURE"
+  tr '\\000' '\\n' < /proc/self/environ > "\$PAIR_QR_ENV_CAPTURE"
+  cat > "\$PAIR_QR_INPUT_CAPTURE"
+else
+  cat > /dev/null
+fi
+''');
+    await _makeExecutable(qrencode);
     gateway.listen(fixture._gateway);
     if (startDashboard) {
       fixture.dashboard = await HttpServer.bind(host, 0);
@@ -508,6 +586,8 @@ class _PairingFixture {
   Future<ProcessResult> run({
     bool showLink = false,
     int? dashboardPort,
+    String host = '10.77.0.1',
+    bool captureChildren = false,
   }) => Process.run(
     showLink ? 'script' : 'sh',
     showLink
@@ -521,8 +601,13 @@ class _PairingFixture {
     environment: {
       'PATH': '${root.path}/bin:${Platform.environment['PATH']}',
       'HERMES_HOME': '${root.path}/home',
-      'HERMES_PAIR_HOST': host.address,
+      'HERMES_PAIR_HOST': host,
       'HERMES_PAIR_PORT': '${gateway.port}',
+      'PYTHONPATH': root.path,
+      if (captureChildren) 'PAIR_PYTHON_CAPTURE': '${root.path}/python.json',
+      if (captureChildren) 'PAIR_QR_ARGV_CAPTURE': '${root.path}/qr-argv',
+      if (captureChildren) 'PAIR_QR_ENV_CAPTURE': '${root.path}/qr-env',
+      if (captureChildren) 'PAIR_QR_INPUT_CAPTURE': '${root.path}/qr-input',
       if (dashboardPort != null) 'HERMES_DASHBOARD_PORT': '$dashboardPort',
     },
   );
@@ -533,6 +618,18 @@ class _PairingFixture {
       final socket = await request.response.detachSocket(writeHeaders: false);
       for (final byte
           in 'HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n'.codeUnits) {
+        socket.add([byte]);
+        await socket.flush();
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      }
+      await socket.close();
+      return;
+    }
+    if (trickleBody) {
+      final socket = await request.response.detachSocket(writeHeaders: false);
+      socket.add('HTTP/1.1 401 Unauthorized\\r\\nContent-Length: 8\\r\\n\\r\\n'.codeUnits);
+      await socket.flush();
+      for (final byte in '12345678'.codeUnits) {
         socket.add([byte]);
         await socket.flush();
         await Future<void>.delayed(const Duration(milliseconds: 300));
@@ -567,27 +664,25 @@ class _PairingFixture {
     await dashboard?.close(force: true);
     await root.delete(recursive: true);
   }
+
+  Future<int> closedPort() async {
+    final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final port = socket.port;
+    await socket.close();
+    return port;
+  }
+
+  Future<List<String>> childCaptures() async => [
+    await File('${root.path}/python.json').readAsString(),
+    await File('${root.path}/qr-argv').readAsString(),
+    await File('${root.path}/qr-env').readAsString(),
+  ];
+
+  Future<String> qrInput() => File('${root.path}/qr-input').readAsString();
 }
 
 enum _DashboardMode { ok, redirect }
 
-Future<InternetAddress> _privateAddress() async {
-  for (final interface in await NetworkInterface.list()) {
-    for (final address in interface.addresses) {
-      if (address.type == InternetAddressType.IPv4 && _allowed(address.address))
-        return address;
-    }
-  }
-  throw StateError('a private IPv4 test interface is required');
-}
-
-bool _allowed(String host) {
-  final parts = host.split('.').map(int.parse).toList();
-  return parts[0] == 10 ||
-      (parts[0] == 172 && parts[1] >= 16 && parts[1] <= 31) ||
-      (parts[0] == 192 && parts[1] == 168) ||
-      (parts[0] == 100 && parts[1] >= 64 && parts[1] <= 127);
-}
 
 PairingLink _pairingLink(Object value) {
   final match = RegExp(r'hermes://pair\?[^\s\r]+').firstMatch(value.toString());
