@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../l10n/app_localizations.dart';
 import '../design/hermes_design.dart';
@@ -35,6 +36,9 @@ class _InstallSourceSectionState extends State<InstallSourceSection> {
   Widget build(BuildContext context) {
     final s = Strings.of(context);
     final source = _source;
+    final updateUrl = source == null
+        ? null
+        : InstallSourceInfo.updateUrl(source);
     final label = switch (source) {
       InstallSource.googlePlay => s.aboutUpdatesPlay,
       InstallSource.githubObtainium => s.aboutUpdatesGithub,
@@ -53,12 +57,24 @@ class _InstallSourceSectionState extends State<InstallSourceSection> {
               value: label,
               showChevron: false,
             ),
+            if (updateUrl != null)
+              HermesListRow(
+                key: const ValueKey('install-source-open'),
+                icon: Icons.open_in_new_rounded,
+                title: s.aboutUpdatesOpenReleases,
+                onTap: () => launchUrl(
+                  Uri.parse(updateUrl),
+                  mode: LaunchMode.externalApplication,
+                ),
+              ),
           ],
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(6, 8, 6, 0),
           child: Text(
-            s.aboutUpdatesSwitchNote,
+            updateUrl == null
+                ? s.aboutUpdatesNotConfigured
+                : s.aboutUpdatesSwitchNote,
             style: HermesType.support.copyWith(
               color: Theme.of(context).hermes.textSecondary,
             ),
