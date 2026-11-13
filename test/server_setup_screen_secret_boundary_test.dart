@@ -30,6 +30,8 @@ void main() {
       await tester.tap(find.text('Linux / Termux'));
       await tester.pumpAndSettle();
 
+      expect(find.text('Copia para una terminal de confianza'), findsOneWidget);
+
       final scrollable = find.byType(Scrollable).first;
       final guidanceToggle = find.text(
         '¿Necesitas contexto? Copiar consulta de solo lectura',
@@ -39,8 +41,6 @@ void main() {
         180,
         scrollable: scrollable,
       );
-      expect(find.text('Copia para una terminal de confianza'), findsOneWidget);
-
       await tester.ensureVisible(guidanceToggle);
       await tester.pumpAndSettle();
       await tester.tap(guidanceToggle.hitTestable());
@@ -50,6 +50,9 @@ void main() {
         ServerHostPlatform.linux,
       );
       expect(find.text(guidance), findsOneWidget);
+      expect(guidance, contains('Do not run commands'));
+      expect(guidance, contains('Do not retrieve links, QR codes, tokens, keys'));
+      expect(guidance, contains('Never ask the owner to paste them into chat'));
       expect(guidance, isNot(contains(ServerSetupGenerator.curlCommand)));
       expect(guidance, isNot(contains('hermes://pair')));
 
