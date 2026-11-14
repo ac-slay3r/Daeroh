@@ -3,6 +3,17 @@
 All notable public changes are documented here. Internal QA/profile artifacts
 are not releases.
 
+## Daeroh 0.1.17 (4021) — private source candidate
+
+- Fix the queue-only settlement path so an unsent placeholder cannot be treated
+  as proof that a queued message was delivered; ordinary composer behavior is
+  unchanged.
+- Use Daeroh-owned, commit-pinned setup scripts in the server-setup command;
+  the command verifies downloaded script bytes before use.
+- Source/host review does not establish Android Keystore, emulator, or
+  physical-device runtime acceptance. No build, signing, installation, or
+  distribution is claimed by this entry.
+
 ## Daeroh 0.1.16 (4020) — private source candidate
 
 - Add an encrypted, bounded device-only saved Chat preview of at most the
