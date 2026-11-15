@@ -117,7 +117,7 @@ export DAEROH_VERIFIER_TOOLCHAIN=/absolute/path/to/reviewed-verifier-cache
 export DAEROH_ANDROID_JAR=/absolute/path/to/android-36/android.jar
 export DAEROH_LOCAL_TOOLCHAIN_LAUNCHER=/absolute/path/to/owner-local-launcher
 export DAEROH_RELEASE_GATE=1
-"$DAEROH_LOCAL_TOOLCHAIN_LAUNCHER" python3 -m unittest test.release_real_entrypoints_test
+"$DAEROH_LOCAL_TOOLCHAIN_LAUNCHER" python3 -m unittest discover -s test -p 'release_real_entrypoints_test.py'
 ```
 
 A release must not proceed if any test in this module skips or fails. The

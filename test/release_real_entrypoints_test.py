@@ -33,6 +33,7 @@ from xml.sax.saxutils import quoteattr
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON = sys.executable
 sys.path.insert(0, str(ROOT / "tool/release"))
+sys.path.insert(0, str(ROOT / "test"))
 import inspect_public_apk as inspector
 
 APKS = {
@@ -454,7 +455,7 @@ class InspectorOnlyExemptionsTest(unittest.TestCase):
         Recorded tools keep lineage independently present to reach the scheme
         comparison. This is NOT real signed-APK or final-entrypoint evidence.
         """
-        from test import release_safety_gate_test as safety
+        import release_safety_gate_test as safety
         helper = safety.ReleaseInspectorFieldCompletenessTest()
         with tempfile.TemporaryDirectory(prefix="inspector-only-v3-") as temporary:
             root = Path(temporary)
@@ -473,7 +474,7 @@ class InspectorOnlyExemptionsTest(unittest.TestCase):
         Production final entry points pin 29; this does not pretend a real
         signing-target mutation independently reaches that comparison.
         """
-        from test import release_safety_gate_test as safety
+        import release_safety_gate_test as safety
         helper = safety.ReleaseInspectorFieldCompletenessTest()
         helper.test_rotation_min_sdk_is_argv_sensitive_and_reports_the_rotation_failure()
 
@@ -492,7 +493,7 @@ class ReleaseGatePrerequisitesTest(unittest.TestCase):
 
 class RealEntrypointCompletenessTest(unittest.TestCase):
     def test_real_rows_plus_explicit_inspector_only_rows_equal_field_table(self):
-        from test import release_safety_gate_test as safety
+        import release_safety_gate_test as safety
         table = safety.ReleaseInspectorFieldCompletenessTest.IDENTITY_FIELDS
         rows = {field for field, _, _ in table}
         self.assertEqual(len(rows), len(table), "duplicate upstream field row")
