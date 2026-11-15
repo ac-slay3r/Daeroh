@@ -1,5 +1,7 @@
 import base64
+import contextlib
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -8,6 +10,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 from pathlib import Path
 
@@ -24,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PYTHON = sys.executable
 sys.path.insert(0, str(ROOT / "tool/release"))
 import validate_public_apk_provenance as public_provenance_validator
+import inspect_public_apk
 APKS = {
     "app-arm64-v8a-full-release.apk": "arm64-v8a",
     "app-armeabi-v7a-full-release.apk": "armeabi-v7a",
@@ -168,12 +172,13 @@ class Slice1PublicAssetAllowlistTest(unittest.TestCase):
         archive = make_evidence_archive(root)
         shutil.move(archive, public / "hermes-console-release-evidence.tar.gz")
         for name in APKS:
-            (public / name).write_bytes((name + "\n").encode())
-        (public / "provenance.intoto.jsonl").write_bytes(b'{"fixture":"dsse"}\n')
+            with zipfile.ZipFile(public / name, "w", compression=zipfile.ZIP_DEFLATED) as apk:
+                apk.writestr("AndroidManifest.xml", b"manifest")
+                apk.writestr("resources.arsc", b"resources")
+                apk.writestr("classes.dex", b"dex")
         checksummed = [
             *APKS,
             "hermes-console-release-evidence.tar.gz",
-            "provenance.intoto.jsonl",
         ]
         (public / "SHA256SUMS").write_text(
             "".join(
@@ -196,6 +201,31 @@ class Slice1PublicAssetAllowlistTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="s09-public-valid-") as temporary:
             result = self.run_validator(self.fixture(Path(temporary)))
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_apk_member_content_paths_are_rejected_in_libapp_and_libwhisper(self):
+        payloads = {
+            "fictional-user": b"\x7fELF\x00/home/fixture-user/private/source\x00",
+            "bare-prefix": b"\x7fELF\x00/home/\x00",
+            "unicode-user": "/home/δ/source".encode(),
+            "nul-user": b"/home/\x00source",
+            "windows": b"C:\\Users\\FixtureUser\\source",
+            "cross-chunk": b"x" * (1024 * 1024 - 3) + b"/home/",
+        }
+        for member in ("lib/arm64-v8a/libapp.so", "lib/arm64-v8a/libwhisper.so"):
+            for label, payload in payloads.items():
+                with self.subTest(member=member, payload=label), tempfile.TemporaryDirectory(prefix="s09-public-apk-path-") as temporary:
+                    public = self.fixture(Path(temporary))
+                    artifact = public / "app-arm64-v8a-full-release.apk"
+                    with zipfile.ZipFile(artifact, "a", compression=zipfile.ZIP_DEFLATED) as apk:
+                        apk.writestr(member, payload)
+                    checksummed = [*APKS, "hermes-console-release-evidence.tar.gz"]
+                    (public / "SHA256SUMS").write_text(
+                        "".join(f"{hashlib.sha256((public / name).read_bytes()).hexdigest()}  {name}\n" for name in checksummed),
+                        encoding="ascii",
+                    )
+                    result = self.run_validator(public)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("private build path in APK member", result.stderr)
 
     def test_any_extra_public_asset_fails(self):
         for extra in (
@@ -228,6 +258,8 @@ class Slice2TrustedToolchainTest(unittest.TestCase):
         (command / "lib").mkdir()
         (jdk / "bin").mkdir(parents=True)
         (jdk / "lib").mkdir()
+        (jdk / "conf/security").mkdir(parents=True)
+        (jdk / "conf/security/java.security").write_text("security.provider.1=SUN\n", encoding="ascii")
         (build / "source.properties").write_text("Pkg.Revision=36.0.0\n", encoding="ascii")
         (command / "source.properties").write_text("Pkg.Revision=19.0\n", encoding="ascii")
         (build / "lib/apksigner.jar").write_bytes(f"{label}-apksigner-jar".encode())
@@ -280,6 +312,11 @@ class Slice2TrustedToolchainTest(unittest.TestCase):
                             "path": "lib",
                             "sha256": public_provenance_validator.sha256_tree(jdk / "lib"),
                         },
+                        "javaConfiguration": {
+                            "root": "jdk",
+                            "path": "conf",
+                            "sha256": public_provenance_validator.sha256_tree(jdk / "conf"),
+                        },
                     },
                 }
             )
@@ -295,6 +332,7 @@ class Slice2TrustedToolchainTest(unittest.TestCase):
                 for key, value in manifest_value.items()
                 if key not in {"schema", "root", "javaRoot"}
             },
+            "provenance": policy_value["publicInspectionTools"]["provenance"],
         }
         (root / f"{label}-policy.json").write_bytes(canonical(policy_value))
         return sdk, manifest, paths
@@ -346,6 +384,7 @@ class Slice2TrustedToolchainTest(unittest.TestCase):
             ("sdk", "cmdline-tools/19.0/lib/apkanalyzer.jar"),
             ("jdk", "bin/java"),
             ("jdk", "lib/modules"),
+            ("jdk", "conf/security/java.security"),
         )
         for root_name, relative in mutations:
             with self.subTest(root=root_name, relative=relative):
@@ -666,6 +705,53 @@ class Slice3BuildBindingTest(unittest.TestCase):
 
 class Slice4ArtifactReinspectionTest(unittest.TestCase):
     signer = "a" * 64
+    predecessor = "b" * 64
+
+    def test_archive_detects_present_v1_jar_signature_material(self):
+        """Detect v1 pairs regardless of case or otherwise-valid signer stem."""
+        for signature_file, block_file in (
+            ("META-INF/OLD.SF", "META-INF/OLD.RSA"),
+            ("META-INF/old.sf", "META-INF/old.rsa"),
+            ("META-INF/not-a-standard-signer-stem.sf", "META-INF/not-a-standard-signer-stem.ec"),
+        ):
+            with self.subTest(signature_file=signature_file), tempfile.TemporaryDirectory(prefix="s09-v1-presence-") as temporary:
+                artifact = Path(temporary) / "v1.apk"
+                with zipfile.ZipFile(artifact, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                    archive.writestr("AndroidManifest.xml", b"manifest")
+                    archive.writestr("resources.arsc", b"resources")
+                    archive.writestr("classes.dex", b"dex")
+                    archive.writestr("META-INF/MANIFEST.MF", b"Manifest-Version: 1.0\n")
+                    archive.writestr(signature_file, b"Signature-Version: 1.0\n")
+                    archive.writestr(block_file, b"signature block")
+                self.assertTrue(inspect_public_apk.jar_signature_scheme_present(artifact))
+
+    def test_embedded_v1_material_rejects_the_inspector_scheme_policy(self):
+        """ZIP evidence overrides an API-29 verifier report that selects only v3."""
+        with tempfile.TemporaryDirectory(prefix="s09-v1-inspector-") as temporary:
+            root = Path(temporary)
+            _, public, _, _, expected, toolchain = self.fixture(root)
+            artifact = public / "app-arm64-v8a-full-release.apk"
+            with zipfile.ZipFile(artifact, "a", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("META-INF/MANIFEST.MF", b"Manifest-Version: 1.0\n")
+                archive.writestr("META-INF/disposable.sf", b"Signature-Version: 1.0\n")
+                archive.writestr("META-INF/disposable.rsa", b"fixture signature block")
+            manifest = json.loads(toolchain.read_text(encoding="utf-8"))
+            tools = {name: Path(manifest["root"]) / record["path"] for name, record in manifest["tools"].items()}
+            result = subprocess.run(
+                [
+                    PYTHON, str(ROOT / "tool/release/inspect_public_apk.py"),
+                    "--artifact", str(artifact), "--expected", str(expected),
+                    "--expected-artifact-name", artifact.name, "--expected-abi", "arm64-v8a",
+                    "--expected-signer-sha256", self.signer,
+                    "--policy", str(expected.with_name("release-contract.json")),
+                    "--aapt", str(tools["aapt"]), "--apkanalyzer", str(tools["apkanalyzer"]),
+                    "--apksigner", str(tools["apksigner"]), "--output", str(root / "facts.json"),
+                ],
+                check=False, capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("APK signature schemes do not match the v3-only release policy", result.stderr)
+        self.assertIn("'v1': True", result.stderr)
 
     def write_apk(self, path: Path, marker: str = "fixture"):
         with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as output:
@@ -680,28 +766,79 @@ class Slice4ArtifactReinspectionTest(unittest.TestCase):
             "#!/usr/bin/env python3\n"
             "import os,sys\n"
             f"abis={dict(APKS)!r}\n"
+            "codes={'app-arm64-v8a-full-release.apk':2042,'app-armeabi-v7a-full-release.apk':1042,'app-x86_64-full-release.apk':4042}\n"
+            "mutation=os.environ.get('RECORDED_MUTATION') or os.path.basename(os.environ.get('INSPECTION_LOG','')).removesuffix('.log')\n"
             "name=os.path.basename(sys.argv[-1])\n"
+            "package='wrong.example.console' if mutation == 'package' else 'dev.example.console'\n"
+            "version='9.8.8' if mutation == 'version-name' else '9.8.7'\n"
+            "code=codes[name] + (1 if mutation == 'version-code' else 0)\n"
+            "minimum=25 if mutation == 'min-sdk' else 24\n"
+            "target=35 if mutation == 'target-sdk' else 36\n"
+            "permissions=[] if mutation == 'permissions-missing' else ['android.permission.INTERNET']\n"
+            "permissions += ['android.permission.EXTRA'] if mutation == 'permissions-extra' else []\n"
+            "permissions += ['android.permission.READ_PHONE_STATE'] if mutation == 'forbidden-permission' else []\n"
             "log=os.environ.get('INSPECTION_LOG')\n"
             "open(log,'a').write(name+'\\n') if log else None\n"
-            "print(\"package: name='dev.example.console' versionCode='42' versionName='9.8.7'\")\n"
-            "print(\"sdkVersion:'24'\")\n"
-            "print(\"targetSdkVersion:'36'\")\n"
-            "print(\"uses-permission: name='android.permission.INTERNET'\")\n"
+            "print(\"package: name='%s' versionCode='%s' versionName='%s'\" % (package,code,version))\n"
+            "print(\"sdkVersion:'%s'\" % minimum)\n"
+            "print(\"targetSdkVersion:'%s'\" % target)\n"
+            "[print(\"uses-permission: name='%s'\" % permission) for permission in permissions]\n"
             "print(\"native-code: '%s'\" % abis[name])\n",
             encoding="utf-8",
         )
         paths["apkanalyzer"].write_text(
             "#!/usr/bin/env python3\n"
-            "import sys\n"
+            "import os,sys\n"
             f"xml={xml!r}\n"
-            "values={'application-id':'dev.example.console','version-name':'9.8.7','version-code':'42','min-sdk':'24','target-sdk':'36','permissions':'android.permission.INTERNET','print':xml}\n"
+            "codes={'app-arm64-v8a-full-release.apk':'2042','app-armeabi-v7a-full-release.apk':'1042','app-x86_64-full-release.apk':'4042'}\n"
+            "mutation=os.environ.get('RECORDED_MUTATION') or os.path.basename(os.environ.get('INSPECTION_LOG','')).removesuffix('.log')\n"
+            "code=str(int(codes[os.path.basename(sys.argv[-1])]) + (1 if mutation == 'version-code' else 0))\n"
+            "package='wrong.example.console' if mutation == 'package' else 'dev.example.console'\n"
+            "version='9.8.8' if mutation == 'version-name' else '9.8.7'\n"
+            "minimum='25' if mutation == 'min-sdk' else '24'\n"
+            "target='35' if mutation == 'target-sdk' else '36'\n"
+            "permissions='' if mutation == 'permissions-missing' else 'android.permission.INTERNET'\n"
+            "permissions += '\\nandroid.permission.EXTRA' if mutation == 'permissions-extra' else ''\n"
+            "permissions += '\\nandroid.permission.READ_PHONE_STATE' if mutation == 'forbidden-permission' else ''\n"
+            "label='Wrong Label' if mutation == 'label' else os.environ.get('APPLICATION_LABEL', 'WRONG_LABEL' if 'wrong-label' in os.environ.get('INSPECTION_LOG', '') else 'Example Console')\n"
+            "manifest=xml.replace('dev.example.console',package).replace('9.8.7',version).replace('minSdkVersion=\"24\"','minSdkVersion=\"'+minimum+'\"').replace('targetSdkVersion=\"36\"','targetSdkVersion=\"'+target+'\"').replace('versionCode=\"42\"', 'versionCode=\"'+code+'\"').replace('Example Console',label)\n"
+            "manifest=manifest.replace('<application ', '<application android:debuggable=\"true\" ' if mutation == 'debuggable' else '<application android:testOnly=\"true\" ' if mutation == 'test-only' else '<application ')\n"
+            "manifest=manifest.replace('foregroundServiceType=\"dataSync\"', 'foregroundServiceType=\"microphone\"') if mutation == 'foreground-services' else manifest.replace('com.termux', 'wrong.query') if mutation == 'package-queries' else manifest\n"
+            "manifest=manifest.replace('<uses-permission android:name=\"android.permission.INTERNET\"/>',''.join('<uses-permission android:name=\"'+permission+'\"/>' for permission in permissions.split('\\n') if permission))\n"
+            "values={'application-id':package,'version-name':version,'version-code':code,'min-sdk':minimum,'target-sdk':target,'permissions':permissions,'print':manifest}\n"
             "print(values[sys.argv[2]])\n",
             encoding="utf-8",
         )
         paths["apksigner"].write_text(
             "#!/usr/bin/env python3\n"
+            "import os,sys\n"
+            "mode=os.environ.get('SIGNATURE_MODE', next((value for value in ('v2-enabled','missing-lineage','wrong-predecessor') if value in os.environ.get('INSPECTION_LOG','')), 'pass'))\n"
+            "mutation=os.environ.get('RECORDED_MUTATION') or os.path.basename(os.environ.get('INSPECTION_LOG','')).removesuffix('.log')\n"
+            f"predecessor='{self.predecessor}'\n"
+            f"current='{self.signer}'\n"
+            "minimum=sys.argv[sys.argv.index('--min-sdk-version') + 1] if '--min-sdk-version' in sys.argv else None\n"
+            "if mutation == 'rotation-min-sdk' and sys.argv[1] == 'verify' and minimum == '29': raise SystemExit(1)\n"
+            "if sys.argv[1] == 'lineage':\n"
+            "    if mode != 'missing-lineage':\n"
+            "        previous = 'c' * 64 if mode == 'wrong-predecessor' or mutation == 'predecessor' else predecessor\n"
+            "        print('Signer #1 in lineage certificate SHA-256 digest: ' + previous)\n"
+            "        print('Has installed data capability: ' + ('false' if mutation == 'cap-installedData' else 'true'))\n"
+            "        print('Has shared UID capability    : ' + ('true' if mutation == 'cap-sharedUid' else 'false'))\n"
+            "        print('Has permission capability    : ' + ('false' if mutation == 'cap-permission' else 'true'))\n"
+            "        print('Has rollback capability      : ' + ('true' if mutation == 'cap-rollback' else 'false'))\n"
+            "        print('Has auth capability          : ' + ('true' if mutation == 'cap-auth' else 'false'))\n"
+            "        print('Signer #2 in lineage certificate SHA-256 digest: ' + current)\n"
+            "        print('Has installed data capability: true')\n"
+            "        print('Has shared UID capability    : true')\n"
+            "        print('Has permission capability    : true')\n"
+            "        print('Has rollback capability      : false')\n"
+            "        print('Has auth capability          : true')\n"
+            "    raise SystemExit(0)\n"
             "print('Verifies')\n"
-            f"print('Signer #1 certificate SHA-256 digest: {self.signer}')\n",
+            "print('Signer #1 certificate SHA-256 digest: ' + ('c' * 64 if mutation == 'signer' else current))\n"
+            "print('Verified using v1 scheme (JAR signing): ' + ('true' if mutation == 'scheme-v1' else 'false'))\n"
+            "print('Verified using v2 scheme (APK Signature Scheme v2): ' + ('true' if mode == 'v2-enabled' or (mutation == 'scheme-v2' and minimum == '27') else 'false'))\n"
+            "print('Verified using v3 scheme (APK Signature Scheme v3): ' + ('false' if mutation == 'scheme-v3' else 'true'))\n",
             encoding="utf-8",
         )
         for path in paths.values():
@@ -727,7 +864,7 @@ class Slice4ArtifactReinspectionTest(unittest.TestCase):
             "package": "dev.example.console",
             "versionName": "9.8.7",
             "versionCode": 42,
-            "abiVersionCodes": {abi: 42 for abi in APKS.values()},
+            "abiVersionCodes": {"arm64-v8a": 2042, "armeabi-v7a": 1042, "x86_64": 4042},
             "minSdk": 24,
             "targetSdk": 36,
             "label": "Example Console",
@@ -777,6 +914,8 @@ class Slice4ArtifactReinspectionTest(unittest.TestCase):
             (ROOT / "tool/release/release_contract.json").read_text(encoding="utf-8")
         )
         policy_value["signerContinuity"]["direct-public"]["certificateSha256"] = self.signer
+        policy_value["signerContinuity"]["direct-public"]["acceptedPredecessorCertificateSha256"] = self.predecessor
+        policy_value["android"]["packageId"] = "dev.example.console"
         toolchain, tools = self.write_inspection_toolchain(temporary)
         toolchain_value = json.loads(toolchain.read_text(encoding="utf-8"))
         policy_value["publicInspectionTools"] = {
@@ -786,6 +925,7 @@ class Slice4ArtifactReinspectionTest(unittest.TestCase):
                 for key, value in toolchain_value.items()
                 if key not in {"schema", "root", "javaRoot"}
             },
+            "provenance": policy_value["publicInspectionTools"]["provenance"],
         }
         policy.write_bytes(canonical(policy_value))
         evidence = source / "build/release-evidence"
@@ -857,7 +997,14 @@ class Slice4ArtifactReinspectionTest(unittest.TestCase):
         archive = self.refresh_archive(evidence, public)
         return source, public, evidence, archive, expected, toolchain
 
-    def run_validator(self, source: Path, public: Path, archive: Path, expected: Path, toolchain: Path, log: Path):
+    def run_validator(self, source: Path, public: Path, archive: Path, expected: Path, toolchain: Path, log: Path, signature_mode: str | None = None, application_label: str | None = None, recorded_mutation: str | None = None):
+        environment = os.environ.copy()
+        if signature_mode is not None:
+            environment["SIGNATURE_MODE"] = signature_mode
+        if application_label is not None:
+            environment["APPLICATION_LABEL"] = application_label
+        if recorded_mutation is not None:
+            environment["RECORDED_MUTATION"] = recorded_mutation
         return subprocess.run(
             [
                 PYTHON,
@@ -882,7 +1029,7 @@ class Slice4ArtifactReinspectionTest(unittest.TestCase):
             check=False,
             capture_output=True,
             text=True,
-            env=os.environ.copy(),
+            env=environment,
         )
 
     def test_valid_fixture_is_reinspected_for_every_abi(self):
@@ -894,6 +1041,108 @@ class Slice4ArtifactReinspectionTest(unittest.TestCase):
             inspected = set(log.read_text(encoding="utf-8").splitlines()) if log.exists() else set()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(inspected, set(APKS))
+
+    def test_signature_schemes_and_rotation_lineage_are_rejected_by_inspector_and_final_verifier(self):
+        with tempfile.TemporaryDirectory(prefix="s09-signature-contract-") as temporary:
+            root = Path(temporary)
+            source, public, _, archive, expected, toolchain = self.fixture(root)
+            manifest = json.loads(toolchain.read_text(encoding="utf-8"))
+            tool_root = Path(manifest["root"])
+            tools = {name: tool_root / record["path"] for name, record in manifest["tools"].items()}
+            artifact = public / "app-arm64-v8a-full-release.apk"
+            command = [
+                PYTHON, str(ROOT / "tool/release/inspect_public_apk.py"),
+                "--artifact", str(artifact), "--expected", str(expected),
+                "--expected-artifact-name", artifact.name, "--expected-abi", "arm64-v8a",
+                "--expected-signer-sha256", self.signer,
+                "--policy", str(expected.with_name("release-contract.json")),
+                "--aapt", str(tools["aapt"]), "--apkanalyzer", str(tools["apkanalyzer"]),
+                "--apksigner", str(tools["apksigner"]), "--output", str(root / "facts.json"),
+            ]
+            for mode in ("v2-enabled", "missing-lineage", "wrong-predecessor"):
+                with self.subTest(boundary="inspector", mode=mode):
+                    direct = subprocess.run(command, check=False, capture_output=True, text=True, env={**os.environ, "SIGNATURE_MODE": mode})
+                    self.assertEqual(direct.returncode, 1)
+                    self.assertIn("public APK inspection failed", direct.stderr)
+                with self.subTest(boundary="final-verifier", mode=mode):
+                    final = self.run_validator(source, public, archive, expected, toolchain, root / f"{mode}.log", mode)
+                    self.assertEqual(final.returncode, 1)
+
+    def test_wrong_application_label_is_rejected_at_inspector_and_final_boundaries(self):
+        with tempfile.TemporaryDirectory(prefix="s09-wrong-label-") as temporary:
+            root = Path(temporary)
+            source, public, _, archive, expected, toolchain = self.fixture(root)
+            manifest = json.loads(toolchain.read_text(encoding="utf-8"))
+            tool_root = Path(manifest["root"])
+            tools = {name: tool_root / record["path"] for name, record in manifest["tools"].items()}
+            artifact = public / "app-arm64-v8a-full-release.apk"
+            command = [
+                PYTHON, str(ROOT / "tool/release/inspect_public_apk.py"),
+                "--artifact", str(artifact), "--expected", str(expected),
+                "--expected-artifact-name", artifact.name, "--expected-abi", "arm64-v8a",
+                "--expected-signer-sha256", self.signer,
+                "--policy", str(expected.with_name("release-contract.json")),
+                "--aapt", str(tools["aapt"]), "--apkanalyzer", str(tools["apkanalyzer"]),
+                "--apksigner", str(tools["apksigner"]), "--output", str(root / "facts.json"),
+            ]
+            environment = {**os.environ, "APPLICATION_LABEL": "WRONG_LABEL"}
+            direct = subprocess.run(command, check=False, capture_output=True, text=True, env=environment)
+            final = self.run_validator(source, public, archive, expected, toolchain, root / "wrong-label.log")
+        self.assertEqual(direct.returncode, 1, direct.stderr)
+        self.assertEqual(final.returncode, 1, final.stderr)
+
+    def test_pinned_apkanalyzer_permission_fixture_normalizes_only_documented_compatibility_record(self):
+        fixture = ROOT / "test/fixtures/release/apkanalyzer-12.0-full-permissions.txt"
+        policy = json.loads((ROOT / "tool/release/full_release_policy.json").read_text(encoding="utf-8"))
+        declared = inspect_public_apk.normalize_permissions(policy["permissions"])
+        expected = [entry["name"] for entry in declared]
+        self.assertEqual(
+            inspect_public_apk.parse_analyzer_permissions(fixture.read_text(encoding="utf-8"), declared),
+            expected,
+        )
+        with self.assertRaises(inspect_public_apk.InspectionError):
+            inspect_public_apk.parse_analyzer_permissions(
+                fixture.read_text(encoding="utf-8") + "android.permission.EXTRA_PERMISSION\\n",
+                declared,
+            )
+
+    def test_real_pinned_aapt_permission_fixture(self):
+        fixture = ROOT / "test/fixtures/release/aapt-0.1.17-arm64-badging.txt"
+        policy = json.loads((ROOT / "tool/release/full_release_policy.json").read_text(encoding="utf-8"))
+        expected = inspect_public_apk.normalize_permissions(policy["permissions"])
+        expected_names = [entry["name"] for entry in expected]
+        fixture_names = inspect_public_apk.parse_aapt(fixture.read_text(encoding="utf-8"))["permissions"]
+        self.assertEqual(fixture_names, expected_names)
+
+    def test_optional_live_pinned_aapt_matches_policy(self):
+        policy = json.loads((ROOT / "tool/release/full_release_policy.json").read_text(encoding="utf-8"))
+        expected_names = [entry["name"] for entry in inspect_public_apk.normalize_permissions(policy["permissions"])]
+        aapt_value = os.environ.get("DAEROH_PINNED_AAPT")
+        artifact_value = os.environ.get("DAEROH_HISTORICAL_ARM64_APK")
+        if not aapt_value or not artifact_value:
+            self.skipTest("optional pinned aapt/APK inputs are unset")
+        aapt = Path(aapt_value)
+        artifact = Path(artifact_value)
+        if not aapt.is_file() or not artifact.is_file():
+            self.skipTest("optional pinned aapt/APK input is unavailable")
+        if hashlib.sha256(aapt.read_bytes()).hexdigest() != json.loads(
+            (ROOT / "tool/release/release_contract.json").read_text(encoding="utf-8")
+        )["publicInspectionTools"]["tools"]["aapt"]["sha256"]:
+            self.fail("optional aapt does not match the reviewed pin")
+        live = inspect_public_apk.parse_aapt(inspect_public_apk.run_tool(aapt, ["dump", "badging", str(artifact)]))
+        self.assertEqual(live["permissions"], expected_names)
+
+    def test_production_provenance_entrypoint_reaches_success_path(self):
+        output = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", ["validate_public_apk_provenance.py", "--archive", "archive", "--asset-directory", "assets", "--trusted-toolchain", "toolchain"]),
+            mock.patch.object(public_provenance_validator.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)),
+            mock.patch.object(public_provenance_validator, "validate_provenance") as validate,
+            contextlib.redirect_stdout(output),
+        ):
+            self.assertEqual(public_provenance_validator.main(), 0)
+        validate.assert_called_once()
+        self.assertEqual(output.getvalue(), "Public APK provenance validation passed.\n")
 
     def test_public_validator_rejects_replaced_policy_signer_and_toolchain(self):
         with tempfile.TemporaryDirectory(prefix="s09-replaced-public-trust-") as temporary:
@@ -914,7 +1163,9 @@ class Slice4ArtifactReinspectionTest(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("public APK provenance validation failed", result.stderr)
+        self.assertNotIn("AttributeError", result.stderr)
 
     def test_caller_cannot_replace_reviewed_prior_signer(self):
         with tempfile.TemporaryDirectory(prefix="s09-signer-drift-") as temporary:
@@ -943,6 +1194,40 @@ class Slice4ArtifactReinspectionTest(unittest.TestCase):
                     "--expected-artifact-name", "app-arm64-v8a-full-release.apk",
                     "--expected-abi", "arm64-v8a",
                     "--expected-signer-sha256", drifted,
+                    "--policy", str(expected.with_name("release-contract.json")),
+                    "--aapt", str(tools["aapt"]),
+                    "--apkanalyzer", str(tools["apkanalyzer"]),
+                    "--apksigner", str(tools["apksigner"]),
+                    "--output", str(root / "drifted-facts.json"),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_public_inspector_rejects_package_drift_from_contract(self):
+        with tempfile.TemporaryDirectory(prefix="s09-public-package-drift-") as temporary:
+            root = Path(temporary)
+            _, public, _, _, expected, toolchain = self.fixture(root)
+            expected_value = json.loads(expected.read_text(encoding="utf-8"))
+            expected_value["package"] = "attacker.example"
+            expected.write_bytes(canonical(expected_value))
+            manifest = json.loads(toolchain.read_text(encoding="utf-8"))
+            tool_root = Path(manifest["root"])
+            tools = {
+                name: tool_root / record["path"]
+                for name, record in manifest["tools"].items()
+            }
+            result = subprocess.run(
+                [
+                    PYTHON,
+                    str(ROOT / "tool/release/inspect_public_apk.py"),
+                    "--artifact", str(public / "app-arm64-v8a-full-release.apk"),
+                    "--expected", str(expected),
+                    "--expected-artifact-name", "app-arm64-v8a-full-release.apk",
+                    "--expected-abi", "arm64-v8a",
+                    "--expected-signer-sha256", self.signer,
                     "--policy", str(expected.with_name("release-contract.json")),
                     "--aapt", str(tools["aapt"]),
                     "--apkanalyzer", str(tools["apkanalyzer"]),
@@ -989,6 +1274,323 @@ class Slice4ArtifactReinspectionTest(unittest.TestCase):
         self.assertNotEqual(substituted.returncode, 0, substituted.stdout + substituted.stderr)
 
 
+class ReleaseInspectorFieldCompletenessTest(Slice4ArtifactReinspectionTest):
+    """Recorded pinned-tool outputs cover every constrained release identity field."""
+
+    # Field -> recorded measurement mutation -> required rejection fragment.
+    # These are recorded fixture outputs, not a claim about a live signing tool.
+    IDENTITY_FIELDS = (
+        ("package", "package", "APK package"),
+        ("application label", "label", "APK label"),
+        ("versionName", "version-name", "APK versionName"),
+        ("per-ABI versionCode", "version-code", "APK ABI versionCode"),
+        ("minSdk", "min-sdk", "APK minSdk"),
+        ("targetSdk", "target-sdk", "APK targetSdk"),
+        ("permissions (extra)", "permissions-extra", "permissions (extra) does not match the release policy (measured=['android.permission.EXTRA'], expected=[])"),
+        ("permissions (missing)", "permissions-missing", "permissions (missing) does not match the release policy (measured=['android.permission.INTERNET'], expected=[])"),
+        ("forbidden permissions", "forbidden-permission", "forbidden permissions does not match the release policy (measured=['android.permission.READ_PHONE_STATE'], expected=[])"),
+        ("foreground services", "foreground-services", "foreground-service declarations do not match the release policy (measured="),
+        ("required package queries", "package-queries", "package queries do not match the release policy (measured="),
+        ("signer certificate", "signer", "signer certificate"),
+        ("predecessor certificate", "predecessor", "lineage predecessor"),
+        ("lineage capability installedData", "cap-installedData", "predecessor capabilities"),
+        ("lineage capability permission", "cap-permission", "predecessor capabilities"),
+        ("lineage capability sharedUid", "cap-sharedUid", "predecessor capabilities"),
+        ("lineage capability rollback", "cap-rollback", "predecessor capabilities"),
+        ("lineage capability auth", "cap-auth", "predecessor capabilities"),
+        ("signature scheme v1", "scheme-v1", "signature schemes"),
+        ("signature scheme v2", "scheme-v2", "signature schemes"),
+        ("signature scheme v3", "scheme-v3", "signature schemes"),
+        ("rotation min SDK", "rotation-min-sdk", "APK rotation minimum SDK verification failed"),
+        ("release artifact debuggable", "debuggable", "android:debuggable does not match the signed-release-apk policy (measured=True, expected=False)"),
+        ("release artifact test-only", "test-only", "android:testOnly does not match the signed-release-apk policy (measured=True, expected=False)"),
+    )
+
+    def test_table_covers_constrained_contract_and_policy_keys(self):
+        contract = json.loads((ROOT / "tool/release/release_contract.json").read_text(encoding="utf-8"))
+        policy = json.loads((ROOT / "tool/release/full_release_policy.json").read_text(encoding="utf-8"))
+        signer = contract["signerContinuity"]["direct-public"]
+        self.assertEqual(
+            set(signer),
+            {"certificateSha256", "acceptedPredecessorCertificateSha256", "predecessorCapabilities", "signatureSchemes"},
+        )
+        self.assertEqual(
+            set(signer["predecessorCapabilities"]),
+            {"installedData", "permission", "sharedUid", "rollback", "auth"},
+        )
+        self.assertEqual(set(signer["signatureSchemes"]), {"v1", "v2", "v3", "rotationMinSdkVersion"})
+        self.assertEqual(set(policy), {"schema", "permissions", "forbiddenPermissions", "foregroundServices", "requiredPackageQueries"})
+        android = contract["android"]
+        self.assertEqual(
+            set(android),
+            {"packageId", "versionSource", "debuggable", "testOnly"},
+        )
+        # Every constrained branch has a row.  Scalar values are measured from
+        # the APK, while the source names their reviewed authority.
+        constrained = {
+            "package": android["packageId"],
+            "application label": "AndroidManifest.xml",
+            "versionName": android["versionSource"],
+            "per-ABI versionCode": android["versionSource"],
+            "minSdk": "AndroidManifest.xml",
+            "targetSdk": "AndroidManifest.xml",
+            "signer certificate": contract["signerContinuity"]["direct-public"]["certificateSha256"],
+            "predecessor certificate": contract["signerContinuity"]["direct-public"]["acceptedPredecessorCertificateSha256"],
+            "rotation min SDK": contract["signerContinuity"]["direct-public"]["signatureSchemes"]["rotationMinSdkVersion"],
+            "permissions (extra)": policy["permissions"],
+            "permissions (missing)": policy["permissions"],
+            "forbidden permissions": policy["forbiddenPermissions"],
+            "foreground services": policy["foregroundServices"],
+            "required package queries": policy["requiredPackageQueries"],
+            "release artifact debuggable": android["debuggable"],
+            "release artifact test-only": android["testOnly"],
+        }
+        constrained.update(
+            {
+                f"lineage capability {name}": value
+                for name, value in contract["signerContinuity"]["direct-public"]["predecessorCapabilities"].items()
+            }
+        )
+        constrained.update(
+            {
+                f"signature scheme {name}": value
+                for name, value in contract["signerContinuity"]["direct-public"]["signatureSchemes"].items()
+                if name != "rotationMinSdkVersion"
+            }
+        )
+        rows = {field for field, _, _ in self.IDENTITY_FIELDS}
+        # Exact equality is intentional: a policy constraint without a table
+        # row, or a deleted row, is a release-gate coverage failure.
+        self.assertEqual(rows, set(constrained), rows ^ set(constrained))
+        self.assertTrue(all(value is not None for value in constrained.values()))
+
+    def test_each_recorded_identity_mutation_is_rejected_at_inspector_and_fixture_core_boundaries(self):
+        with tempfile.TemporaryDirectory(prefix="release-identity-fields-") as temporary:
+            root = Path(temporary)
+            source, public, _, archive, expected, toolchain = self.fixture(root)
+            manifest = json.loads(toolchain.read_text(encoding="utf-8"))
+            tool_root = Path(manifest["root"])
+            tools = {name: tool_root / record["path"] for name, record in manifest["tools"].items()}
+            artifact = public / "app-arm64-v8a-full-release.apk"
+            command = [
+                PYTHON, str(ROOT / "tool/release/inspect_public_apk.py"),
+                "--artifact", str(artifact), "--expected", str(expected),
+                "--expected-artifact-name", artifact.name, "--expected-abi", "arm64-v8a",
+                "--expected-signer-sha256", self.signer,
+                "--policy", str(expected.with_name("release-contract.json")),
+                "--aapt", str(tools["aapt"]), "--apkanalyzer", str(tools["apkanalyzer"]),
+                "--apksigner", str(tools["apksigner"]), "--output", str(root / "facts.json"),
+            ]
+            for field, mutation, message in self.IDENTITY_FIELDS:
+                environment = {**os.environ, "RECORDED_MUTATION": mutation}
+                with self.subTest(field=field, boundary="inspector"):
+                    direct = subprocess.run(command[:-1] + [str(root / f"{mutation}.json")], check=False, capture_output=True, text=True, env=environment)
+                    self.assertEqual(direct.returncode, 1, direct.stdout + direct.stderr)
+                    self.assertIn(message, direct.stderr)
+                with self.subTest(field=field, boundary="fixture-core"):
+                    final = self.run_validator(source, public, archive, expected, toolchain, root / f"{mutation}.log", recorded_mutation=mutation)
+                    self.assertEqual(final.returncode, 1, final.stdout + final.stderr)
+
+    def test_rotation_min_sdk_is_argv_sensitive_and_reports_the_rotation_failure(self):
+        with tempfile.TemporaryDirectory(prefix="release-rotation-argv-") as temporary:
+            root = Path(temporary)
+            _, public, _, _, expected, toolchain = self.fixture(root)
+            manifest = json.loads(toolchain.read_text(encoding="utf-8"))
+            tool_root = Path(manifest["root"])
+            tools = {name: tool_root / record["path"] for name, record in manifest["tools"].items()}
+            original = tools["apksigner"].read_text(encoding="utf-8")
+            tools["apksigner"].write_text(
+                original.replace(
+                    "if mutation == 'rotation-min-sdk' and sys.argv[1] == 'verify' and minimum == '29': raise SystemExit(1)",
+                    "if sys.argv[1] == 'verify' and minimum not in ('29', '27'): raise SystemExit(1)",
+                ),
+                encoding="utf-8",
+            )
+            tools["apksigner"].chmod(0o700)
+            kwargs = dict(
+                artifact=public / "app-arm64-v8a-full-release.apk", artifact_name="app-arm64-v8a-full-release.apk",
+                abi="arm64-v8a", signer=self.signer, predecessor=self.predecessor,
+                predecessor_capabilities={"installedData": True, "permission": True, "sharedUid": False, "rollback": False, "auth": False},
+                release_flags={"debuggable": False, "testOnly": False}, expected=inspect_public_apk.expected_facts(expected),
+                aapt=tools["aapt"], apkanalyzer=tools["apkanalyzer"], apksigner=tools["apksigner"],
+            )
+            facts = inspect_public_apk.inspect(rotation_min_sdk=29, **kwargs)
+            self.assertEqual(facts["verificationSettings"]["rotationMinSdkVersion"], 29)
+            with self.assertRaisesRegex(inspect_public_apk.InspectionError, "APK rotation minimum SDK verification failed"):
+                inspect_public_apk.inspect(rotation_min_sdk=28, **kwargs)
+
+    def test_legacy_scheme_measurement_rejects_v2_hidden_by_current_v3_query(self):
+        with tempfile.TemporaryDirectory(prefix="release-legacy-v2-") as temporary:
+            root = Path(temporary)
+            _, public, _, _, expected, toolchain = self.fixture(root)
+            manifest = json.loads(toolchain.read_text(encoding="utf-8"))
+            tool_root = Path(manifest["root"])
+            tools = {name: tool_root / record["path"] for name, record in manifest["tools"].items()}
+            kwargs = dict(
+                artifact=public / "app-arm64-v8a-full-release.apk", artifact_name="app-arm64-v8a-full-release.apk",
+                abi="arm64-v8a", signer=self.signer, predecessor=self.predecessor,
+                predecessor_capabilities={"installedData": True, "permission": True, "sharedUid": False, "rollback": False, "auth": False},
+                rotation_min_sdk=29, release_flags={"debuggable": False, "testOnly": False}, expected=inspect_public_apk.expected_facts(expected),
+                aapt=tools["aapt"], apkanalyzer=tools["apkanalyzer"], apksigner=tools["apksigner"],
+            )
+            positive = inspect_public_apk.inspect(**kwargs)
+            self.assertEqual(positive["signatureSchemes"], {"v1": False, "v2": False, "v3": True})
+            with mock.patch.dict(os.environ, {"RECORDED_MUTATION": "scheme-v2"}):
+                with self.assertRaisesRegex(inspect_public_apk.InspectionError, "APK signature schemes"):
+                    inspect_public_apk.inspect(**kwargs)
+
+    def test_scalar_facts_are_measured_and_each_mismatch_reports_both_values(self):
+        with tempfile.TemporaryDirectory(prefix="release-identity-facts-") as temporary:
+            root = Path(temporary)
+            _, public, _, _, expected, toolchain = self.fixture(root)
+            manifest = json.loads(toolchain.read_text(encoding="utf-8"))
+            tool_root = Path(manifest["root"])
+            tools = {name: tool_root / record["path"] for name, record in manifest["tools"].items()}
+            base = json.loads(expected.read_text(encoding="utf-8"))
+            kwargs = dict(
+                artifact=public / "app-arm64-v8a-full-release.apk", artifact_name="app-arm64-v8a-full-release.apk",
+                abi="arm64-v8a", signer=self.signer, predecessor=self.predecessor,
+                predecessor_capabilities={"installedData": True, "permission": True, "sharedUid": False, "rollback": False, "auth": False},
+                rotation_min_sdk=29, release_flags={"debuggable": False, "testOnly": False},
+                aapt=tools["aapt"], apkanalyzer=tools["apkanalyzer"], apksigner=tools["apksigner"],
+            )
+            facts = inspect_public_apk.inspect(expected=inspect_public_apk.expected_facts(expected), **kwargs)
+            for key in ("versionName", "versionCode", "minSdk", "targetSdk", "label", "package"):
+                self.assertEqual(facts[key], base[key] if key != "versionCode" else base["abiVersionCodes"]["arm64-v8a"])
+            # Equal-valued tagged expectations distinguish measurement origin
+            # from stamping the policy value into a successful result. Ordinary
+            # equality cannot catch that mutation because accepted values match.
+            class PolicyString(str):
+                pass
+
+            class PolicyInteger(int):
+                pass
+
+            tagged = inspect_public_apk.expected_facts(expected)
+            for key in ("versionName", "minSdk", "targetSdk", "label", "package"):
+                tagged[key] = (PolicyInteger if isinstance(tagged[key], int) else PolicyString)(tagged[key])
+            tagged["abiVersionCodes"] = {
+                abi: PolicyInteger(code) for abi, code in tagged["abiVersionCodes"].items()
+            }
+            measured_facts = inspect_public_apk.inspect(expected=tagged, **kwargs)
+            for key in ("versionName", "versionCode", "minSdk", "targetSdk", "label", "package"):
+                policy_value = tagged["abiVersionCodes"]["arm64-v8a"] if key == "versionCode" else tagged[key]
+                with self.subTest(measurement_origin=key):
+                    self.assertEqual(measured_facts[key], policy_value)
+                    self.assertIsNot(measured_facts[key], policy_value, "scalar result copied from expected policy, not measured tools")
+                    self.assertIs(type(measured_facts[key]), int if key in ("versionCode", "minSdk", "targetSdk") else str)
+            for key, replacement, measured in (
+                ("versionName", "9.8.8", "9.8.7"), ("minSdk", 25, 24), ("targetSdk", 35, 36),
+                ("label", "Wrong Label", "Example Console"), ("package", "wrong.example.console", "dev.example.console"),
+            ):
+                with self.subTest(key=key):
+                    changed = dict(base)
+                    changed[key] = replacement
+                    expected.write_bytes(canonical(changed))
+                    with self.assertRaisesRegex(inspect_public_apk.InspectionError, rf"measured={measured!r}.*expected={replacement!r}"):
+                        inspect_public_apk.inspect(expected=inspect_public_apk.expected_facts(expected), **kwargs)
+            expected.write_bytes(canonical(base))
+            with mock.patch.dict(os.environ, {"RECORDED_MUTATION": "version-code"}):
+                with self.assertRaisesRegex(inspect_public_apk.InspectionError, r"measured=.*2043.*expected=.*2042"):
+                    inspect_public_apk.inspect(expected=inspect_public_apk.expected_facts(expected), **kwargs)
+
+
+class FinalPublicAssetsCliVersionExtractionTest(unittest.TestCase):
+    """Exercise the real final shell entry point before recorded fixture handoffs.
+
+    The identity response is deliberately recorded: it proves version parsing and
+    the final shell's argument flow without treating a disposable git commit as
+    an authorized GitHub release.  The provenance handoff is also a recorded
+    success in this narrow shell-parser control; APK/provenance measurement is
+    covered independently by the production-provenance fixture tests above.
+    """
+
+    def final_fixture(self, root: Path, pubspec: str) -> tuple[Path, Path, str, dict[str, str]]:
+        source = root / "source"
+        (source / "tool/release").mkdir(parents=True)
+        for name in (
+            "validate_public_assets.sh",
+            "validate_evidence_archive.py",
+            "verify_release_identity.py",
+            "release_contract.json",
+        ):
+            shutil.copy2(ROOT / "tool/release" / name, source / "tool/release" / name)
+        (source / "pubspec.yaml").write_text(pubspec, encoding="utf-8")
+        source_validator = source / "tool/release/validate_public_assets.sh"
+        source_validator.chmod(0o700)
+        git = Slice3BuildBindingTest()
+        git.git(source, "init")
+        git.git(source, "config", "user.email", "fixture@example.invalid")
+        git.git(source, "config", "user.name", "Fixture")
+        git.git(source, "add", "pubspec.yaml", "tool/release")
+        git.git(source, "commit", "-m", "recorded final CLI fixture")
+        commit = git.git(source, "rev-parse", "HEAD").stdout.strip()
+        git.git(source, "tag", "daeroh-v0.1.17")
+
+        public = Slice1PublicAssetAllowlistTest().fixture(root)
+        verification = root / "recorded-github-identity.json"
+        verification.write_bytes(canonical({
+            "authorLogin": "ac-slay3r",
+            "committerLogin": "web-flow",
+            "verification": {"verified": True, "reason": "valid"},
+        }))
+        wrapper_directory = root / "recorded-python"
+        wrapper_directory.mkdir()
+        wrapper = wrapper_directory / "python3"
+        wrapper.write_text(
+            f"#!{PYTHON}\n"
+            "import os, pathlib, sys\n"
+            "script = pathlib.Path(sys.argv[1]).name if len(sys.argv) > 1 else ''\n"
+            "if script == 'verify_release_identity.py':\n"
+            "    os.execv(os.environ['FINAL_CLI_REAL_PYTHON'], [os.environ['FINAL_CLI_REAL_PYTHON'], *sys.argv[1:], '--verification-json', os.environ['FINAL_CLI_RECORDED_IDENTITY']])\n"
+            "if script == 'validate_public_apk_provenance.py':\n"
+            "    print('Public APK provenance validation passed (recorded fixture).')\n"
+            "    raise SystemExit(0)\n"
+            "os.execv(os.environ['FINAL_CLI_REAL_PYTHON'], [os.environ['FINAL_CLI_REAL_PYTHON'], *sys.argv[1:]])\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o700)
+        environment = {
+            **os.environ,
+            "PATH": f"{wrapper_directory}:{os.environ['PATH']}",
+            "FINAL_CLI_REAL_PYTHON": PYTHON,
+            "FINAL_CLI_RECORDED_IDENTITY": str(verification),
+        }
+        return source, public, commit, environment
+
+    def run_final_cli(self, root: Path, pubspec: str) -> subprocess.CompletedProcess[str]:
+        source, public, commit, environment = self.final_fixture(root, pubspec)
+        return subprocess.run(
+            [
+                "bash", str(source / "tool/release/validate_public_assets.sh"),
+                str(public), "daeroh-v0.1.17", commit, str(root / "recorded-toolchain.json"),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+
+    def test_real_final_cli_accepts_ordinary_pubspec_version_with_recorded_identity(self):
+        with tempfile.TemporaryDirectory(prefix="s09-final-cli-valid-") as temporary:
+            result = self.run_final_cli(Path(temporary), "name: fixture\nversion: 0.1.17+4021\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Release source identity validation passed.", result.stdout)
+        self.assertIn("Public APK provenance validation passed (recorded fixture).", result.stdout)
+        self.assertIn("Public release asset validation passed; no publication performed.", result.stdout)
+
+    def test_real_final_cli_rejects_missing_or_malformed_pubspec_version_explicitly(self):
+        for label, pubspec in (
+            ("missing", "name: fixture\n"),
+            ("malformed", "name: fixture\nversion: 0.1.17+bad\n"),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory(prefix=f"s09-final-cli-{label}-") as temporary:
+                result = self.run_final_cli(Path(temporary), pubspec)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("ERROR: pubspec version extraction failed.", result.stderr)
+            self.assertNotIn("release source identity validation failed", result.stderr)
+
+
 class Slice5LicenseGateTest(unittest.TestCase):
     def test_incomplete_empty_or_unresolved_license_ledgers_fail(self):
         helper = Slice4ArtifactReinspectionTest()
@@ -1028,15 +1630,15 @@ class Slice6ReleaseIdentityTest(unittest.TestCase):
     def run_identity(self, root: Path, **overrides):
         commit = "a" * 40
         values = {
-            "tag": "v9.8.7",
+            "tag": "daeroh-v9.8.7",
             "build": "42",
             "expected": commit,
             "checkout": commit,
             "tag_commit": commit,
             "verified": True,
             "reason": "valid",
-            "author_login": "trusted-release-owner",
-            "committer_login": "trusted-release-owner",
+            "author_login": "ac-slay3r",
+            "committer_login": "ac-slay3r",
         }
         values.update(overrides)
         pubspec = root / "pubspec.yaml"
@@ -1048,7 +1650,9 @@ class Slice6ReleaseIdentityTest(unittest.TestCase):
                     "schema": 1,
                     "sourceAuthorization": {
                         "forge": "github.com",
-                        "authorizedActors": ["trusted-release-owner"],
+                        "repository": "ac-slay3r/Daeroh",
+                        "authorizedActors": ["ac-slay3r"],
+                        "authorizedCommitters": ["ac-slay3r", "web-flow"],
                         "requireAuthorAndCommitter": True,
                     },
                 }
@@ -1095,13 +1699,16 @@ class Slice6ReleaseIdentityTest(unittest.TestCase):
 
     def test_tag_build_unsigned_and_wrong_commit_fixtures_fail(self):
         malicious = (
-            {"tag": "v9.8.8"},
+            {"tag": "v9.8.7"},
+            {"tag": "daeroh-v9.8.8"},
             {"tag": "v9.8.7+42"},
             {"build": "43"},
             {"checkout": "b" * 40},
             {"tag_commit": "b" * 40},
             {"verified": False, "reason": "unsigned"},
             {"verified": True, "reason": "unknown_key"},
+            {"author_login": "xP3ta"},
+            {"committer_login": "xP3ta"},
             {"author_login": "attacker"},
             {"committer_login": "attacker"},
         )
@@ -1111,6 +1718,7 @@ class Slice6ReleaseIdentityTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
+@unittest.skip("Daeroh does not distribute through Google Play")
 class PrivatePlayLaneTest(unittest.TestCase):
     signer = "ab" * 32
 
@@ -2130,6 +2738,14 @@ class Slice5GeneratorReviewTest(unittest.TestCase):
 
 
 class WorkflowContractTest(unittest.TestCase):
+    def test_direct_public_contract_has_no_attestation_inputs(self):
+        policy = json.loads((ROOT / "tool/release/release_contract.json").read_text(encoding="utf-8"))
+        direct = policy["channels"]["direct-public"]
+        self.assertNotIn("provenance", policy)
+        self.assertNotIn("provenanceSubjects", direct)
+        self.assertNotIn("provenance.intoto.jsonl", direct["publicAssets"])
+        self.assertFalse((ROOT / "tool/release/verify_public_provenance.py").exists())
+        self.assertFalse((ROOT / "tool/release/verify_slsa_bundle.py").exists())
     def test_public_workflow_never_uploads_or_builds_signed_candidates(self):
         workflow = (ROOT / ".github/workflows/build-apk.yml").read_text(encoding="utf-8")
         forbidden = (
@@ -2175,20 +2791,9 @@ class WorkflowContractTest(unittest.TestCase):
         )
         self.assertIn('VALIDATION_DIRECTORY="$(mktemp -d', validator)
         self.assertIn('validate_asset_directory "$VALIDATION_DIRECTORY"', validator)
-        self.assertIn('--bundle "$VALIDATION_DIRECTORY/provenance.intoto.jsonl"', validator)
         self.assertIn('--asset-directory "$VALIDATION_DIRECTORY"', validator)
         self.assertIn('--archive "$VALIDATION_DIRECTORY/hermes-console-release-evidence.tar.gz"', validator)
         self.assertIn('cmp -- "$PUBLIC_DIRECTORY/$expected" "$VALIDATION_DIRECTORY/$expected"', validator)
-
-    def test_crypto_verifier_uses_one_nonconflicting_certificate_identity_constraint(self):
-        verifier = (ROOT / "tool/release/verify_public_provenance.py").read_text(
-            encoding="utf-8"
-        )
-        command = verifier[verifier.index("        command = [") : verifier.index(
-            "        try:\n            result = subprocess.run", verifier.index("        command = [")
-        )]
-        self.assertIn('"--cert-identity"', command)
-        self.assertNotIn('"--signer-workflow"', command)
 
     def test_distribution_policy_documents_private_local_staging_only(self):
         policy = (ROOT / "docs/RELEASE_DISTRIBUTION.md").read_text(encoding="utf-8")
@@ -2197,8 +2802,8 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertIn("owner-controlled local/private filesystem", policy)
         self.assertIn("observed two-build byte identity", policy)
         self.assertIn("not a general reproducible-build claim", policy)
-        self.assertIn("v1.2.9", policy)
-        self.assertIn("86edaa150fabd33d8184f5b958400cabadacb49632f7ec50ecbe49608058d159", policy)
+        self.assertIn("direct-public", policy)
+        self.assertIn("GitHub Actions artifacts are public-repository downloads", policy)
         self.assertIn(
             "14328be1a42a6839e16931c8953acacdc2b063ce17672521f6687cc1e2644717",
             policy,
@@ -2302,6 +2907,7 @@ class RebuildComparisonTest(unittest.TestCase):
         self.assertEqual(report.get("claim"), "observed-two-build-byte-identical")
         self.assertNotEqual(different.returncode, 0)
 
+    @unittest.skip("Daeroh does not distribute through Google Play")
     def test_aab_reports_zip_metadata_without_claiming_byte_reproducibility(self):
         with tempfile.TemporaryDirectory(prefix="s09-rebuild-aab-meta-") as temporary:
             root = Path(temporary)
@@ -2326,6 +2932,7 @@ class RebuildComparisonTest(unittest.TestCase):
         self.assertEqual(report.get("claim"), "observed-two-build-entry-payload-identical")
         self.assertEqual(report.get("differenceClass"), "zip-container-metadata-only")
 
+    @unittest.skip("Daeroh does not distribute through Google Play")
     def test_aab_distinguishes_signature_metadata_from_functional_payload(self):
         with tempfile.TemporaryDirectory(prefix="s09-rebuild-aab-signature-") as temporary:
             root = Path(temporary)
@@ -2363,249 +2970,6 @@ class RebuildComparisonTest(unittest.TestCase):
         self.assertNotEqual(changed.returncode, 0)
 
 
-class DsseSlsaPolicyTest(unittest.TestCase):
-    tag = "v9.8.7"
-    commit = "a" * 40
-
-    def write_fixture(self, root: Path, mutate=None) -> tuple[Path, Path]:
-        assets = root / "assets"
-        assets.mkdir()
-        subjects = []
-        for name in (*APKS, "hermes-console-release-evidence.tar.gz"):
-            path = assets / name
-            path.write_bytes((name + " fixture\n").encode())
-            subjects.append(
-                {
-                    "name": name,
-                    "digest": {"sha256": hashlib.sha256(path.read_bytes()).hexdigest()},
-                }
-            )
-        statement = {
-            "_type": "https://in-toto.io/Statement/v1",
-            "subject": sorted(subjects, key=lambda item: item["name"]),
-            "predicateType": "https://slsa.dev/provenance/v1",
-            "predicate": {
-                "buildDefinition": {
-                    "buildType": "https://actions.github.io/buildtypes/workflow/v1",
-                    "externalParameters": {
-                        "workflow": {
-                            "ref": f"refs/tags/{self.tag}",
-                            "repository": "https://github.com/xP3ta/hermes-console",
-                            "path": ".github/workflows/build-apk.yml",
-                        }
-                    },
-                    "resolvedDependencies": [
-                        {
-                            "uri": "git+https://github.com/xP3ta/hermes-console"
-                            f"@refs/tags/{self.tag}",
-                            "digest": {"gitCommit": self.commit},
-                        }
-                    ],
-                },
-                "runDetails": {
-                    "builder": {
-                        "id": "https://github.com/xP3ta/hermes-console/"
-                        f".github/workflows/build-apk.yml@refs/tags/{self.tag}"
-                    },
-                    "metadata": {
-                        "invocationId": "https://github.com/xP3ta/hermes-console/"
-                        "actions/runs/123456/attempts/1"
-                    },
-                },
-            },
-        }
-        if mutate is not None:
-            mutate(statement)
-        bundle = {
-            "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
-            "verificationMaterial": {
-                "certificate": {"rawBytes": base64.b64encode(b"certificate").decode()},
-                "tlogEntries": [{"logIndex": "1"}],
-            },
-            "dsseEnvelope": {
-                "payloadType": "application/vnd.in-toto+json",
-                "payload": base64.b64encode(canonical(statement)).decode(),
-                "signatures": [
-                    {"keyid": "", "sig": base64.b64encode(b"signature").decode()}
-                ],
-            },
-        }
-        path = root / "provenance.intoto.jsonl"
-        path.write_bytes(canonical(bundle))
-        return assets, path
-
-    def run_validator(self, assets: Path, bundle: Path):
-        return subprocess.run(
-            [
-                PYTHON,
-                str(ROOT / "tool/release/verify_slsa_bundle.py"),
-                "--bundle",
-                str(bundle),
-                "--asset-directory",
-                str(assets),
-                "--policy",
-                str(ROOT / "tool/release/release_contract.json"),
-                "--tag",
-                self.tag,
-                "--commit",
-                self.commit,
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-
-    def test_exact_dsse_slsa_statement_and_subject_hashes_pass_structural_gate(self):
-        with tempfile.TemporaryDirectory(prefix="s09-dsse-valid-") as temporary:
-            assets, bundle = self.write_fixture(Path(temporary))
-            result = self.run_validator(assets, bundle)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("structural", result.stdout.casefold())
-        self.assertNotIn("signature verified", result.stdout.casefold())
-
-    def test_standard_sigstore_signature_without_optional_keyid_passes_structural_gate(self):
-        with tempfile.TemporaryDirectory(prefix="s09-dsse-no-keyid-") as temporary:
-            assets, bundle = self.write_fixture(Path(temporary))
-            value = json.loads(bundle.read_text(encoding="utf-8"))
-            del value["dsseEnvelope"]["signatures"][0]["keyid"]
-            bundle.write_bytes(canonical(value))
-            result = self.run_validator(assets, bundle)
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_tampered_subject_source_workflow_or_predicate_fails(self):
-        mutations = (
-            lambda value: value["subject"][0]["digest"].update(sha256="f" * 64),
-            lambda value: value["predicate"]["buildDefinition"]["externalParameters"]["workflow"].update(repository="https://github.com/attacker/fork"),
-            lambda value: value["predicate"]["buildDefinition"]["externalParameters"]["workflow"].update(ref="refs/heads/main"),
-            lambda value: value.update(predicateType="https://example.invalid/provenance"),
-            lambda value: value["predicate"]["buildDefinition"]["resolvedDependencies"][0]["digest"].update(gitCommit="b" * 40),
-        )
-        for mutation in mutations:
-            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory(
-                prefix="s09-dsse-bad-"
-            ) as temporary:
-                assets, bundle = self.write_fixture(Path(temporary), mutation)
-                result = self.run_validator(assets, bundle)
-                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-
-
-class FinalPublicProvenanceGateTest(unittest.TestCase):
-    tag = "v9.8.7"
-    commit = "a" * 40
-
-    def write_public_fixture(self, root: Path, mutation: str) -> Path:
-        public = Slice1PublicAssetAllowlistTest().fixture(root)
-        subjects = [
-            {
-                "name": name,
-                "digest": {"sha256": hashlib.sha256((public / name).read_bytes()).hexdigest()},
-            }
-            for name in sorted((*APKS, "hermes-console-release-evidence.tar.gz"))
-        ]
-        statement = {
-            "_type": "https://in-toto.io/Statement/v1",
-            "subject": subjects,
-            "predicateType": "https://slsa.dev/provenance/v1",
-            "predicate": {
-                "buildDefinition": {
-                    "buildType": "https://actions.github.io/buildtypes/workflow/v1",
-                    "externalParameters": {
-                        "workflow": {
-                            "ref": f"refs/tags/{self.tag}",
-                            "repository": "https://github.com/xP3ta/hermes-console",
-                            "path": ".github/workflows/build-apk.yml",
-                        }
-                    },
-                    "resolvedDependencies": [
-                        {
-                            "uri": "git+https://github.com/xP3ta/hermes-console"
-                            f"@refs/tags/{self.tag}",
-                            "digest": {"gitCommit": self.commit},
-                        }
-                    ],
-                },
-                "runDetails": {
-                    "builder": {
-                        "id": "https://github.com/xP3ta/hermes-console/"
-                        f".github/workflows/build-apk.yml@refs/tags/{self.tag}"
-                    },
-                    "metadata": {
-                        "invocationId": "https://github.com/xP3ta/hermes-console/"
-                        "actions/runs/123456/attempts/1"
-                    },
-                },
-            },
-        }
-        certificate = b"unsigned certificate fixture"
-        if mutation == "wrong-oidc":
-            certificate = b"certificate claiming https://issuer.example.invalid"
-        elif mutation == "wrong-workflow":
-            statement["predicate"]["buildDefinition"]["externalParameters"]["workflow"]["path"] = ".github/workflows/attacker.yml"
-        elif mutation == "wrong-ref":
-            statement["predicate"]["buildDefinition"]["externalParameters"]["workflow"]["ref"] = "refs/heads/v9.8.7"
-        elif mutation == "wrong-commit":
-            statement["predicate"]["buildDefinition"]["resolvedDependencies"][0]["digest"]["gitCommit"] = "b" * 40
-        elif mutation == "wrong-subject":
-            statement["subject"][0]["digest"]["sha256"] = "f" * 64
-        bundle = {
-            "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
-            "verificationMaterial": {
-                "certificate": {"rawBytes": base64.b64encode(certificate).decode()},
-                "tlogEntries": [{"logIndex": "1"}],
-            },
-            "dsseEnvelope": {
-                "payloadType": "application/vnd.in-toto+json",
-                "payload": base64.b64encode(canonical(statement)).decode(),
-                "signatures": [
-                    {"keyid": "", "sig": base64.b64encode(b"unsigned signature").decode()}
-                ],
-            },
-        }
-        (public / "provenance.intoto.jsonl").write_bytes(canonical(bundle))
-        checksummed = [*APKS, "hermes-console-release-evidence.tar.gz", "provenance.intoto.jsonl"]
-        (public / "SHA256SUMS").write_text(
-            "".join(
-                f"{hashlib.sha256((public / name).read_bytes()).hexdigest()}  {name}\n"
-                for name in checksummed
-            ),
-            encoding="ascii",
-        )
-        return public
-
-    def test_final_public_gate_rejects_unsigned_wrong_oidc_workflow_ref_commit_and_subject_provenance(self):
-        for mutation in (
-            "unsigned",
-            "wrong-oidc",
-            "wrong-workflow",
-            "wrong-ref",
-            "wrong-commit",
-            "wrong-subject",
-        ):
-            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory(
-                prefix="s09-final-provenance-"
-            ) as temporary:
-                root = Path(temporary)
-                public = self.write_public_fixture(root, mutation)
-                result = subprocess.run(
-                    [
-                        "bash",
-                        str(ROOT / "tool/release/validate_public_assets.sh"),
-                        str(public),
-                        self.tag,
-                        self.commit,
-                        str(root / "trusted-toolchain.json"),
-                    ],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(
-                    "cryptographic provenance verification failed",
-                    result.stderr.casefold(),
-                )
-
-
 class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
     def test_authoritative_lock_digest_matches_release_gates(self):
         digest = hashlib.sha256((ROOT / "pubspec.lock").read_bytes()).hexdigest()
@@ -2618,7 +2982,7 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
         self.assertIn(f'echo "{digest}  pubspec.lock"', workflow)
         self.assertIn(f'readonly LOCK_SHA256="{digest}"', double_build)
 
-    def test_contract_pins_lock_channels_and_keyless_identity(self):
+    def test_contract_pins_lock_channels_and_signer_identity(self):
         policy = json.loads(
             (ROOT / "tool/release/release_contract.json").read_text(encoding="utf-8")
         )
@@ -2626,10 +2990,13 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
             policy["source"]["authoritativeLockSha256"],
             "14328be1a42a6839e16931c8953acacdc2b063ce17672521f6687cc1e2644717",
         )
-        self.assertEqual(policy["android"]["packageId"], "dev.xpetalab.hermesconsole")
+        self.assertEqual(
+            policy["android"],
+            {"packageId": "cool.n0thing.daeroh", "versionSource": "pubspec.yaml", "debuggable": False, "testOnly": False},
+        )
         self.assertEqual(set(policy["channels"]), {"direct-public", "play-private"})
         self.assertEqual(policy["sourceAuthorization"]["forge"], "github.com")
-        self.assertEqual(policy["sourceAuthorization"]["authorizedActors"], ["xP3ta"])
+        self.assertEqual(policy["sourceAuthorization"]["authorizedActors"], ["ac-slay3r"])
         self.assertTrue(policy["sourceAuthorization"]["requireAuthorAndCommitter"])
         play_tools = policy["playInspectionTools"]
         self.assertEqual(play_tools["platform"], "linux-x86_64")
@@ -2654,21 +3021,17 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
             },
         )
         continuity = policy["signerContinuity"]["direct-public"]
-        self.assertEqual(continuity["baselineTag"], "v1.2.9")
-        self.assertEqual(
-            continuity["baselineArtifact"], "app-arm64-v8a-full-release.apk"
-        )
-        self.assertEqual(
-            continuity["baselineArtifactSha256"],
-            "f5187dbc57caa881ca3f21453335df320e271d7358e81e6095e6d9af50a9f734",
-        )
         self.assertEqual(
             continuity["certificateSha256"],
-            "86edaa150fabd33d8184f5b958400cabadacb49632f7ec50ecbe49608058d159",
+            "34144c8e2c8d1d062c96e5a103e0f37e3d3c80c277c46f7b6c6a4d7cd9d28859",
         )
         self.assertEqual(
-            policy["signerContinuity"]["play-private"]["certificateSha256"],
-            continuity["certificateSha256"],
+            continuity["acceptedPredecessorCertificateSha256"],
+            "6fdcf87166ea101eeb9a5d205d48dda1fb688db5faad4b42ddf16d26cd62e848",
+        )
+        self.assertEqual(
+            continuity["signatureSchemes"],
+            {"v1": False, "v2": False, "v3": True, "rotationMinSdkVersion": 29},
         )
         public_tools = policy["publicInspectionTools"]
         self.assertEqual(public_tools["platform"], "linux-x86_64")
@@ -2687,29 +3050,13 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
                 "app-armeabi-v7a-full-release.apk",
                 "app-x86_64-full-release.apk",
                 "hermes-console-release-evidence.tar.gz",
-                "provenance.intoto.jsonl",
             ],
         )
         self.assertNotIn("app-play-release.aab", direct["publicAssets"])
         self.assertEqual(direct["rebuildAcceptance"], "observed-two-build-byte-identity")
         self.assertFalse(direct["inputsCryptographicallyPinned"])
-        self.assertEqual(policy["channels"]["play-private"]["visibility"], "private")
-        self.assertEqual(policy["provenance"]["oidcIssuer"], "https://token.actions.githubusercontent.com")
-        self.assertEqual(policy["provenance"]["signatureMode"], "keyless")
-        self.assertEqual(policy["provenance"]["cryptographicVerifier"], "gh attestation verify")
-        self.assertEqual(policy["provenance"]["verifierVersion"], "2.98.0")
-        self.assertEqual(
-            policy["provenance"]["verifierSha256"],
-            "62885b97de6a0cd85e616cdd94bcda908bf5cf1018094385892b05cea3537163",
-        )
-        self.assertEqual(
-            policy["provenance"]["certificateIdentityTemplate"],
-            "https://github.com/xP3ta/hermes-console/.github/workflows/build-apk.yml@refs/tags/{tag}",
-        )
-        self.assertEqual(
-            policy["provenance"]["verifierSignerWorkflow"],
-            "xP3ta/hermes-console/.github/workflows/build-apk.yml",
-        )
+        self.assertEqual(policy["channels"]["play-private"]["availability"], "unavailable")
+
 
     def test_double_build_script_uses_clean_clones_and_isolated_caches(self):
         script = ROOT / "tool/release/double_build.sh"
@@ -2734,7 +3081,7 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
         reset = 'rm -rf -- "$clone" "$home" "$pub_cache" "$gradle_home" "$tmp"'
         self.assertIn(reset, source)
         self.assertLess(source.index(reset), source.index('git clone --no-local'))
-        self.assertEqual(source.count('TMPDIR="$tmp"'), 4)
+        self.assertEqual(source.count('TMPDIR="$tmp"'), 2)
         self.assertIn('build_replica a\nbuild_replica b', source)
         self.assertIn("14328be1a42a6839e16931c8953acacdc2b063ce17672521f6687cc1e2644717", source)
         self.assertIn("compare_rebuilds.py", source)
@@ -2744,6 +3091,31 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
         for tool in ("flutter", "git", "python3", "java", "sha256sum", "install", "mktemp", "mv"):
             self.assertIn(f'command -v "$tool"', source)
         self.assertNotIn("gh release", source)
+
+    def test_google_play_channel_is_explicitly_unavailable_and_refused(self):
+        policy = json.loads(
+            (ROOT / "tool/release/release_contract.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(policy["channels"]["play-private"]["availability"], "unavailable")
+        result = subprocess.run(
+            ["bash", str(ROOT / "tool/release/stage_play_private.sh")],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unavailable for Daeroh", result.stderr)
+
+    def test_release_workflow_and_verifiers_require_daeroh_tags(self):
+        workflow = (ROOT / ".github/workflows/build-apk.yml").read_text(encoding="utf-8")
+        self.assertIn("^daeroh-v", workflow)
+        for verifier in (
+            "verify_release_identity.py",
+        ):
+            self.assertIn(
+                "^daeroh-v",
+                (ROOT / "tool/release" / verifier).read_text(encoding="utf-8"),
+            )
 
     def test_jni_native_build_disables_only_nondeterministic_build_id(self):
         # NDK sha1 hashes unstripped link inputs; libdartjni is subsequently
@@ -2804,6 +3176,21 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
             java = tools / "java"
             java.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             java.chmod(0o700)
+            apksigner = tools / "apksigner"
+            apksigner.write_text(
+                "#!/usr/bin/env bash\nset -Eeuo pipefail\n"
+                "[[ $1 == sign ]]\nout=''; previous=''\n"
+                "for argument in \"$@\"; do [[ $previous == --out ]] && out=$argument; previous=$argument; done\n"
+                "cat \"${!#}\" > \"$out\"\n",
+                encoding="utf-8",
+            )
+            apksigner.chmod(0o700)
+            keystore = root / "throwaway.p12"
+            password = root / "throwaway.password"
+            lineage = root / "throwaway.lineage"
+            keystore.write_bytes(b"fixture")
+            password.write_text("fixture\n", encoding="utf-8")
+            lineage.write_bytes(b"fixture-lineage")
             output = root / "double-output"
             result = subprocess.run(
                 [
@@ -2815,6 +3202,9 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
                     str(key_properties),
                     str(output),
                     "ab" * 32,
+                    str(keystore),
+                    str(password),
+                    str(lineage),
                 ],
                 check=False,
                 capture_output=True,
@@ -2826,6 +3216,7 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
                     "ANDROID_HOME": "/fixture/android-home",
                     "ANDROID_SDK_ROOT": "/fixture/android-sdk-root",
                     "JAVA_HOME": "/fixture/java-home",
+                    "DAEROH_APKSIGNER": str(apksigner),
                 },
             )
             report_path = output / "rebuild-comparison.json"
@@ -3054,6 +3445,7 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
         self.assertEqual(residue, [])
 
 
+@unittest.skip("Daeroh does not distribute through Google Play")
 class PlayArtifactIdentityTest(unittest.TestCase):
     signer = "ab" * 32
 

@@ -1,100 +1,88 @@
-# Open-source release checklist — historical 1.2.8 gate
+# Open-source release checklist
 
-> Historical record: this checklist belongs to the superseded `1.2.8+4943`
-> candidate and is not the active release gate for `1.2.9`. Its checked items
-> must not be read as evidence for the current source tree or a future signed
-> artifact.
+This is the future Daeroh direct-distribution gate. Completing or reading these
+steps does **not** authorize a build, signing operation, tag, GitHub Release, or
+upload. Each such action needs separate owner approval for the exact source,
+artifact, and public channel.
 
-Candidate version: `1.2.8+4943`, integrated from the published `v1.2.7` source.
-Record the final public SHA after all audit commits are complete. This checklist
-is an engineering gate, not legal advice. Do not create a public remote or
-distribute a GPL-labelled APK/AAB until every blocking item is closed on the
-exact candidate commit.
+## 1. Pin the public source
 
-## Source repository
+- [ ] Start from one reviewed, clean commit on `main`; retain GPL-3.0 source
+  correspondence for that exact commit.
+- [ ] Assign a downstream-only tag matching `daeroh-v*`; the intended first
+  public tag is `daeroh-v0.1.18`. Do not treat inherited upstream `v*` tags as
+  Daeroh releases.
+- [ ] Record the tag, commit SHA, version name, and monotonically higher Android
+  versionCode in the release notes and artifact evidence.
+- [ ] Use a neutral build location: source checkout, `HOME`, `PUB_CACHE`, and
+  Gradle home must be outside user-home paths. Reject a candidate if a shipped
+  binary contains `/home/`.
 
-- [x] Export only the Android application; the parent workspace is excluded.
-- [x] Exclude signing files, APK/AAB files, generated builds, private agent
-  handoffs, device serials, workstation paths and private topology.
-- [x] Replace private fixture values with neutral examples.
-- [x] Start a fresh public history rather than exposing the private history.
-- [x] Define CI gates for REUSE, Gitleaks, TruffleHog, deterministic source
-  SBOMs, static analysis and tests.
-- [x] Keep adversarial user-info URL fixtures while documenting that CI excludes
-  TruffleHog's noisy `URI` detector; Gitleaks still scans the complete tree and
-  TruffleHog runs every other detector family.
-- [x] Verify the final exported tree and fresh history with two independent
-  secret scanners immediately before publication.
-- [x] Clone the exact final commit into a new directory and repeat all gates.
+## 2. Verify before owner-local signing
 
-## Licensing and provenance
+- [ ] Run the reviewed, verification-only CI and local policy checks. CI checks
+  source and policy only; it does not build, sign, receive, upload, retain, or
+  attest release artifacts. Owner-built APKs have no third-party build record.
+- [ ] Build only the `full` flavor in the approved owner-local environment. Do
+  not substitute `qa`, debug, profile, or Play artifacts for public delivery.
+- [ ] Inspect the candidate APK(s) for package identity, versionCode, ABI/flavor,
+  signer, hashes, source binding, SBOM, license notices, and the neutral-path
+  requirement. A hash sidecar does not replace signer inspection.
+- [ ] Perform the required install/update validation separately from host and
+  emulator checks; an emulator result is not physical-device acceptance.
 
-- [x] Declare project-authored code as `GPL-3.0-only`.
-- [x] Preserve the upstream `rusty4444/hermes-android` MIT notice.
-- [x] Preserve font, dependency, companion and project-artwork notices.
-- [x] Record deterministic source SBOMs and an explicit unresolved-license
-  queue for both public distribution flavors.
-- [x] Add REUSE/SPDX annotations without relicensing third-party files.
-- [x] Use `qr_code_scanner_plus` with ZXing Core and Android Embedded under
-  BSD-2-Clause/Apache-2.0 terms; the proprietary scanner stack is absent.
-- [x] Remove the retired always-listening prototype, its model assets and its
-  build-time switches from the candidate source.
-- [x] Review every SBOM `NOASSERTION` and every custom/non-standard Android AAR
-  term against the final binary.
+## 3. Sign on the owner machine only
 
-## Product and release parity
+- [ ] The Daeroh release key and rotation lineage stay only on the
+  owner-controlled machine and private filesystem. They never enter Git,
+  GitHub Actions, CI logs, tickets, release assets, or another machine.
+- [ ] Use the Daeroh RSA-4096 release signer (certificate SHA-256
+  `34144c8e2c8d1d062c96e5a103e0f37e3d3c80c277c46f7b6c6a4d7cd9d28859`) with
+  the private v3 lineage (lineage SHA-256
+  `8eb73cd934dd5fec70154bae3a5ecc76471e5306f495af0012ddb0bf7ede134d`).
+  The accepted predecessor is the historic debug certificate
+  `6fdcf87166ea101eeb9a5d205d48dda1fb688db5faad4b42ddf16d26cd62e848`.
+- [ ] Sign v3 only with minimum and rotation-minimum SDK 29; do not use the
+  historic debug keystore for future release signing. The lineage preserves the
+  required installed-data and signature-permission compatibility while denying
+  rollback, shared-UID, and authenticator authority to the predecessor.
+- [ ] Obtain the owner-local local-toolchain launcher (it is not tracked in this
+  repository) and run it with private placeholders only; never paste a
+  password, key, or real private path into commands, logs, shell history, or
+  documentation:
 
-- [x] Keep chat behavior frozen except for the approved structured-image path.
-- [x] Document `1.2.7+915` against the previous Play baseline `1.2.6+913`.
-- [x] Build `fullRelease` from a clean clone for GitHub/Obtainium and build
-  `playRelease` separately through the private Play process, using the final
-  signing configuration held outside Git.
-- [x] Confirm the published source commit exactly matches the source used to
-  build the signed Play/Obtainium artifacts.
-- [x] Configure release CI to archive artifact SBOMs, SHA-256 manifests and
-  signing-certificate reports without publishing signing material.
-- [x] Complete owner-led Pixel QA for chat, Bots/rooms/profiles, generated
-  images, navigation, QR pairing, Voice and dictation on the 1.2.7 candidate;
-  repeat install/start/permission/process smoke on the exact signed 915 APK in
-  an Android 16 emulator. The 914-to-915 delta is limited to version metadata
-  and release hardening covered by automated tests.
-- [x] Confirm QR camera lifecycle and a real pairing payload on the physically
-  tested 1.2.7 candidate, plus permission and R8 startup behavior on signed 915.
-- [ ] Reconcile Privacy, Play Data Safety, foreground-service declarations and
-  the final merged manifest.
+  ```sh
+  <owner-local-toolchain-launcher> apksigner sign \
+    --ks /owner-private/daeroh-release.p12 \
+    --ks-key-alias daeroh-release \
+    --ks-pass file:/owner-private/daeroh-release.password \
+    --lineage /owner-private/rotation.lineage \
+    --min-sdk-version 29 \
+    --rotation-min-sdk-version 29 \
+    --v1-signing-enabled false \
+    --v2-signing-enabled false \
+    --v3-signing-enabled true \
+    --out /owner-private/Daeroh-full-release.apk \
+    /owner-private/Daeroh-full-unsigned.apk
+  ```
 
-## GitHub publication
+## 4. Publish only after exact approval
 
-- [x] Have the owner review the rendered README, logo, Spanish README, license,
-  notices, security contact and release notes in a private preview.
-- [x] Create `xP3ta/hermes-console` only after explicit owner approval.
-- [x] Configure `main` protection, required CI, secret scanning/push protection,
-  Dependabot, private vulnerability reporting, issue/PR templates, topics,
-  description and homepage.
-- [x] Confirm the public anonymous clone, license detection and release URLs.
+- [ ] Obtain explicit owner approval for the exact tag, APK bytes, checksums,
+  source commit, and GitHub Releases channel.
+- [ ] Create the approved `daeroh-v*` source tag and attach the inspected `full`
+  APK asset(s) and `SHA256SUMS`. The release notes must identify the exact source
+  tag and commit so recipients can obtain corresponding GPL-3.0 source.
+- [ ] Publish only public, non-secret release material. Never attach keystores,
+  password files, lineage files, mappings, diagnostics, test logs, private
+  endpoints, QA/debug/profile artifacts, or Play artifacts.
+- [ ] Preserve the GPL-3.0 license, required upstream attribution, source
+  notices, and the source correspondence for every distributed APK.
 
-## Current decision
+## Recovery warning
 
-**`v1.2.7` is the published baseline; `1.2.8+4943` is NOT GO yet.** The 1.2.7
-tag points to `8006b01ad99d8d8f5d64c6bbde3ef29841b9a79d`. The 1.2.8 gate is tracked
-below and in [`RELEASE_1.2.8_AUDIT.md`](RELEASE_1.2.8_AUDIT.md).
-
-## 1.2.8 candidate gate
-
-- [x] Reconcile release, notification and durable-turn branches without
-  reintroducing superseded patches.
-- [x] Reconcile version, changelog, installation, Play listing, privacy and Data
-  Safety against the actual candidate scope.
-- [ ] Regenerate deterministic play/full SBOM and license-review evidence from
-  the exact candidate tree.
-- [ ] Pass REUSE, Gitleaks, TruffleHog, Flutter 3.44.1 analysis and the complete
-  test suite from a clean checkout.
-- [ ] Build and inspect signed `play` AAB and `full` APK from the same commit.
-- [ ] Install the exact QA arm64 APK on the physical Pixel with `adb install -r`,
-  preserving package data and signing identity.
-- [ ] Complete the 1.2.7→1.2.8 physical QA matrix, including recovery,
-  `clarify`, notifications, navigation, voice, pairing and regressions.
-- [ ] Reconcile the final merged manifest, FGS declarations and saved Play Data
-  Safety answers against the inspected AAB.
-- [ ] Obtain separate owner approval before pushing `main`, publishing GitHub /
-  Obtainium, or uploading to Google Play.
+**Loss of the Daeroh release keystore or its password prevents an in-place
+update over existing installs.** Loss of the lineage also removes the
+rotation material needed for future v3-only updates. Keep offline backups of
+all three private materials under AC's control and retain the password in AC's
+password vault; do not distribute any of them.

@@ -6,18 +6,33 @@
   },
   "sourceAuthorization": {
     "forge": "github.com",
-    "authorizedActors": ["xP3ta"],
+    "repository": "ac-slay3r/Daeroh",
+    "authorizedActors": [
+      "ac-slay3r"
+    ],
+    "authorizedCommitters": [
+      "ac-slay3r",
+      "web-flow"
+    ],
     "requireAuthorAndCommitter": true
   },
   "signerContinuity": {
     "direct-public": {
-      "baselineTag": "v1.2.9",
-      "baselineArtifact": "app-arm64-v8a-full-release.apk",
-      "baselineArtifactSha256": "f5187dbc57caa881ca3f21453335df320e271d7358e81e6095e6d9af50a9f734",
-      "certificateSha256": "86edaa150fabd33d8184f5b958400cabadacb49632f7ec50ecbe49608058d159"
-    },
-    "play-private": {
-      "certificateSha256": "86edaa150fabd33d8184f5b958400cabadacb49632f7ec50ecbe49608058d159"
+      "certificateSha256": "34144c8e2c8d1d062c96e5a103e0f37e3d3c80c277c46f7b6c6a4d7cd9d28859",
+      "acceptedPredecessorCertificateSha256": "6fdcf87166ea101eeb9a5d205d48dda1fb688db5faad4b42ddf16d26cd62e848",
+      "predecessorCapabilities": {
+        "installedData": true,
+        "permission": true,
+        "sharedUid": false,
+        "rollback": false,
+        "auth": false
+      },
+      "signatureSchemes": {
+        "v1": false,
+        "v2": false,
+        "v3": true,
+        "rotationMinSdkVersion": 29
+      }
     }
   },
   "publicInspectionTools": {
@@ -42,7 +57,7 @@
       "androidBuildTools": {
         "root": "android-sdk",
         "path": "build-tools/36.0.0",
-        "sha256": "5889971d8cbf457d2771b534eb9de0a6156ce2e34d8b7170b66435fbe8af6d26"
+        "sha256": "b12caaa0312f65415e336adcc27b0e20dc96f910e82a015e45c38e6163d1107a"
       },
       "androidCommandLineTools": {
         "root": "android-sdk",
@@ -52,12 +67,32 @@
       "javaBinaries": {
         "root": "jdk",
         "path": "bin",
-        "sha256": "673a60e262fc553e95b04b39e2c3d6e32f7acd936147ce34785cf877c7aa66d9"
+        "sha256": "843d18c2a0ecedbb0b2489096768c030c31fbaa148904c3115331235c936391b"
       },
       "javaLibraries": {
         "root": "jdk",
         "path": "lib",
-        "sha256": "8e99c647bd0296ef86e87e261b409d7f08ae52e4d05169dfb392c973b53927c6"
+        "sha256": "fa6a76e10f91a04cd69806007d761cb32f75ed44785f6b9e943cae784f08f1c3"
+      },
+      "javaConfiguration": {
+        "root": "jdk",
+        "path": "conf",
+        "sha256": "9398f55f242524bfd5f3ff9cb7e72af6bb916cce63fcae74ff0352d27273f903"
+      }
+    },
+    "provenance": {
+      "androidBuildTools": {
+        "archiveUrl": "https://dl.google.com/android/repository/build-tools_r36_linux.zip",
+        "archiveSha256": "5d9ac77fb6ff43d9da518a337b4fcf8f9097113df531d99ccefe80ef7ce8250b"
+      },
+      "androidCommandLineTools": {
+        "archiveUrl": "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip",
+        "archiveSha256": "2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258"
+      },
+      "jdk17": {
+        "archiveUrl": "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.21%2B9/OpenJDK17U-jdk_x64_linux_hotspot_17.0.21_9.tar.gz",
+        "archiveSha256": "8b9b611d917e3dfd8419d3566b5949226f69b052fed7e109c1368add1dfe8711",
+        "vendorPublishedSha256": "8b9b611d917e3dfd8419d3566b5949226f69b052fed7e109c1368add1dfe8711"
       }
     }
   },
@@ -82,8 +117,10 @@
     }
   },
   "android": {
-    "packageId": "dev.xpetalab.hermesconsole",
-    "versionSource": "pubspec.yaml"
+    "packageId": "cool.n0thing.daeroh",
+    "versionSource": "pubspec.yaml",
+    "debuggable": false,
+    "testOnly": false
   },
   "channels": {
     "direct-public": {
@@ -100,45 +137,14 @@
         "app-arm64-v8a-full-release.apk",
         "app-armeabi-v7a-full-release.apk",
         "app-x86_64-full-release.apk",
-        "hermes-console-release-evidence.tar.gz",
-        "provenance.intoto.jsonl"
-      ],
-      "provenanceSubjects": [
-        "app-arm64-v8a-full-release.apk",
-        "app-armeabi-v7a-full-release.apk",
-        "app-x86_64-full-release.apk",
         "hermes-console-release-evidence.tar.gz"
       ],
       "rebuildAcceptance": "observed-two-build-byte-identity",
       "inputsCryptographicallyPinned": false
     },
     "play-private": {
-      "visibility": "private",
-      "flavor": "play",
-      "artifactType": "signed-release-aab",
-      "artifacts": ["app-play-release.aab"],
-      "rebuildAcceptance": "observed-two-build-functional-payload-equivalence",
-      "inputsCryptographicallyPinned": false
+      "availability": "unavailable",
+      "reason": "Daeroh does not distribute through Google Play"
     }
-  },
-  "provenance": {
-    "bundleMediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
-    "dssePayloadType": "application/vnd.in-toto+json",
-    "statementType": "https://in-toto.io/Statement/v1",
-    "predicateType": "https://slsa.dev/provenance/v1",
-    "buildType": "https://actions.github.io/buildtypes/workflow/v1",
-    "builder": "github-hosted",
-    "repository": "https://github.com/xP3ta/hermes-console",
-    "repositorySlug": "xP3ta/hermes-console",
-    "workflowPath": ".github/workflows/build-apk.yml",
-    "oidcIssuer": "https://token.actions.githubusercontent.com",
-    "certificateIdentityTemplate": "https://github.com/xP3ta/hermes-console/.github/workflows/build-apk.yml@refs/tags/{tag}",
-    "verifierSignerWorkflow": "xP3ta/hermes-console/.github/workflows/build-apk.yml",
-    "signatureMode": "keyless",
-    "cryptographicVerifier": "gh attestation verify",
-    "verifierPlatform": "linux-x86_64",
-    "verifierVersion": "2.98.0",
-    "verifierSha256": "62885b97de6a0cd85e616cdd94bcda908bf5cf1018094385892b05cea3537163",
-    "denySelfHostedRunners": true
   }
 }

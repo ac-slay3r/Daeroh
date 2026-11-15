@@ -16,25 +16,29 @@ fail() {
 }
 trap fail ERR
 
-[[ $# -eq 6 ]] || fail
+[[ $# -eq 9 ]] || fail
 readonly CHANNEL="$1"
 readonly SOURCE_ROOT="$(readlink -e -- "$2")"
 readonly COMMIT="$3"
 readonly KEY_PROPERTIES="$(readlink -e -- "$4")"
 readonly OUTPUT_ROOT="$(readlink -m -- "$5")"
 readonly EXPECTED_CERT_SHA256="${6,,}"
-[[ "$CHANNEL" == direct-public || "$CHANNEL" == play-private ]] || fail
+readonly KEYSTORE="$(readlink -e -- "$7")"
+readonly PASSWORD_FILE="$(readlink -e -- "$8")"
+readonly LINEAGE="$(readlink -e -- "$9")"
+[[ "$CHANNEL" == direct-public ]] || fail
 [[ "$COMMIT" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || fail
 [[ "$EXPECTED_CERT_SHA256" =~ ^[0-9a-f]{64}$ ]] || fail
 [[ -d "$SOURCE_ROOT" && ! -L "$SOURCE_ROOT" ]] || fail
 [[ -f "$KEY_PROPERTIES" && ! -L "$KEY_PROPERTIES" ]] || fail
+[[ -f "$KEYSTORE" && ! -L "$KEYSTORE" ]] || fail
+[[ -f "$PASSWORD_FILE" && ! -L "$PASSWORD_FILE" ]] || fail
+[[ -s "$LINEAGE" && ! -L "$LINEAGE" ]] || fail
 [[ -z "$(git -C "$SOURCE_ROOT" status --porcelain=v1 --untracked-files=all)" ]] || fail
 [[ "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" == "$COMMIT" ]] || fail
 [[ "$OUTPUT_ROOT" != "$SOURCE_ROOT" && "$OUTPUT_ROOT" != "$SOURCE_ROOT"/* ]] || fail
 [[ ! -e "$OUTPUT_ROOT" ]] || fail
-if [[ "$CHANNEL" == play-private ]]; then
-  [[ "${OUTPUT_ROOT,,}" == *private* && "${OUTPUT_ROOT,,}" != *public* ]] || fail
-fi
+
 
 for tool in flutter git python3 java sha256sum install mktemp mv; do
   command -v "$tool" >/dev/null
@@ -47,6 +51,8 @@ else
   CLEAN_JAVA_HOME="$(dirname -- "$(dirname -- "$(readlink -e -- "$(command -v java)")")")"
 fi
 readonly CLEAN_JAVA_HOME
+readonly APKSIGNER="${DAEROH_APKSIGNER:-${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/build-tools/36.0.0/apksigner}"
+[[ -x "$APKSIGNER" && ! -L "$APKSIGNER" ]] || fail
 [[ -n "$CLEAN_ANDROID_HOME" || -n "$CLEAN_ANDROID_SDK_ROOT" ]] || fail
 [[ -n "$CLEAN_JAVA_HOME" ]] || fail
 readonly WORK="$(mktemp -d "${TMPDIR:-/tmp}/hermes-double-build.XXXXXX")"
@@ -99,26 +105,21 @@ build_replica() {
           --dart-define=HERMES_FLAVOR=full \
           --dart-define=HERMES_LOCAL_AGENT=true
     )
-    install -m 600 -- "$clone"/build/app/outputs/flutter-apk/*-full-release.apk "$destination/"
-  else
-    (
-      cd "$clone"
-      env -i PATH="$PATH" HOME="$home" PUB_CACHE="$pub_cache" TMPDIR="$tmp" \
-        GRADLE_USER_HOME="$gradle_home" SOURCE_DATE_EPOCH="$source_epoch" \
-        ANDROID_HOME="$CLEAN_ANDROID_HOME" \
-        ANDROID_SDK_ROOT="$CLEAN_ANDROID_SDK_ROOT" JAVA_HOME="$CLEAN_JAVA_HOME" \
-        flutter pub get --enforce-lockfile
-      env -i PATH="$PATH" HOME="$home" PUB_CACHE="$pub_cache" TMPDIR="$tmp" \
-        GRADLE_USER_HOME="$gradle_home" SOURCE_DATE_EPOCH="$source_epoch" \
-        ANDROID_HOME="$CLEAN_ANDROID_HOME" \
-        ANDROID_SDK_ROOT="$CLEAN_ANDROID_SDK_ROOT" JAVA_HOME="$CLEAN_JAVA_HOME" \
-        flutter build appbundle --release --flavor play \
-          --dart-define=HERMES_FLAVOR=play \
-          --dart-define=HERMES_LOCAL_AGENT=false
-    )
-    install -m 600 -- \
-      "$clone/build/app/outputs/bundle/playRelease/app-play-release.aab" \
-      "$destination/app-play-release.aab"
+    # Gradle's configured signer produces the initial split APKs. Re-sign each
+    # one before it leaves this replica so comparison, manifest capture and all
+    # downstream consumers bind the final v3-only, lineage-bearing bytes.
+    local unsigned="$tmp/unsigned"
+    mkdir -m 700 -- "$unsigned"
+    local apk
+    for apk in "$clone"/build/app/outputs/flutter-apk/*-full-release.apk; do
+      [[ -f "$apk" && ! -L "$apk" ]] || fail
+      "$APKSIGNER" sign --ks "$KEYSTORE" --ks-key-alias daeroh-release \
+        --ks-pass "file:$PASSWORD_FILE" --lineage "$LINEAGE" \
+        --min-sdk-version 29 --rotation-min-sdk-version 29 \
+        --v1-signing-enabled false --v2-signing-enabled false \
+        --v3-signing-enabled true --out "$unsigned/$(basename -- "$apk")" "$apk"
+      install -m 600 -- "$unsigned/$(basename -- "$apk")" "$destination/"
+    done
   fi
   rm -f -- "$clone/key.properties"
 }
@@ -137,19 +138,11 @@ done
 build_replica a
 build_replica b
 
-if [[ "$CHANNEL" == direct-public ]]; then
-  python3 "$SCRIPT_ROOT/tool/release/compare_rebuilds.py" \
-    --channel direct-public \
-    --first "$STAGING_ROOT/replica-a" \
-    --second "$STAGING_ROOT/replica-b" \
-    --output "$STAGING_ROOT/rebuild-comparison.json"
-else
-  python3 "$SCRIPT_ROOT/tool/release/compare_rebuilds.py" \
-    --channel play-private \
-    --first "$STAGING_ROOT/replica-a/app-play-release.aab" \
-    --second "$STAGING_ROOT/replica-b/app-play-release.aab" \
-    --output "$STAGING_ROOT/rebuild-comparison.json"
-fi
+python3 "$SCRIPT_ROOT/tool/release/compare_rebuilds.py" \
+  --channel direct-public \
+  --first "$STAGING_ROOT/replica-a" \
+  --second "$STAGING_ROOT/replica-b" \
+  --output "$STAGING_ROOT/rebuild-comparison.json"
 chmod 600 "$STAGING_ROOT/rebuild-comparison.json"
 python3 "$SCRIPT_ROOT/tool/release/double_build_manifest.py" write \
   --root "$SOURCE_ROOT" \

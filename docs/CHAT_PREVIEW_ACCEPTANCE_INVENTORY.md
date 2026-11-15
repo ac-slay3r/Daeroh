@@ -16,7 +16,8 @@ run. Current production changes are confined to saved-preview rendering.
 All commands use the approved local launcher:
 
 ```sh
-LAUNCHER=/home/aconn/projects/Daeroh/tool/qa/with_local_toolchain.sh
+# This owner-local, untracked launcher path is supplied by the environment.
+LAUNCHER="${DAEROH_LOCAL_TOOLCHAIN_LAUNCHER:?set owner-local launcher path}"
 export HERMES_LOCAL_AGENT=true
 "$LAUNCHER" flutter test --no-pub test/chat_screen_test.dart test/chat_preview_store_test.dart test/settings_history_cleanup_test.dart --reporter expanded
 # 553 passed; exit 0 (complete three-file feature/regression group)

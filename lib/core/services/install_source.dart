@@ -9,7 +9,10 @@ enum InstallSource { googlePlay, githubObtainium, manual }
 abstract final class InstallSourceInfo {
   // Daeroh is not published on Play. Never route this package to upstream's
   // differently signed releases or Play listing.
-  static const updatePageUrl = String.fromEnvironment('DAEROH_UPDATE_PAGE_URL');
+  static const updatePageUrl = String.fromEnvironment(
+    'DAEROH_UPDATE_PAGE_URL',
+    defaultValue: 'https://github.com/ac-slay3r/Daeroh/releases',
+  );
 
   static const _channel = MethodChannel('hermes/platform_info');
 
@@ -43,10 +46,10 @@ abstract final class InstallSourceInfo {
     return classify(installer);
   }
 
-  /// A release build must opt in to an HTTP(S) update page at compile time.
+  /// Builds may override the public releases page with an HTTP(S) update page.
   ///
-  /// Returning null hides the action rather than falling back to a differently
-  /// signed channel.
+  /// An invalid build-time override hides the action rather than falling back to
+  /// a differently signed channel.
   static String? updateUrl(InstallSource source) {
     final uri = Uri.tryParse(updatePageUrl);
     if (uri == null ||

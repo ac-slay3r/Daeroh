@@ -291,6 +291,8 @@ def write_exclusive(path: Path, value: dict[str, Any]) -> None:
 
 
 def main() -> int:
+    print("ERROR: Google Play inspection is unavailable for Daeroh.", file=sys.stderr)
+    return 1
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact", type=Path, required=True)
     parser.add_argument("--pubspec", type=Path, required=True)

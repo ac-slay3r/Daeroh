@@ -202,6 +202,7 @@ def public_tool_policy(policy_path: Path = REVIEWED_POLICY) -> dict[str, Any]:
                 "commandLineToolsRevision",
                 "tools",
                 "runtimeTrees",
+                "provenance",
             },
         )
         tools = exact(value["tools"], {"aapt", "apkanalyzer", "apksigner"})
@@ -210,7 +211,7 @@ def public_tool_policy(policy_path: Path = REVIEWED_POLICY) -> dict[str, Any]:
         }
         runtime_trees = exact(
             value["runtimeTrees"],
-            {"androidBuildTools", "androidCommandLineTools", "javaBinaries", "javaLibraries"},
+            {"androidBuildTools", "androidCommandLineTools", "javaBinaries", "javaLibraries", "javaConfiguration"},
         )
         tree_records = {
             name: exact(record, {"root", "path", "sha256"})
@@ -229,6 +230,7 @@ def public_tool_policy(policy_path: Path = REVIEWED_POLICY) -> dict[str, Any]:
         "androidCommandLineTools": "android-sdk",
         "javaBinaries": "jdk",
         "javaLibraries": "jdk",
+        "javaConfiguration": "jdk",
     }
     for name, record in tree_records.items():
         if record["root"] != expected_roots[name]:
@@ -356,6 +358,11 @@ def validate_provenance(
     validate_evidence_archive.validate(archive_file)
     tools = resolve_toolchain(trusted_toolchain, assets, tool_policy)
     expected = inspector.expected_facts(expected_file)
+    contract = inspector.reviewed_contract(tool_policy)
+    if signer != contract["certificateSha256"]:
+        raise ProvenanceError("signer policy does not match the reviewed contract")
+    if expected["package"] != contract["packageId"]:
+        raise ProvenanceError("APK package expectation does not match the reviewed contract")
     artifacts = [regular_file(assets / name) for name in public_build_binding.PUBLIC_APKS]
     try:
         source, inputs = build_binding.source_and_inputs(source_root)
@@ -396,7 +403,7 @@ def validate_provenance(
                     "JAVA_HOME": str(tools["javaHome"]),
                     "LANG": "C.UTF-8",
                     "LC_ALL": "C.UTF-8",
-                    "PATH": "/usr/bin:/bin",
+                    "PATH": f"{tools['javaHome'] / 'bin'}:/usr/bin:/bin",
                 }
                 if inspection_log is not None:
                     environment["INSPECTION_LOG"] = str(inspection_log)
@@ -406,13 +413,17 @@ def validate_provenance(
                     name,
                     abi,
                     signer,
+                    contract["acceptedPredecessorCertificateSha256"],
+                    contract["predecessorCapabilities"],
+                    contract["rotationMinSdkVersion"],
+                    contract["releaseFlags"],
                     tools["aapt"],
                     tools["apkanalyzer"],
                     tools["apksigner"],
                     environment=environment,
                 )
             except (inspector.InspectionError, OSError, ValueError) as error:
-                raise ProvenanceError from error
+                raise ProvenanceError(str(error) or "APK inspection failed") from error
             if set(archived_facts) != inspector.FACT_KEYS or inspector.canonical(fresh) != facts_bytes:
                 raise ProvenanceError
             try:
@@ -457,7 +468,7 @@ def main() -> int:
         else:
             if args.archive is None:
                 raise ProvenanceError
-            signer = inspector.reviewed_signer(REVIEWED_POLICY)
+            signer = inspector.reviewed_contract(REVIEWED_POLICY)["certificateSha256"]
             with tempfile.TemporaryDirectory(prefix="hermes-public-expectations-") as temporary:
                 expected = Path(temporary) / "full-release-expectations.json"
                 result = subprocess.run(
@@ -490,8 +501,10 @@ def main() -> int:
                     REVIEWED_ROOT,
                 )
             message = "Public APK provenance validation passed."
-    except (OSError, ProvenanceError, subprocess.TimeoutExpired, tarfile.TarError):
-        print("ERROR: public APK provenance validation failed.", file=sys.stderr)
+    except (OSError, ProvenanceError, subprocess.TimeoutExpired, tarfile.TarError) as error:
+        detail = str(error)
+        suffix = f": {detail}" if detail else ""
+        print(f"ERROR: public APK provenance validation failed{suffix}.", file=sys.stderr)
         return 1
     print(message)
     return 0

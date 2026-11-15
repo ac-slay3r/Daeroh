@@ -2,7 +2,7 @@ name: Code Quality Checks
 
 on:
   pull_request:
-    branches: [feat/daeroh-android-build]
+    branches: [main, feat/daeroh-android-build]
   push:
     branches: [feat/daeroh-android-build, 'ship/**']
 

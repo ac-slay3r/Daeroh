@@ -237,10 +237,10 @@ class ReleaseWorkflowBoundaryTest(unittest.TestCase):
         double_build = (ROOT / "tool/release/double_build.sh").read_text(encoding="utf-8")
         play_stage = (ROOT / "tool/release/stage_play_private.sh").read_text(encoding="utf-8")
         self.assertIn("flutter build apk --release --flavor full", double_build)
-        self.assertIn("flutter build appbundle --release --flavor play", double_build)
+        self.assertNotIn("flutter build appbundle --release --flavor play", double_build)
         self.assertIn("--split-per-abi", double_build)
         self.assertIn("mv -- \"$STAGING_ROOT\" \"$OUTPUT_ROOT\"", double_build)
-        self.assertIn("mv -- \"$WORK\" \"$DESTINATION_CANONICAL\"", play_stage)
+        self.assertIn("Google Play staging is unavailable for Daeroh", play_stage)
         self.assertNotIn("gh release", double_build + play_stage)
 
     def test_exact_public_basenames_live_in_reviewed_contract(self):
@@ -255,7 +255,6 @@ class ReleaseWorkflowBoundaryTest(unittest.TestCase):
                 "app-armeabi-v7a-full-release.apk",
                 "app-x86_64-full-release.apk",
                 "hermes-console-release-evidence.tar.gz",
-                "provenance.intoto.jsonl",
             ],
         )
         self.assertNotIn(

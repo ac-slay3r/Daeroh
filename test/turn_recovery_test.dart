@@ -2104,7 +2104,7 @@ void main() {
             'id': 11,
             'role': 'user',
             'content': 'sin reloj',
-            if (timestamp != null) 'timestamp': timestamp,
+            'timestamp': ?timestamp,
           };
           expect(
             ambiguousTurnTranscriptEvidence(turn, [

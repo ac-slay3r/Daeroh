@@ -10,6 +10,7 @@
     {"name": "android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING"},
     {"name": "android.permission.INTERNET"},
     {"name": "android.permission.POST_NOTIFICATIONS"},
+    {"name": "android.permission.POST_PROMOTED_NOTIFICATIONS"},
     {"name": "android.permission.RECEIVE_BOOT_COMPLETED"},
     {"name": "android.permission.RECORD_AUDIO"},
     {"name": "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"},
@@ -19,7 +20,7 @@
     {"name": "android.permission.WAKE_LOCK"},
     {"name": "android.permission.WRITE_EXTERNAL_STORAGE", "maxSdkVersion": 28},
     {"name": "com.termux.permission.RUN_COMMAND"},
-    {"name": "dev.xpetalab.hermesconsole.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"}
+    {"name": "cool.n0thing.daeroh.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"}
   ],
   "forbiddenPermissions": [
     "android.permission.QUERY_ALL_PACKAGES",
@@ -28,7 +29,7 @@
     "android.permission.USE_FULL_SCREEN_INTENT"
   ],
   "foregroundServices": [
-    {"name": ".HermesExternalDataSyncService", "types": ["dataSync"]},
+    {"name": "com.hermesagent.hermes_android.HermesExternalDataSyncService", "types": ["dataSync"]},
     {"name": "com.pravera.flutter_foreground_task.service.ForegroundService", "types": ["dataSync", "mediaPlayback", "microphone", "remoteMessaging"]}
   ],
   "requiredPackageQueries": ["com.termux", "org.fdroid.fdroid"]
