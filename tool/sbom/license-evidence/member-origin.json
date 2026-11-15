@@ -1,0 +1,86 @@
+[
+  {
+    "artifact": "app-arm64-v8a-full-release.apk",
+    "member": "DebugProbesKt.bin",
+    "sha256": "cd3da36122413f84be484c77cde4a77729f9e8f81a285408d073300c8385ca3a",
+    "exactComponent": "kotlinx-coroutines-core-jvm:1.10.2",
+    "byteEqual": true
+  },
+  {
+    "artifact": "app-arm64-v8a-full-release.apk",
+    "member": "lib/arm64-v8a/libdatastore_shared_counter.so",
+    "sha256": "d3e48717c9aa147e0ab21063ba0e8e0211cabf8bf40b222640829519edbf58e1",
+    "exactComponent": "datastore-core-android:1.1.7",
+    "byteEqual": true
+  },
+  {
+    "artifact": "app-arm64-v8a-full-release.apk",
+    "member": "assets/flutter_assets/packages/whisper_ggml_plus/assets/models/ggml-silero-v6.2.0.bin",
+    "sha256": "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
+    "exactComponent": "whisper_ggml_plus:1.5.2",
+    "byteEqual": true
+  },
+  {
+    "artifact": "app-arm64-v8a-full-release.apk",
+    "member": "assets/flutter_assets/packages/cupertino_icons/assets/CupertinoIcons.ttf",
+    "sha256": "67c44fe9183b002e79dde7f6977e2988661c9a3e4a3c5fce968787efdbed823c",
+    "exactComponent": "cupertino_icons:1.0.9",
+    "byteEqual": true
+  },
+  {
+    "artifact": "app-armeabi-v7a-full-release.apk",
+    "member": "DebugProbesKt.bin",
+    "sha256": "cd3da36122413f84be484c77cde4a77729f9e8f81a285408d073300c8385ca3a",
+    "exactComponent": "kotlinx-coroutines-core-jvm:1.10.2",
+    "byteEqual": true
+  },
+  {
+    "artifact": "app-armeabi-v7a-full-release.apk",
+    "member": "lib/armeabi-v7a/libdatastore_shared_counter.so",
+    "sha256": "716c5d8d2cac8ca0edf65da8f139c7886b726ac79d542a14edeb94994ba6d3dc",
+    "exactComponent": "datastore-core-android:1.1.7",
+    "byteEqual": true
+  },
+  {
+    "artifact": "app-armeabi-v7a-full-release.apk",
+    "member": "assets/flutter_assets/packages/whisper_ggml_plus/assets/models/ggml-silero-v6.2.0.bin",
+    "sha256": "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
+    "exactComponent": "whisper_ggml_plus:1.5.2",
+    "byteEqual": true
+  },
+  {
+    "artifact": "app-armeabi-v7a-full-release.apk",
+    "member": "assets/flutter_assets/packages/cupertino_icons/assets/CupertinoIcons.ttf",
+    "sha256": "67c44fe9183b002e79dde7f6977e2988661c9a3e4a3c5fce968787efdbed823c",
+    "exactComponent": "cupertino_icons:1.0.9",
+    "byteEqual": true
+  },
+  {
+    "artifact": "app-x86_64-full-release.apk",
+    "member": "DebugProbesKt.bin",
+    "sha256": "cd3da36122413f84be484c77cde4a77729f9e8f81a285408d073300c8385ca3a",
+    "exactComponent": "kotlinx-coroutines-core-jvm:1.10.2",
+    "byteEqual": true
+  },
+  {
+    "artifact": "app-x86_64-full-release.apk",
+    "member": "lib/x86_64/libdatastore_shared_counter.so",
+    "sha256": "fb6c9208988c49ae94943bc3236fa763ba584722e044fa4ea9a12d2941027105",
+    "exactComponent": "datastore-core-android:1.1.7",
+    "byteEqual": true
+  },
+  {
+    "artifact": "app-x86_64-full-release.apk",
+    "member": "assets/flutter_assets/packages/whisper_ggml_plus/assets/models/ggml-silero-v6.2.0.bin",
+    "sha256": "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
+    "exactComponent": "whisper_ggml_plus:1.5.2",
+    "byteEqual": true
+  },
+  {
+    "artifact": "app-x86_64-full-release.apk",
+    "member": "assets/flutter_assets/packages/cupertino_icons/assets/CupertinoIcons.ttf",
+    "sha256": "67c44fe9183b002e79dde7f6977e2988661c9a3e4a3c5fce968787efdbed823c",
+    "exactComponent": "cupertino_icons:1.0.9",
+    "byteEqual": true
+  }
+]

@@ -84,3 +84,36 @@ path = "assets/companions/**"
 precedence = "override"
 SPDX-FileCopyrightText = "Copyright (c) 2026 XPeta Lab"
 SPDX-License-Identifier = "CC0-1.0"
+
+# Verbatim third-party evidence retains its original license, not tool/** GPL.
+[[annotations]]
+path = ["tool/sbom/license-evidence/cupertino_icons-1.0.9-LICENSE", "tool/sbom/license-evidence/whisper_ggml_plus-1.5.2-LICENSE", "tool/sbom/license-evidence/silero-vad-v6.2-LICENSE"]
+precedence = "override"
+SPDX-FileCopyrightText = ["Copyright (c) 2016 Vladimir Kharlampidi", "Copyright (c) 2022 Hrvoje Cukman", "Copyright (c) 2020-present Silero Team"]
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "tool/sbom/license-evidence/jni-1.0.0-LICENSE"
+precedence = "override"
+SPDX-FileCopyrightText = "Copyright 2022, the Dart project authors"
+SPDX-License-Identifier = "BSD-3-Clause"
+
+[[annotations]]
+path = ["tool/sbom/license-evidence/kotlinx-coroutines-1.10.2-LICENSE.txt", "tool/sbom/license-evidence/datastore-1.1.7-SharedCounter.android.kt", "tool/sbom/license-evidence/datastore-core-android-1.1.7.pom"]
+precedence = "override"
+SPDX-FileCopyrightText = ["Copyright 2000-2020 JetBrains s.r.o. and Kotlin Programming Language contributors", "Copyright 2022 The Android Open Source Project"]
+SPDX-License-Identifier = "Apache-2.0"
+
+# AC's owner decision, 2026-11-15.
+[[annotations]]
+path = ["assets/branding/daeroh_foreground.svg", "assets/branding/daeroh_launcher.svg", "assets/branding/daeroh_logo.png"]
+precedence = "override"
+SPDX-FileCopyrightText = "Copyright (c) 2026 Daeroh / ac-slay3r"
+SPDX-License-Identifier = "GPL-3.0-only"
+
+# Upstream b06240f REUSE.toml and LICENSE; exact bytes in widget-origin.json.
+[[annotations]]
+path = ["android/app/src/main/res/drawable-nodpi/botw_*.png", "android/app/src/qa/res/drawable-nodpi/botw_*.png"]
+precedence = "override"
+SPDX-FileCopyrightText = "Copyright (c) 2026 XPeta Lab"
+SPDX-License-Identifier = "GPL-3.0-only"

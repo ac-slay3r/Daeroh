@@ -1510,6 +1510,8 @@ class FinalPublicAssetsCliVersionExtractionTest(unittest.TestCase):
         (source / "tool/release").mkdir(parents=True)
         for name in (
             "validate_public_assets.sh",
+            "scan_binary_paths.py",
+            "binary_path_exceptions.json",
             "validate_evidence_archive.py",
             "verify_release_identity.py",
             "release_contract.json",
@@ -3580,6 +3582,98 @@ class PlayArtifactIdentityTest(unittest.TestCase):
                 Path(temporary), tamper_tool=True
             )
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class BinaryPathExceptionsTest(unittest.TestCase):
+    sherpa = "lib/arm64-v8a/libsherpa-onnx-c-api.so"
+    app = "lib/arm64-v8a/libapp.so"
+    runner = b"/home/runner/work/sherpa-onnx/src/example.cc\x00"
+    literal = rb"(?:/home/[A-Za-z0-9._-]+|/root|~)/\.hermes/cache/images/"
+
+    def scan(self, member, data, policy=None):
+        with tempfile.TemporaryDirectory(prefix="binary-path-") as temporary:
+            root = Path(temporary)
+            apk = root / "fixture.apk"
+            with zipfile.ZipFile(apk, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr(member, data)
+            command = [PYTHON, str(ROOT / "tool/release/scan_binary_paths.py"), str(apk)]
+            if policy is not None:
+                path = root / "policy.json"
+                path.write_text(policy if isinstance(policy, str) else json.dumps(policy))
+                command += ["--policy", str(path)]
+            return subprocess.run(command, capture_output=True, text=True, check=False)
+
+    def policy(self, data):
+        return {"schema": 1, "sherpa": [{"member": self.sherpa,
+                "sha256": hashlib.sha256(data).hexdigest()}],
+                "imageCacheRegexMembers": [self.app]}
+
+    def reject(self, member, data, policy, diagnostic):
+        result = self.scan(member, data, policy)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(diagnostic, result.stderr)
+
+    def test_matching_hash_does_not_allow_non_runner_path(self):
+        data = self.runner + b"/home/x/private.cc\x00"
+        self.reject(self.sherpa, data, self.policy(data), "not an exact reviewed")
+
+    def test_changed_sherpa_hash_reports_both_hashes(self):
+        data = self.runner + b"dependency bump"
+        result = self.scan(self.sherpa, data, self.policy(self.runner))
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        for text in (self.sherpa, "matched=", "SHA-256 mismatch",
+                     hashlib.sha256(data).hexdigest(), hashlib.sha256(self.runner).hexdigest()):
+            self.assertIn(text, result.stderr)
+
+    def test_second_home_path_in_app_is_rejected(self):
+        self.reject(self.app, self.literal + b"\x00/home/x/private\x00",
+                    self.policy(self.runner), "not an exact reviewed")
+
+    def test_near_miss_literal_is_rejected(self):
+        for data in (self.literal.replace(b"images/", b"image/"),
+                     self.literal.replace(b"A-Za-z", b"A-Z"),
+                     self.literal.replace(b"\\.hermes", b".hermes"),
+                     self.literal + b"\x00" + self.literal):
+            with self.subTest(data=data):
+                self.reject(self.app, data, self.policy(self.runner), "not an exact reviewed")
+
+    def test_unlisted_member_is_not_covered_by_policy(self):
+        self.reject("lib/x86_64/libsherpa-onnx-c-api.so", self.runner,
+                    self.policy(self.runner), "not an exact reviewed")
+        self.reject("assets/not-a-library.bin", self.literal,
+                    self.policy(self.runner), "not an exact reviewed")
+
+    def test_policy_cannot_authorize_arbitrary_member(self):
+        policy = self.policy(self.runner)
+        policy["sherpa"][0]["member"] = "assets/unreviewed.bin"
+        self.reject("assets/unreviewed.bin", self.runner, policy, "invalid sherpa")
+        policy = self.policy(self.runner)
+        policy["imageCacheRegexMembers"] = ["assets/unreviewed.bin"]
+        self.reject("assets/unreviewed.bin", self.literal, policy, "invalid image-cache")
+
+    def test_malformed_policy_fails_even_without_path_hits(self):
+        policies = ["null", "{", '{"schema":1,"schema":1,"sherpa":[],"imageCacheRegexMembers":[]}',
+                    [], {}, {**self.policy(self.runner), "extra": True},
+                    {**self.policy(self.runner), "schema": True},
+                    {**self.policy(self.runner), "sherpa": "all"}]
+        record = self.policy(self.runner)
+        record["sherpa"][0]["extra"] = "ignored?"
+        policies.append(record)
+        for policy in policies:
+            with self.subTest(policy=policy):
+                self.reject("assets/clean.bin", b"clean", policy, "policy")
+
+    def test_all_original_private_path_families_remain_banned(self):
+        for data in (b"/home/", b"/Users/alice/private", b"C:\\Users\\alice\\src"):
+            with self.subTest(data=data):
+                self.reject("assets/clean.bin", data, self.policy(self.runner),
+                            "private build path")
+
+    def test_reviewed_decompressed_hash_and_exact_literal_pass(self):
+        for member, data in ((self.sherpa, self.runner), (self.app, self.literal)):
+            with self.subTest(member=member):
+                result = self.scan(member, data, self.policy(self.runner))
+                self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

@@ -138,6 +138,38 @@ El texto legal completo CC0-1.0 aplicable a los companions está en
 El escáner QR es local: no envía fotogramas, contenido, resultados ni métricas
 del escáner a XPeta Lab o a otro servicio.
 
+## Pinned packaged components added to the license inventory
+
+The exact-version license files and source declarations are retained under
+[`tool/sbom/license-evidence/`](tool/sbom/license-evidence/README.md), including
+byte-equality checks for copied model/font/JAR/AAR members. These records do not
+relicense unrelated assets or any whole `packages/` directory.
+
+- **kotlinx-coroutines-core-jvm 1.10.2 / DebugProbesKt.bin** — Apache-2.0,
+  copyright JetBrains s.r.o. and Kotlin Programming Language contributors;
+  full version-pinned `LICENSE.txt` retained.
+- **jni 1.0.0 / libdartjni.so** — BSD-3-Clause, copyright 2022 the Dart project
+  authors; full package license retained.
+- **AndroidX DataStore Core Android 1.1.7 / libdatastore_shared_counter.so** —
+  Apache-2.0, copyright the Android Open Source Project; exact published POM
+  and SharedCounter source license header retained. The three ABI binaries
+  match the pinned cached AAR, not a current upstream build.
+- **whisper_ggml_plus 1.5.2 / libwhisper.so** — MIT, copyright 2022 Hrvoje
+  Cukman; full package license retained. The package bundles whisper.cpp.
+- **Silero VAD ggml-silero-v6.2.0.bin**, bundled by **whisper_ggml_plus 1.5.2** —
+  MIT; exact package license and corroborating Silero v6.2 license (copyright
+  2020-present Silero Team) retained. No model weights were changed.
+- **cupertino_icons 1.0.9 / CupertinoIcons.ttf** — MIT, copyright 2016 Vladimir
+  Kharlampidi; full package license retained.
+- **Inherited Bot Mode widget images** — GPL-3.0-only, copyright 2026 XPeta Lab;
+  all 33 files match their upstream introduction. Exact upstream `REUSE.toml`
+  and GPL license are retained; see `ASSET_PROVENANCE.md`.
+
+The generated `AssetManifest.bin` is the project's asset-name index under the
+project GPL-3.0-only terms, not a copied Flutter library. Listed assets retain
+their own licenses. Daeroh branding is GPL-3.0-only, copyright Daeroh /
+ac-slay3r, per AC's owner decision; inherited notices are preserved.
+
 ## Tipografías empaquetadas
 
 Inter, JetBrains Mono, Montserrat y Nunito se distribuyen bajo la SIL Open Font

@@ -2,6 +2,48 @@
   "schema": 1,
   "entries": [
     {
+      "pathPattern": "^DebugProbesKt\\.bin$",
+      "component": "kotlinx-coroutines-core-jvm 1.10.2 debug probes",
+      "license": "Apache-2.0",
+      "evidence": "tool/sbom/license-evidence/kotlinx-coroutines-1.10.2-LICENSE.txt"
+    },
+    {
+      "pathPattern": "^assets/flutter_assets/AssetManifest\\.bin$",
+      "component": "Daeroh generated asset-name manifest (project build metadata)",
+      "license": "GPL-3.0-only",
+      "evidence": "tool/sbom/license-evidence/README.md"
+    },
+    {
+      "pathPattern": "^assets/flutter_assets/packages/whisper_ggml_plus/assets/models/ggml-silero-v6\\.2\\.0\\.bin$",
+      "component": "Silero VAD model bundled in whisper_ggml_plus 1.5.2",
+      "license": "MIT",
+      "evidence": "tool/sbom/license-evidence/whisper_ggml_plus-1.5.2-LICENSE"
+    },
+    {
+      "pathPattern": "^assets/flutter_assets/packages/cupertino_icons/assets/CupertinoIcons\\.ttf$",
+      "component": "cupertino_icons 1.0.9 icon font",
+      "license": "MIT",
+      "evidence": "tool/sbom/license-evidence/cupertino_icons-1.0.9-LICENSE"
+    },
+    {
+      "pathPattern": "^lib/(arm64-v8a|armeabi-v7a|x86_64)/libdartjni\\.so$",
+      "component": "jni 1.0.0 native runtime",
+      "license": "BSD-3-Clause",
+      "evidence": "tool/sbom/license-evidence/jni-1.0.0-LICENSE"
+    },
+    {
+      "pathPattern": "^lib/(arm64-v8a|armeabi-v7a|x86_64)/libdatastore_shared_counter\\.so$",
+      "component": "androidx.datastore:datastore-core-android 1.1.7 shared counter",
+      "license": "Apache-2.0",
+      "evidence": "tool/sbom/license-evidence/datastore-1.1.7-SharedCounter.android.kt"
+    },
+    {
+      "pathPattern": "^lib/(arm64-v8a|armeabi-v7a|x86_64)/libwhisper\\.so$",
+      "component": "whisper_ggml_plus 1.5.2 whisper.cpp native runtime",
+      "license": "MIT",
+      "evidence": "tool/sbom/license-evidence/whisper_ggml_plus-1.5.2-LICENSE"
+    },
+    {
       "pathPattern": "^lib/(arm64-v8a|armeabi-v7a|x86_64)/libapp\\.so$",
       "component": "hermes-console application native snapshot",
       "license": "GPL-3.0-only",
