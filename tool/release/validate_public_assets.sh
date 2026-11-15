@@ -9,14 +9,12 @@ readonly EXPECTED_ASSETS=(
   app-armeabi-v7a-full-release.apk
   app-x86_64-full-release.apk
   hermes-console-release-evidence.tar.gz
-  provenance.intoto.jsonl
 )
 readonly CHECKSUMMED_ASSETS=(
   app-arm64-v8a-full-release.apk
   app-armeabi-v7a-full-release.apk
   app-x86_64-full-release.apk
   hermes-console-release-evidence.tar.gz
-  provenance.intoto.jsonl
 )
 readonly PRIVATE_METADATA_PATTERN='(/home/[A-Za-z0-9_.-]+|/Users/[A-Za-z0-9_.-]+|[A-Za-z]:\\Users\\[A-Za-z0-9_.-]+|/root/|(^|[^0-9])192\.168\.[0-9]{1,3}\.[0-9]{1,3}([^0-9]|$)|(^|[^0-9])10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}([^0-9]|$)|(^|[^0-9])172\.(1[6-9]|2[0-9]|3[0-1])\.[0-9]{1,3}\.[0-9]{1,3}([^0-9]|$))'
 
@@ -51,12 +49,46 @@ scan_private_metadata() {
   fi
 }
 
+scan_public_apk_contents() {
+  local apk
+  for apk in "${CHECKSUMMED_ASSETS[@]}"; do
+    [[ "$apk" == *.apk ]] || continue
+    python3 - "$apk" <<'PY'
+import re
+import sys
+import zipfile
+
+PER_MEMBER_LIMIT = 128 * 1024 * 1024
+TOTAL_LIMIT = 2 * 1024 * 1024 * 1024
+PATTERN = re.compile(rb"(?:/home/|/Users/|[A-Za-z]:\\Users\\[A-Za-z0-9_.-]+)")
+path = sys.argv[1]
+total = 0
+try:
+    with zipfile.ZipFile(path) as archive:
+        for member in archive.infolist():
+            if member.file_size > PER_MEMBER_LIMIT:
+                raise ValueError("member exceeds decompressed scan limit")
+            total += member.file_size
+            if total > TOTAL_LIMIT:
+                raise ValueError("APK exceeds total decompressed scan limit")
+            tail = b""
+            with archive.open(member) as stream:
+                while chunk := stream.read(1024 * 1024):
+                    if PATTERN.search(tail + chunk):
+                        raise ValueError(f"private build path in APK member {member.filename}")
+                    tail = (tail + chunk)[-256:]
+except (OSError, ValueError, zipfile.BadZipFile, zipfile.LargeZipFile) as error:
+    print(f"ERROR: {error}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+  done
+}
+
 scan_public_metadata() {
   local archive="hermes-console-release-evidence.tar.gz"
   local path
   local relative
   scan_private_metadata "SHA256SUMS" < SHA256SUMS
-  scan_private_metadata "provenance.intoto.jsonl" < provenance.intoto.jsonl
   tar -tzf "$archive" | scan_private_metadata "$archive member list"
   SCAN_DIRECTORY="$(mktemp -d /tmp/hermes-public-metadata.XXXXXXXX)"
   chmod 0700 "$SCAN_DIRECTORY"
@@ -80,16 +112,32 @@ validate_asset_directory() {
       [[ "${entries[$index]}" == "${EXPECTED_ASSETS[$index]}" ]]
       [[ -f "${entries[$index]}" && ! -L "${entries[$index]}" ]]
     done
-    [[ $(wc -l < SHA256SUMS) -eq ${#CHECKSUMMED_ASSETS[@]} ]]
-    for expected in "${CHECKSUMMED_ASSETS[@]}"; do
-      awk -v expected="$expected" '
-        $0 ~ /^[0-9a-f]{64}  [A-Za-z0-9._-]+$/ && $2 == expected { matches++ }
-        END { exit matches == 1 ? 0 : 1 }
-      ' SHA256SUMS
-    done
+    python3 - "${CHECKSUMMED_ASSETS[@]}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+expected = sys.argv[1:]
+raw = Path("SHA256SUMS").read_bytes()
+if not raw.endswith(b"\n"):
+    raise SystemExit(1)
+lines = raw.splitlines()
+record = re.compile(rb"^[0-9a-f]{64}  ([A-Za-z0-9._-]+)$")
+if len(lines) != len(expected):
+    raise SystemExit(1)
+names = []
+for line in lines:
+    match = record.fullmatch(line)
+    if match is None:
+        raise SystemExit(1)
+    names.append(match.group(1).decode("ascii"))
+if sorted(names) != sorted(expected) or len(names) != len(set(names)):
+    raise SystemExit(1)
+PY
     sha256sum --strict --status -c SHA256SUMS
     python3 "$ROOT/tool/release/validate_evidence_archive.py" \
       hermes-console-release-evidence.tar.gz
+    scan_public_apk_contents
     scan_public_metadata
   )
 }
@@ -105,8 +153,14 @@ else
   readonly RELEASE_TAG="$2"
   readonly RELEASE_COMMIT="${3,,}"
   readonly TRUSTED_TOOLCHAIN="$4"
-  [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail
-  [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || fail
+  if [[ ! "$RELEASE_TAG" =~ ^daeroh-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+    printf 'ERROR: release tag must use the daeroh-vX.Y.Z namespace.\n' >&2
+    exit 1
+  fi
+  if [[ ! "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
+    printf 'ERROR: release commit must be a full hexadecimal Git object ID.\n' >&2
+    exit 1
+  fi
 
   VALIDATION_DIRECTORY="$(mktemp -d /tmp/hermes-public-validation.XXXXXXXX)"
   chmod 0700 "$VALIDATION_DIRECTORY"
@@ -116,25 +170,31 @@ else
   done
   validate_asset_directory "$VALIDATION_DIRECTORY"
 
-  python3 "$ROOT/tool/release/verify_public_provenance.py" \
-    --bundle "$VALIDATION_DIRECTORY/provenance.intoto.jsonl" \
-    --asset-directory "$VALIDATION_DIRECTORY" \
-    --policy "$POLICY" \
-    --tag "$RELEASE_TAG" \
-    --commit "$RELEASE_COMMIT"
+
 
   [[ -z "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all)" ]]
   readonly SOURCE_COMMIT="$(git -C "$ROOT" rev-parse "HEAD^{commit}")"
   readonly TAG_COMMIT="$(git -C "$ROOT" rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
   [[ "$SOURCE_COMMIT" == "$RELEASE_COMMIT" ]]
   [[ "$TAG_COMMIT" == "$RELEASE_COMMIT" ]]
+  RELEASE_BUILD_NUMBER="$(python3 - "$ROOT/pubspec.yaml" <<'PY'
+import re, sys
+lines = open(sys.argv[1], encoding='utf-8').read().splitlines()
+matches = [re.fullmatch(r'version:\s*(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\+((?:0|[1-9][0-9]*))\s*(?:#.*)?', line) for line in lines]
+matches = [match for match in matches if match]
+if len(matches) != 1: raise SystemExit(1)
+print(matches[0].group(1))
+PY
+)" || {
+    printf 'ERROR: pubspec version extraction failed.\n' >&2
+    exit 1
+  }
+  readonly RELEASE_BUILD_NUMBER
+  python3 "$ROOT/tool/release/verify_release_identity.py" \
+    --tag "$RELEASE_TAG" --pubspec "$ROOT/pubspec.yaml" \
+    --build-number "$RELEASE_BUILD_NUMBER" --expected-commit "$RELEASE_COMMIT" \
+    --checkout-commit "$SOURCE_COMMIT" --tag-commit "$TAG_COMMIT" --policy "$POLICY"
 
-  python3 "$ROOT/tool/release/verify_slsa_bundle.py" \
-    --bundle "$VALIDATION_DIRECTORY/provenance.intoto.jsonl" \
-    --asset-directory "$VALIDATION_DIRECTORY" \
-    --policy "$POLICY" \
-    --tag "$RELEASE_TAG" \
-    --commit "$RELEASE_COMMIT"
   python3 "$ROOT/tool/release/validate_public_apk_provenance.py" \
     --archive "$VALIDATION_DIRECTORY/hermes-console-release-evidence.tar.gz" \
     --asset-directory "$VALIDATION_DIRECTORY" \

@@ -356,9 +356,9 @@ Esto puede ser logueado por proxies, firewalls y herramientas de debug.
 
 ## Release y distribución
 
-- Las entregas de Google Play usan la upload key de XPeta Lab y Play App
-  Signing. Keystore, credenciales y copias de seguridad permanecen fuera del
-  repo.
+- Google Play no está disponible para Daeroh; las referencias heredadas a la
+  upload key de XPeta Lab y Play App Signing son históricas. Keystore,
+  credenciales y copias de seguridad permanecen fuera del repo.
 - La variante `full` de descarga directa usa firma de release; nunca se
   distribuyen APK debug ni la variante `qa`.
 - El contrato ejecutable `tool/release/release_contract.json` separa los canales:
@@ -380,20 +380,14 @@ Esto puede ser logueado por proxies, firewalls y herramientas de debug.
   a byte entre esas dos ejecuciones, pero esto no se declara reproducibilidad
   general mientras Gradle, Maven y Android SDK no estén íntegramente fijados por
   contenido.
-- La provenance pública eventual es DSSE/in-toto/SLSA keyless. Primero se valida
-  firma e identidad OIDC con `gh attestation verify` contra repositorio,
-  workflow, tag y commit exactos; después se aplica la policy estructural al
-  mismo bundle. El validador estructural no es un verificador criptográfico y un
-  JSON sin firma no es provenance.
-- La identidad de provenance usa certificados efímeros de GitHub Actions; no
-  introduce claves privadas ni secretos persistentes de attestación. Solo se
-  obtiene durante la publicación expresamente autorizada.
+- No existe una attestación externa ni un registro de build de terceros para los APK owner-built. CI verifica solo fuente y policy; el propietario construye y firma los artefactos localmente.
 - El repositorio es público: los artifacts de GitHub Actions no son un canal
   privado. El workflow es únicamente de verificación y nunca construye, recibe
   ni sube APK/AAB firmados. Build, comparación y staging permanecen juntos en el
   filesystem privado/local controlado por el propietario.
-- Antes de cada entrega Play deben reconciliarse política de privacidad, Data
-  Safety, destinos de IA/voz y declaraciones de servicios en primer plano.
+- La antigua preparación de una entrega Play (política de privacidad, Data
+  Safety, destinos de IA/voz y servicios en primer plano) es histórica y no
+  autoriza una entrega por ese canal no disponible.
 - Ningún AAB, APK, push, attestación externa o publicación se realiza sin
   autorización explícita del propietario. Los helpers locales no crean una
   GitHub Release ni realizan un upload a Play Console.

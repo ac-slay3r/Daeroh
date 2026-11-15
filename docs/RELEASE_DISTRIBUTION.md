@@ -1,11 +1,11 @@
 # Release and distribution
 
-Hermes Console has three Android flavors built from one reviewed source commit.
+Daeroh has three Android flavors built from one reviewed source commit.
 A flavor name is a security boundary, not a rename operation.
 
 | Lane | Flavor | Accepted artifact | Visibility |
 |---|---|---|---|
-| Google Play | `play` | signed release AAB | owner-private only |
+| Google Play | `play` | none | unavailable; Daeroh does not distribute through Google Play |
 | GitHub Releases / Obtainium | `full` | three signed split release APKs | public only in the approved publication |
 | Emulator QA | `qa` | profile/debug APK | internal only; never public or release evidence |
 
@@ -14,8 +14,8 @@ source lock is `pubspec.lock` with SHA-256
 `14328be1a42a6839e16931c8953acacdc2b063ce17672521f6687cc1e2644717`.
 Changing a lock, signer, authorized source actor or inspection-tool digest
 requires a normal source review; release scripts never rewrite those values.
-The reviewed contract anchors both channel signer certificates, all public and
-Play inspection-tool digests, and the GitHub CLI verifier digest.
+The reviewed contract anchors the Daeroh public signer continuity and public
+inspection-tool digests.
 
 ## Public-repository CI is verification-only
 
@@ -27,9 +27,9 @@ therefore prohibited for release candidates.
 `.github/workflows/build-apk.yml` is CI verification only. It checks the exact
 tag/commit, authorized forge actor, lock, checked-in SBOMs, licenses, scanners,
 analysis and tests. It has read-only repository permissions, receives no signing
-secret, builds no signed candidate, creates no attestation, and invokes no
+secret, builds no signed candidate, creates no artifact attestation and invokes no
 artifact upload/download action. Successful CI is not a build, staging,
-publication or Play upload result.
+publication result.
 
 Sensitive building, comparison and staging stay on one owner-controlled machine
 and an owner-controlled local/private filesystem. No helper in this repository
@@ -38,21 +38,18 @@ only after explicit owner approval for the exact channel and exact bytes.
 
 ## Reviewed source and signer continuity
 
-The source identity gate requires GitHub verification and binds both the forge
-`authorLogin` and `committerLogin` to the reviewed `xP3ta` allowlist. A valid
-signature from an unlisted actor is rejected.
+The source identity gate requires GitHub verification and binds the forge
+`authorLogin` to `ac-slay3r` and `committerLogin` to either `ac-slay3r` or
+GitHub's `web-flow` merge committer. `web-flow` never authorizes a different
+author. A valid signature from an unlisted actor is rejected. Daeroh release
+identities use only `daeroh-v*` tags; inherited upstream `v*` tags are never
+Daeroh releases.
 
-Direct APK signing continuity is anchored to the prior public release rather
-than to caller input alone:
-
-- baseline tag: `v1.2.9`;
-- baseline asset: `app-arm64-v8a-full-release.apk`;
-- asset SHA-256: `f5187dbc57caa881ca3f21453335df320e271d7358e81e6095e6d9af50a9f734`;
-- certificate SHA-256: `86edaa150fabd33d8184f5b958400cabadacb49632f7ec50ecbe49608058d159`.
-
-The direct inspector requires the supplied expectation to equal that reviewed
-record and then independently measures every candidate with `apksigner`.
-Changing both a key and a runtime argument cannot bypass the baseline.
+The direct inspector anchors the Daeroh release certificate SHA-256
+`34144c8e2c8d1d062c96e5a103e0f37e3d3c80c277c46f7b6c6a4d7cd9d28859`, accepts
+only the recorded predecessor for v3 rotation, and validates the inspected APK
+package against the reviewed Daeroh package ID. Caller-provided expectations
+cannot replace those reviewed contract values.
 
 ## Private local double build
 
@@ -68,12 +65,20 @@ bash tool/release/double_build.sh \
   direct-public /absolute/path/to/clean/source COMMIT \
   /absolute/private/key.properties \
   /absolute/private/direct-output \
-  86edaa150fabd33d8184f5b958400cabadacb49632f7ec50ecbe49608058d159
+  34144c8e2c8d1d062c96e5a103e0f37e3d3c80c277c46f7b6c6a4d7cd9d28859 \
+  /absolute/private/daeroh-release.p12 \
+  /absolute/private/daeroh-release.password \
+  /absolute/private/rotation.lineage
 ```
 
-The script verifies required commands, preserves Android/JDK discovery through
-its clean environment, and gives each replica an isolated `HOME`, `PUB_CACHE`
-and `GRADLE_USER_HOME`. It builds into a mode-0700 temporary sibling of the
+The script signs each Gradle-produced split *before* it is copied to the
+replica: it uses the supplied keystore, password file and lineage with v1/v2
+disabled, v3 enabled, and min/rotation SDK 29. Comparison, manifest capture,
+source binding and the final checker therefore consume those same final bytes;
+do not manually re-sign an output after this command. The script verifies
+required commands, preserves Android/JDK discovery through its clean
+environment, and gives each replica an isolated `HOME`, `PUB_CACHE` and
+`GRADLE_USER_HOME`. It builds into a mode-0700 temporary sibling of the
 requested output and atomically renames that sibling only after both builds and
 the comparison pass. Before promotion, the same build step writes the canonical
 `double-build-manifest.json`: exact source/input identities, build command,
@@ -88,50 +93,15 @@ or signed residue.
 This manifest is a deterministic local causal record from the orchestrated
 build, not cryptographic provenance. A principal that can replace the build
 script, tools, artifacts and manifest on the owner machine remains outside this
-control; external trust and attestation are separate gates.
+control; direct signed-APK measurement is the release evidence, with no third-party build record.
 
 Dependency inputs are not all cryptographically pinned: the Gradle distribution
 has no `distributionSha256Sum`, Gradle/Maven verification metadata and locks are
 absent, and Android packages are not content-pinned as a complete dependency
 set. Equal APK output is only an observed two-build byte identity, not a general reproducible-build claim.
-Play comparison similarly reports observed byte, ZIP-entry and
-functional-payload relationships without claiming rebuildability by unrelated
-builders.
-
-## Play inspection and private staging
-
-Play AABs never enter the public directory or GitHub Actions. Build and compare
-them in the local private lane, then run:
-
-```bash
-bash tool/release/stage_play_private.sh \
-  /absolute/path/to/clean/source \
-  /absolute/private/double-build-output \
-  EXPECTED_UPLOAD_CERTIFICATE_SHA256 \
-  /absolute/private/play-candidate
-```
-
-The signer argument is not authority: it must equal the `play-private`
-certificate SHA-256 anchored in `release_contract.json`. The current reviewed
-contract requires the Play upload key to match the existing direct-release
-certificate identity; a private signed AAB must confirm that identity before
-release. Changing either lane requires a source-policy review.
-
-`stage_play_private.sh` resolves `apkanalyzer` only below
-`ANDROID_SDK_ROOT` and `jarsigner`/`keytool` only below `JAVA_HOME`. Paths and
-SHA-256 digests are independently pinned in the reviewed source policy; caller
-selected executable variables are ignored. The current policy anchors Android
-command-line tools 12.0 and Debian OpenJDK 21 tool bytes on `linux-x86_64`.
-The staging helper accepts the double-build output directory, not caller-chosen
-AAB paths. It validates the fixed manifest, replicas, source, comparison and
-captured build-tool hashes before selecting replica A. Package, version,
-artifact hash and upload-certificate hash are measured for both AABs. A changed
-artifact, manifest, source or fake tool fails before it can assert metadata.
-
-The destination basename must contain `private`, no path component may contain
-`public`, and promotion is atomic. The resulting AAB, double-build manifest and
-four other evidence files remain local/private. The helper performs no Play or
-external upload.
+The observed two-build comparison does not claim rebuildability by unrelated
+builders. Google Play is unavailable for Daeroh; no Play AAB is built, staged,
+or published through this policy.
 
 ## SBOM and native-license evidence
 
@@ -155,14 +125,13 @@ extra and malformed members fail closed.
 ## Eventual public allowlist
 
 After all private gates and explicit owner publication approval, the final
-public release may contain exactly these six basenames:
+public release may contain exactly these five basenames:
 
 - `SHA256SUMS`
 - `app-arm64-v8a-full-release.apk`
 - `app-armeabi-v7a-full-release.apk`
 - `app-x86_64-full-release.apk`
 - `hermes-console-release-evidence.tar.gz`
-- `provenance.intoto.jsonl`
 
 No AAB, QA/debug/profile APK, mapping, log, keystore or diagnostic bundle is
 allowed. `tool/release/validate_public_assets.sh` rejects missing files, extras,
@@ -184,21 +153,11 @@ python3 tool/release/record_trusted_toolchain.py \
   --output /absolute/private/trusted-public-toolchain.json
 bash tool/release/validate_public_assets.sh \
   /absolute/private/release-public \
-  v1.2.10 EXACT_RELEASE_COMMIT \
+  daeroh-v0.1.18 EXACT_RELEASE_COMMIT \
   /absolute/private/trusted-public-toolchain.json
 ```
 
-`provenance.intoto.jsonl` is the keyless GitHub/Sigstore bundle for the exact
-four subjects (three APKs plus evidence archive). Because obtaining that bundle
-is external attestation, it belongs to the later owner-authorized publication
-operation, not pre-publication CI or this hardening patch. It must be verified
-cryptographically with `gh attestation verify` before the structural
-`verify_slsa_bundle.py` check. A structurally valid unsigned envelope is not
-provenance. The final validator performs both checks on the same bundle and
-fails closed unless the reviewed GitHub CLI 2.98.0 binary digest is present.
-It constrains repository, signer workflow, certificate identity, OIDC issuer,
-tag ref, source commit, SLSA predicate, hosted runner and all four subject
-digests. It validates only and never publishes or uploads.
+There is no third-party build provenance record for owner-built artifacts. CI verifies source and policy only; it does not build, sign, receive, attest, or upload APKs. The final local validator instead requires the reviewed source tag/commit identity, signer continuity, measured APK metadata, SHA-256 checksums, the evidence archive, and the recorded observed two-build byte identity.
 
 ## Operator gate
 
@@ -210,13 +169,11 @@ digests. It validates only and never publishes or uploads.
 5. Install and smoke-test the exact selected channel artifact.
 6. Obtain explicit owner approval for the exact channel and bytes.
 7. Only in that approved publication operation, produce/verify provenance and
-   publish the exact six-file direct allowlist, or upload only the private AAB to
-   Play. Never substitute `full`, `play` or `qa` artifacts across lanes.
+   publish the exact five-file direct allowlist. Google Play is unavailable;
+   never substitute `full`, `play` or `qa` artifacts across lanes.
 
 ## Update page build configuration
 
-Direct-distribution builds that should expose an update page must pass
-`--dart-define=DAEROH_UPDATE_PAGE_URL=<approved-http-or-https-url>` to Flutter.
-The value is intentionally not stored in source. If it is omitted or invalid,
-the app does not show an update-page action and never falls back to another
-distribution channel.
+Direct-distribution builds use the reviewed public update-page default. Any
+explicit Flutter `DAEROH_UPDATE_PAGE_URL` override must be approved, valid, and
+must not redirect users to another distribution channel.

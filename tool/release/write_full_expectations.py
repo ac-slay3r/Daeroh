@@ -17,6 +17,7 @@ MIN_SDK = re.compile(r"^\s*minSdk\s*=\s*([0-9]+)\s*$", re.MULTILINE)
 TARGET_SDK = re.compile(r"^\s*targetSdk\s*=\s*([0-9]+)\s*$", re.MULTILINE)
 ANDROID = "{http://schemas.android.com/apk/res/android}"
 ABIS = ("arm64-v8a", "armeabi-v7a", "x86_64")
+ABI_VERSION_CODE_OFFSETS = {"armeabi-v7a": 1000, "arm64-v8a": 2000, "x86_64": 4000}
 
 
 class SourceError(ValueError):
@@ -71,7 +72,10 @@ def main() -> int:
             "package": package,
             "versionName": version_name,
             "versionCode": int(version_code_value),
-            "abiVersionCodes": {abi: int(version_code_value) for abi in ABIS},
+            "abiVersionCodes": {
+                abi: int(version_code_value) + ABI_VERSION_CODE_OFFSETS[abi]
+                for abi in ABIS
+            },
             "minSdk": min_sdk,
             "targetSdk": target_sdk,
             "label": label,

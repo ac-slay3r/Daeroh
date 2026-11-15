@@ -19,7 +19,7 @@ Provide a secure, user-controlled mobile cockpit for an existing Hermes Agent an
 - `main` is the stable downstream branch; feature work uses `feat/` or `fix/` branches and review before merging.
 - `origin` is the public `ac-slay3r/Daeroh` repository; `upstream` is `xP3ta/hermes-console`, with its push URL disabled.
 - Original upstream `v*` tags remain untouched for provenance. Downstream release tags use `daeroh-v*` and must name a verified signed artifact.
-- Inherited workflows stay disabled until their secrets, signing, publishing, and authorization assumptions are reviewed. Signed artifacts and keys remain owner-private until explicitly approved for publication.
+- Public-repository workflows are verification-only: they receive no signing keys and never sign, upload, or retain a release candidate. A `full` APK may enter the public GitHub Releases channel only after explicit owner approval for its exact `daeroh-v*` source tag and bytes; keys, password files, lineage files, diagnostics, and non-public artifacts never enter that channel.
 
 ## Upstream sync
 
@@ -27,4 +27,4 @@ Review upstream changes on a `sync/upstream-*` branch, inspect the imported rang
 
 ## Verification
 
-A source-level test pass is not an APK build, device test, or release verification. A distributable APK requires a distinct app ID, Daeroh-controlled signing key, complete artifact inspection, install test, and GPL source availability. Preserve the upstream license and attribution in all forms.
+A source-level test pass is not an APK build, device test, or release verification. A public `full` APK requires a distinct app ID, a Daeroh-controlled signing key and lineage used only on the owner machine, complete artifact inspection, install test, `SHA256SUMS`, a named `daeroh-v*` source tag, and GPL-3.0 source correspondence. CI verifies only; it does not sign or publish. Preserve the upstream license and attribution in all forms.

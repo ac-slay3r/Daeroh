@@ -10,7 +10,7 @@ concurrency:
   group: release-policy-verification-${{ github.ref }}
   cancel-in-progress: false
 
-# CI verification only. Signed APK/AAB creation, comparison, attestation and
+# CI verification only. Signed APK/AAB creation and comparison
 # staging stay on an owner-controlled private machine until publication.
 jobs:
   verify:
@@ -33,6 +33,7 @@ jobs:
           set -Eeuo pipefail
           [[ "$RELEASE_REF_TYPE" == "tag" ]]
           [[ "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]]
+          [[ "$RELEASE_TAG" =~ ^daeroh-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
           echo "14328be1a42a6839e16931c8953acacdc2b063ce17672521f6687cc1e2644717  pubspec.lock" \
             | sha256sum --strict -c -

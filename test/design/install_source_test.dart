@@ -13,7 +13,15 @@ import 'package:hermes_android/core/widgets/install_source_section.dart';
 import '../support/design_shots.dart';
 import 'detail_single_scroll_contract_test.dart' show nestedVerticalScrollables;
 
-const _updateUrl = String.fromEnvironment('DAEROH_UPDATE_PAGE_URL');
+const _defaultUpdateUrl = 'https://github.com/ac-slay3r/Daeroh/releases';
+const _updateUrl = String.fromEnvironment(
+  'DAEROH_UPDATE_PAGE_URL',
+  defaultValue: _defaultUpdateUrl,
+);
+const _expectedUpdateUrl = String.fromEnvironment(
+  'TEST_EXPECTED_UPDATE_PAGE_URL',
+  defaultValue: _defaultUpdateUrl,
+);
 const _launcherChannel = MethodChannel('plugins.flutter.io/url_launcher');
 
 void main() {
@@ -41,20 +49,15 @@ void main() {
     for (final source in InstallSource.values) {
       expect(InstallSourceInfo.updateUrl(source), configuredUrl);
     }
-    if (configuredUrl == null) {
-      expect(
-        _updateUrl,
-        anyOf(isEmpty, startsWith('ftp:'), startsWith('mailto:')),
-      );
+    if (_expectedUpdateUrl.isEmpty) {
+      expect(configuredUrl, isNull);
+      expect(_updateUrl, anyOf(startsWith('ftp:'), startsWith('mailto:')));
     } else {
-      final uri = Uri.parse(configuredUrl);
+      expect(configuredUrl, _expectedUpdateUrl);
+      final uri = Uri.parse(configuredUrl!);
       expect(uri.scheme, anyOf('http', 'https'));
       expect(uri.hasAuthority, isTrue);
       expect(uri.host, isNotEmpty);
-      expect(uri.host, isNot(contains('github.com')));
-      expect(uri.host.toLowerCase(), isNot(contains('xp3ta')));
-      expect(uri.host.toLowerCase(), isNot(contains('xpetalab')));
-      expect(uri.path, isNot(contains('/releases')));
     }
   });
 
@@ -94,7 +97,7 @@ void main() {
       );
       expect(find.text('Actualizaciones'), findsOneWidget);
       expect(find.text(label), findsOneWidget);
-      if (configuredUrl == null) {
+      if (_expectedUpdateUrl.isEmpty) {
         expect(find.byKey(const ValueKey('install-source-open')), findsNothing);
         expect(
           find.text(
@@ -107,7 +110,7 @@ void main() {
           find.byKey(const ValueKey('install-source-open')),
           findsOneWidget,
         );
-        expect(find.text('Abrir página de actualizaciones'), findsOneWidget);
+        expect(find.text('Abrir lanzamientos'), findsOneWidget);
       }
     });
   }
