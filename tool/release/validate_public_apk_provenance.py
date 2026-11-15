@@ -36,13 +36,13 @@ class ProvenanceError(ValueError):
 
 def exact(value: Any, keys: set[str]) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != keys:
-        raise ProvenanceError
+        raise ProvenanceError(f"schema: release_contract.json / trusted-toolchain.json / release-evidence/rebuild-comparison.json: expected object with exact keys {sorted(keys)}")
     return value
 
 
 def strict_string(value: Any) -> str:
     if not isinstance(value, str) or not value or value.strip() != value:
-        raise ProvenanceError
+        raise ProvenanceError("schema: release_contract.json / trusted-toolchain.json: expected nonempty trimmed string")
     return value
 
 
@@ -57,62 +57,62 @@ def is_within(path: Path, parent: Path) -> bool:
 def regular_file(path: Path) -> Path:
     try:
         if stat.S_ISLNK(path.lstat().st_mode):
-            raise ProvenanceError
+            raise ProvenanceError(f"file: {path}: symlink forbidden")
         result = path.resolve(strict=True)
     except OSError as error:
-        raise ProvenanceError from error
+        raise ProvenanceError(f"file: {path}: cannot resolve existing file: {error}") from error
     if not result.is_file() or result.is_symlink():
-        raise ProvenanceError
+        raise ProvenanceError(f"file: {path}: not a regular file")
     return result
 
 
 def directory(path: Path) -> Path:
     try:
         if stat.S_ISLNK(path.lstat().st_mode):
-            raise ProvenanceError
+            raise ProvenanceError(f"directory: {path}: symlink forbidden")
         result = path.resolve(strict=True)
     except OSError as error:
-        raise ProvenanceError from error
+        raise ProvenanceError(f"directory: {path}: cannot resolve existing directory: {error}") from error
     if not result.is_dir():
-        raise ProvenanceError
+        raise ProvenanceError(f"directory: {path}: not a directory")
     return result
 
 
 def child_file(root: Path, relative: str, *, executable: bool = False) -> Path:
     path = PurePosixPath(relative)
     if path.is_absolute() or not path.parts or "." in path.parts or ".." in path.parts:
-        raise ProvenanceError
+        raise ProvenanceError(f"toolchain path: {relative}: invalid relative path")
     candidate = root
     try:
         for part in path.parts:
             candidate /= part
             if stat.S_ISLNK(candidate.lstat().st_mode):
-                raise ProvenanceError
+                raise ProvenanceError(f"toolchain path: {relative}: symlink forbidden")
         resolved = candidate.resolve(strict=True)
     except OSError as error:
-        raise ProvenanceError from error
+        raise ProvenanceError(f"toolchain path: {relative}: missing or unreadable file: {error}") from error
     if not is_within(resolved, root) or not resolved.is_file():
-        raise ProvenanceError
+        raise ProvenanceError(f"toolchain path: {relative}: not a contained regular file")
     if executable and not os.access(resolved, os.X_OK):
-        raise ProvenanceError
+        raise ProvenanceError(f"toolchain path: {relative}: not executable")
     return resolved
 
 
 def child_directory(root: Path, relative: str) -> Path:
     path = PurePosixPath(relative)
     if path.is_absolute() or not path.parts or "." in path.parts or ".." in path.parts:
-        raise ProvenanceError
+        raise ProvenanceError(f"toolchain path: {relative}: invalid relative directory path")
     candidate = root
     try:
         for part in path.parts:
             candidate /= part
             if stat.S_ISLNK(candidate.lstat().st_mode):
-                raise ProvenanceError
+                raise ProvenanceError(f"toolchain path: {relative}: symlink forbidden")
         resolved = candidate.resolve(strict=True)
     except OSError as error:
-        raise ProvenanceError from error
+        raise ProvenanceError(f"toolchain path: {relative}: missing or unreadable directory: {error}") from error
     if not is_within(resolved, root) or not resolved.is_dir():
-        raise ProvenanceError
+        raise ProvenanceError(f"toolchain path: {relative}: not a contained directory")
     return resolved
 
 
@@ -123,7 +123,7 @@ def sha256_file(path: Path) -> str:
             for block in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(block)
     except OSError as error:
-        raise ProvenanceError from error
+        raise ProvenanceError(f"hash: {path}: cannot read file: {error}") from error
     return digest.hexdigest()
 
 
@@ -151,7 +151,7 @@ def sha256_tree(path: Path) -> str:
                 except FileNotFoundError:
                     resolved = None
                 if resolved is not None and not resolved.is_file():
-                    raise ProvenanceError
+                    raise ProvenanceError(f"runtime tree: {entry}: link target is not a file")
                 target_digest = (
                     b"missing"
                     if resolved is None
@@ -159,10 +159,10 @@ def sha256_tree(path: Path) -> str:
                 )
                 record = b"L\0" + relative + b"\0" + target + b"\0" + target_digest + b"\n"
             else:
-                raise ProvenanceError
+                raise ProvenanceError(f"runtime tree: {entry}: unsupported file type")
             digest.update(record)
     except (OSError, UnicodeError) as error:
-        raise ProvenanceError from error
+        raise ProvenanceError(f"runtime tree: {path}: unreadable entry or invalid filename: {error}") from error
     return digest.hexdigest()
 
 
@@ -171,12 +171,12 @@ def load_json(path: Path) -> dict[str, Any]:
     try:
         raw = path.read_bytes()
         if not raw or len(raw) > MAX_JSON_BYTES or b"\x00" in raw:
-            raise ProvenanceError
+            raise ProvenanceError(f"JSON: {path}: empty, oversized or NUL-containing input")
         value = json.loads(raw.decode("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise ProvenanceError from error
+        raise ProvenanceError(f"JSON: {path}: unreadable or invalid UTF-8 JSON: {error}") from error
     if not isinstance(value, dict):
-        raise ProvenanceError
+        raise ProvenanceError(f"JSON: {path}: expected object")
     return value
 
 
@@ -185,10 +185,10 @@ def package_revision(root: Path, relative: str, expected: str) -> None:
     try:
         lines = path.read_text(encoding="ascii").splitlines()
     except (OSError, UnicodeError) as error:
-        raise ProvenanceError from error
+        raise ProvenanceError(f"toolchain revision: {path}: unreadable ASCII source.properties: {error}") from error
     matches = [line for line in lines if line.startswith("Pkg.Revision=")]
     if matches != [f"Pkg.Revision={expected}"]:
-        raise ProvenanceError
+        raise ProvenanceError(f"toolchain revision: {path}: expected Pkg.Revision={expected}")
 
 
 def public_tool_policy(policy_path: Path = REVIEWED_POLICY) -> dict[str, Any]:
@@ -218,13 +218,13 @@ def public_tool_policy(policy_path: Path = REVIEWED_POLICY) -> dict[str, Any]:
             for name, record in runtime_trees.items()
         }
     except (KeyError, TypeError) as error:
-        raise ProvenanceError from error
+        raise ProvenanceError(f"tool policy: {policy_path}: missing or malformed publicInspectionTools fields: {error}") from error
     if value["platform"] != f"{sys.platform}-{platform.machine()}":
-        raise ProvenanceError
+        raise ProvenanceError(f"tool policy: {policy_path}: host platform mismatch")
     for record in result.values():
         strict_string(record["path"])
         if SHA256.fullmatch(strict_string(record["sha256"])) is None:
-            raise ProvenanceError
+            raise ProvenanceError(f"tool policy: {policy_path}: invalid tool SHA-256")
     expected_roots = {
         "androidBuildTools": "android-sdk",
         "androidCommandLineTools": "android-sdk",
@@ -234,10 +234,10 @@ def public_tool_policy(policy_path: Path = REVIEWED_POLICY) -> dict[str, Any]:
     }
     for name, record in tree_records.items():
         if record["root"] != expected_roots[name]:
-            raise ProvenanceError
+            raise ProvenanceError(f"tool policy: {policy_path}: runtime root mismatch for {name}")
         strict_string(record["path"])
         if SHA256.fullmatch(strict_string(record["sha256"])) is None:
-            raise ProvenanceError
+            raise ProvenanceError(f"tool policy: {policy_path}: invalid runtime SHA-256 for {name}")
     return value
 
 
@@ -251,7 +251,7 @@ def resolve_toolchain(
     manifest_file = regular_file(manifest_path)
     assets = directory(asset_directory)
     if is_within(manifest_file, assets):
-        raise ProvenanceError
+        raise ProvenanceError(f"toolchain: {manifest_file}: manifest must be outside asset directory")
     manifest = exact(
         load_json(manifest_file),
         {
@@ -271,17 +271,17 @@ def resolve_toolchain(
         or manifest["tools"] != anchored["tools"]
         or manifest["runtimeTrees"] != anchored["runtimeTrees"]
     ):
-        raise ProvenanceError
+        raise ProvenanceError(f"toolchain: {manifest_file}: schema, revisions, tools or runtime pins differ from reviewed policy")
     raw_root = Path(strict_string(manifest["root"]))
     raw_java_root = Path(strict_string(manifest["javaRoot"]))
     if not raw_root.is_absolute() or not raw_java_root.is_absolute():
-        raise ProvenanceError
+        raise ProvenanceError(f"toolchain: {manifest_file}: SDK and JDK roots must be absolute")
     root = directory(raw_root)
     java_root = directory(raw_java_root)
     if is_within(root, assets) or is_within(assets, root):
-        raise ProvenanceError
+        raise ProvenanceError(f"toolchain: {manifest_file}: SDK and assets overlap")
     if is_within(java_root, assets) or is_within(assets, java_root):
-        raise ProvenanceError
+        raise ProvenanceError(f"toolchain: {manifest_file}: JDK and assets overlap")
     package_revision(
         root,
         f"build-tools/{anchored['buildToolsRevision']}/source.properties",
@@ -297,16 +297,16 @@ def resolve_toolchain(
     for name, relative in tool_paths.items():
         entry = exact(tools[name], {"path", "sha256"})
         if entry["path"] != relative or SHA256.fullmatch(strict_string(entry["sha256"])) is None:
-            raise ProvenanceError
+            raise ProvenanceError(f"toolchain: {manifest_file}: invalid path or digest for {name}")
         tool = child_file(root, relative, executable=True)
         if sha256_file(tool) != entry["sha256"]:
-            raise ProvenanceError
+            raise ProvenanceError(f"toolchain hash: {tool}: digest mismatch")
         resolved[name] = tool
     roots = {"android-sdk": root, "jdk": java_root}
     for record in anchored["runtimeTrees"].values():
         runtime = child_directory(roots[record["root"]], record["path"])
         if sha256_tree(runtime) != record["sha256"]:
-            raise ProvenanceError
+            raise ProvenanceError(f"toolchain runtime: {runtime}: tree digest mismatch")
     child_file(java_root, "bin/java", executable=True)
     resolved["javaHome"] = java_root
     return resolved
@@ -320,21 +320,21 @@ def read_archive_json(archive: tarfile.TarFile, name: str) -> tuple[dict[str, An
     try:
         member = archive.getmember(name)
     except KeyError as error:
-        raise ProvenanceError from error
+        raise ProvenanceError(f"archive JSON: {name}: missing member") from error
     if not member.isfile() or member.size <= 0 or member.size > MAX_JSON_BYTES:
-        raise ProvenanceError
+        raise ProvenanceError(f"archive JSON: {name}: not a regular file or invalid size")
     stream = archive.extractfile(member)
     if stream is None:
-        raise ProvenanceError
+        raise ProvenanceError(f"archive JSON: {name}: cannot read member")
     raw = stream.read(member.size + 1)
     if len(raw) != member.size or b"\x00" in raw:
-        raise ProvenanceError
+        raise ProvenanceError(f"archive JSON: {name}: truncated or NUL-containing member")
     try:
         value = json.loads(raw.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as error:
-        raise ProvenanceError from error
+        raise ProvenanceError(f"archive JSON: {name}: invalid JSON or UTF-8: {error}") from error
     if not isinstance(value, dict) or canonical(value) != raw:
-        raise ProvenanceError
+        raise ProvenanceError(f"archive JSON: {name}: not canonical JSON object")
     return value, raw
 
 
@@ -351,23 +351,23 @@ def validate_provenance(
     assets = directory(asset_directory)
     archive_file = regular_file(archive_path)
     if archive_file != regular_file(assets / "hermes-console-release-evidence.tar.gz"):
-        raise ProvenanceError
+        raise ProvenanceError(f"archive selection: {archive_file}: not the public asset archive")
     expected_file = regular_file(expected_path)
     if is_within(expected_file, assets) or SHA256.fullmatch(signer) is None:
-        raise ProvenanceError
+        raise ProvenanceError(f"expectations: {expected_file}: must be outside assets and signer must be SHA-256")
     validate_evidence_archive.validate(archive_file)
     tools = resolve_toolchain(trusted_toolchain, assets, tool_policy)
     expected = inspector.expected_facts(expected_file)
     contract = inspector.reviewed_contract(tool_policy)
     if signer != contract["certificateSha256"]:
-        raise ProvenanceError("signer policy does not match the reviewed contract")
+        raise ProvenanceError(f"signer policy: {tool_policy}: signer policy does not match the reviewed contract")
     if expected["package"] != contract["packageId"]:
-        raise ProvenanceError("APK package expectation does not match the reviewed contract")
+        raise ProvenanceError(f"expectations: {expected_file}: APK package expectation does not match the reviewed contract")
     artifacts = [regular_file(assets / name) for name in public_build_binding.PUBLIC_APKS]
     try:
         source, inputs = build_binding.source_and_inputs(source_root)
     except build_binding.BindingError as error:
-        raise ProvenanceError from error
+        raise ProvenanceError(f"source binding: {source_root}: source/input identity rejected: {error}") from error
     with tarfile.open(archive_file, mode="r:gz") as archive:
         rebuild, _ = read_archive_json(
             archive, "release-evidence/rebuild-comparison.json"
@@ -380,9 +380,9 @@ def validate_provenance(
                 for item in rebuild["artifacts"]
             }
         except (KeyError, TypeError) as error:
-            raise ProvenanceError from error
+            raise ProvenanceError(f"rebuild: {'release-evidence/rebuild-comparison.json'}: malformed artifact records: {error}") from error
         if set(rebuild_artifacts) != set(public_build_binding.PUBLIC_APKS):
-            raise ProvenanceError
+            raise ProvenanceError(f"rebuild: {'release-evidence/rebuild-comparison.json'}: artifact set mismatch")
         for name, abi in public_build_binding.PUBLIC_APKS.items():
             artifact = regular_file(assets / name)
             artifact_sha256 = inspector.sha256_file(artifact)
@@ -392,7 +392,7 @@ def validate_provenance(
                 or rebuild_artifact["firstSha256"] != artifact_sha256
                 or rebuild_artifact["secondSha256"] != artifact_sha256
             ):
-                raise ProvenanceError
+                raise ProvenanceError(f"rebuild: {'release-evidence/rebuild-comparison.json'}: {name}: not byte-identical to both recorded hashes")
             prefix = f"release-evidence/artifacts/full/{Path(name).stem}"
             archived_facts, facts_bytes = read_archive_json(
                 archive, f"{prefix}/public-apk-facts.json"
@@ -423,9 +423,9 @@ def validate_provenance(
                     environment=environment,
                 )
             except (inspector.InspectionError, OSError, ValueError) as error:
-                raise ProvenanceError(str(error) or "APK inspection failed") from error
+                raise ProvenanceError(f'APK inspection: {artifact}: {str(error) or "APK inspection failed"}') from error
             if set(archived_facts) != inspector.FACT_KEYS or inspector.canonical(fresh) != facts_bytes:
-                raise ProvenanceError
+                raise ProvenanceError(f"APK facts: {prefix + '/public-apk-facts.json'}: archived APK facts differ from fresh inspection")
             try:
                 review, _ = read_archive_json(
                     archive, f"{prefix}/fullRelease.license-review.json"
@@ -448,7 +448,7 @@ def validate_provenance(
                     artifact_sha256=inspector.sha256_file(artifact),
                 )
             except (KeyError, verify_license_reviews.LicenseError) as error:
-                raise ProvenanceError from error
+                raise ProvenanceError(f"license evidence: {prefix + '/fullRelease.license-review.json and companion inventories'}: {error}") from error
 
 
 
@@ -462,12 +462,12 @@ def main() -> int:
     try:
         if args.check_toolchain:
             if args.archive is not None:
-                raise ProvenanceError
+                raise ProvenanceError(f"arguments: {'--archive'}: forbidden with --check-toolchain")
             resolve_toolchain(args.trusted_toolchain, args.asset_directory)
             message = "Trusted Android toolchain validation passed."
         else:
             if args.archive is None:
-                raise ProvenanceError
+                raise ProvenanceError(f"arguments: {'--archive'}: required for provenance validation")
             signer = inspector.reviewed_contract(REVIEWED_POLICY)["certificateSha256"]
             with tempfile.TemporaryDirectory(prefix="hermes-public-expectations-") as temporary:
                 expected = Path(temporary) / "full-release-expectations.json"
@@ -491,7 +491,7 @@ def main() -> int:
                     timeout=30,
                 )
                 if result.returncode != 0:
-                    raise ProvenanceError
+                    raise ProvenanceError(f"expectations: {'pubspec.yaml / AndroidManifest.xml / full_release_policy.json'}: generation failed")
                 validate_provenance(
                     args.archive,
                     args.asset_directory,

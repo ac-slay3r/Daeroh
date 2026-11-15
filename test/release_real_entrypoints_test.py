@@ -190,8 +190,8 @@ urllib.request.urlopen = recorded_urlopen
         direct["certificateSha256"] = self.signer
         direct["acceptedPredecessorCertificateSha256"] = self.predecessor
         contract_path.write_bytes(canonical(contract))
-        changed = self.git("diff", "--name-only", "-z").stdout.split("\0")
-        self.git("add", "--", *filter(None, changed))
+        # Include newly tracked working-tree files absent from the clone's HEAD.
+        self.git("add", "--", *filter(None, tracked))
         self.git("commit", "-m", "test: snapshot tested source with throwaway release signer")
         self.commit = self.git("rev-parse", "HEAD").stdout.strip()
         self.tag = release_tag(self.root)
@@ -255,7 +255,7 @@ urllib.request.urlopen = recorded_urlopen
         self.launch(AAPT, "package", "-f", "-M", source, "-S", directory / "res", "-I", ANDROID_JAR, "-F", apk)
         with zipfile.ZipFile(apk, "a", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("classes.dex", b"dex\n035\x00" + b"\x00" * 128)
-            archive.writestr(f"lib/{abi}/libfixture.so", b"nonfunctional host fixture")
+            archive.writestr(f"lib/{abi}/libapp.so", b"nonfunctional host fixture")
         return apk
 
     def sign_apk(self, unsigned, name, mode="control"):
@@ -436,6 +436,33 @@ class _RealEntrypointMixin:
 
 
 class ProductionProvenanceCliRealEntrypointsTest(_RealEntrypointMixin, unittest.TestCase):
+    def test_real_generator_output_assembled_then_provenance_validated(self):
+        """Real indented generator output must cross the final provenance boundary."""
+        f = fixture()
+        f.install_variant("control")
+        environment = {**os.environ, "HERMES_LOCAL_AGENT": "true",
+                       "SBOM_GIT_COMMIT": f.commit,
+                       "RELEASE_INPUT_FINGERPRINT": f.inputs["buildInputsSha256"]}
+        checked([LAUNCHER, "flutter", "pub", "get"], cwd=f.root, env=environment)
+        inputs = f.public.parent / "release-evidence"
+        (inputs / "SHA256SUMS").unlink()
+        for name in APKS:
+            directory = inputs / f"artifacts/full/{Path(name).stem}"
+            checked([LAUNCHER, PYTHON, f.root / "tool/sbom/generate.py",
+                     "--variant", "fullRelease", "--artifact", f.public / name,
+                     "--output-dir", directory], cwd=f.root, env=environment)
+            raw = (directory / "fullRelease.license-review.json").read_bytes()
+            self.assertNotEqual(raw, canonical(json.loads(raw)), "exercise the generator's real indented encoding")
+            self.assertEqual(json.loads(raw)["status"], "COMPLETE")
+        with tempfile.TemporaryDirectory(prefix="assembled-generator-") as temporary:
+            output = Path(temporary) / "assembled"
+            checked([PYTHON, f.root / "tool/release/assemble_evidence_archive.py",
+                     "--input-directory", inputs, "--output-directory", output])
+            shutil.copy2(output / "hermes-console-release-evidence.tar.gz", f.public)
+            result = self.invoke(f)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("Public APK provenance validation passed.", result.stdout)
+
     def invoke(self, f):
         return run([PYTHON, f.root / "tool/release/validate_public_apk_provenance.py", "--archive", f.public / "hermes-console-release-evidence.tar.gz", "--asset-directory", f.public, "--trusted-toolchain", f.toolchain], env=f.environment())
 

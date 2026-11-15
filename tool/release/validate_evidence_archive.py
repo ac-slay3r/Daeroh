@@ -58,36 +58,36 @@ def normalized_name(member: tarfile.TarInfo) -> str:
         or member.issym()
         or member.islnk()
     ):
-        raise ValidationError
+        raise ValidationError(f"archive member: {raw}: invalid path or unsupported member type")
     return path.as_posix()
 
 
 def read_member(archive: tarfile.TarFile, member: tarfile.TarInfo) -> bytes:
     if not member.isfile() or member.size < 0 or member.size > MAX_FILE_BYTES:
-        raise ValidationError
+        raise ValidationError(f"archive member: {member.name}: not a regular file or size outside limit")
     stream = archive.extractfile(member)
     if stream is None:
-        raise ValidationError
+        raise ValidationError(f"archive member: {member.name}: cannot read member")
     data = stream.read(member.size + 1)
     if len(data) != member.size:
-        raise ValidationError
+        raise ValidationError(f"archive member: {member.name}: truncated content")
     return data
 
 
 def parse_manifest(raw: bytes) -> dict[str, str]:
     if len(raw) > 256 * 1024 or b"\x00" in raw:
-        raise ValidationError
+        raise ValidationError(f"checksums: {'release-evidence/SHA256SUMS'}: oversized or NUL-containing manifest")
     try:
         lines = raw.decode("ascii").splitlines()
     except UnicodeDecodeError as error:
-        raise ValidationError from error
+        raise ValidationError(f"checksums: {'release-evidence/SHA256SUMS'}: not ASCII: {error}") from error
     if len(lines) != len(REQUIRED_FILES):
-        raise ValidationError
+        raise ValidationError(f"checksums: {'release-evidence/SHA256SUMS'}: wrong line count")
     result: dict[str, str] = {}
     for line in lines:
         match = CHECKSUM.fullmatch(line)
         if match is None:
-            raise ValidationError
+            raise ValidationError(f"checksums: {'release-evidence/SHA256SUMS'}: malformed checksum line")
         digest, relative = match.groups()
         path = PurePosixPath(relative)
         if (
@@ -97,10 +97,10 @@ def parse_manifest(raw: bytes) -> dict[str, str]:
             or ".." in path.parts
             or relative in result
         ):
-            raise ValidationError
+            raise ValidationError(f"checksums: {'release-evidence/SHA256SUMS'}: invalid or duplicate path: {relative}")
         result[relative] = digest
     if set(result) != REQUIRED_FILES:
-        raise ValidationError
+        raise ValidationError(f"checksums: {'release-evidence/SHA256SUMS'}: wrong file set")
     return result
 
 
@@ -108,10 +108,10 @@ def validate_rebuild_report(raw: bytes) -> None:
     try:
         value = json.loads(raw.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as error:
-        raise ValidationError from error
+        raise ValidationError(f"rebuild: {'release-evidence/rebuild-comparison.json'}: invalid JSON or UTF-8: {error}") from error
     canonical = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
     if not isinstance(value, dict) or canonical != raw:
-        raise ValidationError
+        raise ValidationError(f"rebuild: {'release-evidence/rebuild-comparison.json'}: not canonical JSON object")
     if (
         value.get("schema") != 1
         or value.get("channel") != "direct-public"
@@ -121,16 +121,16 @@ def validate_rebuild_report(raw: bytes) -> None:
         or value.get("byteReproducible") is not False
         or value.get("claim") != "observed-two-build-byte-identical"
     ):
-        raise ValidationError
+        raise ValidationError(f"rebuild: {'release-evidence/rebuild-comparison.json'}: schema, channel or byte-identity claims do not match policy")
     artifacts = value.get("artifacts")
     if not isinstance(artifacts, list) or len(artifacts) != len(PUBLIC_APK_FILES):
-        raise ValidationError
+        raise ValidationError(f"rebuild: {'release-evidence/rebuild-comparison.json'}: wrong artifact list type or length")
     seen = []
     for artifact in artifacts:
         if not isinstance(artifact, dict) or set(artifact) != {
             "name", "byteIdentical", "firstSha256", "secondSha256"
         }:
-            raise ValidationError
+            raise ValidationError(f"rebuild: {'release-evidence/rebuild-comparison.json'}: malformed artifact record")
         first = artifact["firstSha256"]
         second = artifact["secondSha256"]
         if (
@@ -139,10 +139,10 @@ def validate_rebuild_report(raw: bytes) -> None:
             or re.fullmatch(r"[0-9a-f]{64}", first) is None
             or first != second
         ):
-            raise ValidationError
+            raise ValidationError(f"rebuild: {'release-evidence/rebuild-comparison.json'}: artifact not byte-identical or hashes invalid")
         seen.append(artifact["name"])
     if tuple(seen) != PUBLIC_APK_FILES:
-        raise ValidationError
+        raise ValidationError(f"rebuild: {'release-evidence/rebuild-comparison.json'}: wrong artifact names/order")
 
 
 def validate(archive_path: Path) -> None:
@@ -151,7 +151,7 @@ def validate(archive_path: Path) -> None:
         or archive_path.is_symlink()
         or archive_path.stat().st_size > MAX_ARCHIVE_BYTES
     ):
-        raise ValidationError
+        raise ValidationError(f"archive: {archive_path}: missing, linked, non-file or compressed size outside limit")
     try:
         with tarfile.open(archive_path, mode="r|gz") as archive:
             kinds: dict[str, str] = {}
@@ -160,18 +160,18 @@ def validate(archive_path: Path) -> None:
             member_count = 0
             for member_count, member in enumerate(archive, start=1):
                 if member_count > MAX_MEMBERS:
-                    raise ValidationError
+                    raise ValidationError(f"archive: {archive_path}: too many members")
                 name = normalized_name(member)
                 if name in kinds:
-                    raise ValidationError
+                    raise ValidationError(f"archive member: {name}: duplicate member")
                 kinds[name] = "directory" if member.isdir() else "file"
                 if member.isfile():
                     total += member.size
                     if total > MAX_TOTAL_BYTES:
-                        raise ValidationError
+                        raise ValidationError(f"archive: {archive_path}: total uncompressed size outside limit")
                     contents[name] = read_member(archive, member)
             if member_count == 0:
-                raise ValidationError
+                raise ValidationError(f"archive: {archive_path}: empty archive")
             expected_archive_files = {
                 f"{ROOT}/{relative}" for relative in REQUIRED_FILES | {MANIFEST}
             }
@@ -179,7 +179,7 @@ def validate(archive_path: Path) -> None:
                 name for name, kind in kinds.items() if kind == "file"
             }
             if actual_archive_files != expected_archive_files:
-                raise ValidationError
+                raise ValidationError(f"archive: {archive_path}: wrong file set; missing={sorted(expected_archive_files - actual_archive_files)}, extra={sorted(actual_archive_files - expected_archive_files)}")
             required_directories = {
                 ROOT,
                 f"{ROOT}/artifacts",
@@ -190,15 +190,15 @@ def validate(archive_path: Path) -> None:
                 name for name, kind in kinds.items() if kind == "directory"
             }
             if actual_directories != required_directories:
-                raise ValidationError
+                raise ValidationError(f"archive: {archive_path}: wrong directory set; missing={sorted(required_directories - actual_directories)}, extra={sorted(actual_directories - required_directories)}")
             manifest = parse_manifest(contents[f"{ROOT}/{MANIFEST}"])
             for relative, expected_digest in manifest.items():
                 data = contents[f"{ROOT}/{relative}"]
                 if hashlib.sha256(data).hexdigest() != expected_digest:
-                    raise ValidationError
+                    raise ValidationError(f"checksums: {f'{ROOT}/{relative}'}: SHA-256 mismatch")
             validate_rebuild_report(contents[f"{ROOT}/rebuild-comparison.json"])
     except (OSError, tarfile.TarError) as error:
-        raise ValidationError from error
+        raise ValidationError(f"archive: {archive_path}: cannot read gzip tar: {error}") from error
 
 
 def main() -> int:
@@ -207,8 +207,8 @@ def main() -> int:
     args = parser.parse_args()
     try:
         validate(args.archive)
-    except ValidationError:
-        print("ERROR: release evidence archive validation failed.", file=sys.stderr)
+    except ValidationError as error:
+        print(f"ERROR: release evidence archive validation failed: {error}.", file=sys.stderr)
         return 1
     print("Release evidence archive validation passed.")
     return 0
