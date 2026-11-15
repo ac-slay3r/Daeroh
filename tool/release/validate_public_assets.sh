@@ -53,34 +53,7 @@ scan_public_apk_contents() {
   local apk
   for apk in "${CHECKSUMMED_ASSETS[@]}"; do
     [[ "$apk" == *.apk ]] || continue
-    python3 - "$apk" <<'PY'
-import re
-import sys
-import zipfile
-
-PER_MEMBER_LIMIT = 128 * 1024 * 1024
-TOTAL_LIMIT = 2 * 1024 * 1024 * 1024
-PATTERN = re.compile(rb"(?:/home/|/Users/|[A-Za-z]:\\Users\\[A-Za-z0-9_.-]+)")
-path = sys.argv[1]
-total = 0
-try:
-    with zipfile.ZipFile(path) as archive:
-        for member in archive.infolist():
-            if member.file_size > PER_MEMBER_LIMIT:
-                raise ValueError("member exceeds decompressed scan limit")
-            total += member.file_size
-            if total > TOTAL_LIMIT:
-                raise ValueError("APK exceeds total decompressed scan limit")
-            tail = b""
-            with archive.open(member) as stream:
-                while chunk := stream.read(1024 * 1024):
-                    if PATTERN.search(tail + chunk):
-                        raise ValueError(f"private build path in APK member {member.filename}")
-                    tail = (tail + chunk)[-256:]
-except (OSError, ValueError, zipfile.BadZipFile, zipfile.LargeZipFile) as error:
-    print(f"ERROR: {error}", file=sys.stderr)
-    raise SystemExit(1)
-PY
+    python3 "$ROOT/tool/release/scan_binary_paths.py" "$apk"
   done
 }
 

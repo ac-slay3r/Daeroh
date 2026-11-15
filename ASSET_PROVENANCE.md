@@ -54,6 +54,72 @@ They contain only fictional data and are reused here without modification.
 | `docs/screenshots/1.2.10-9008/automation.png` | Scheduled tasks | GPL-3.0-only | `e304c7a34f0bc0108b58133d94cc4e2ee1eeec0857e546ea706a3dab4253a754` |
 | `docs/screenshots/1.2.10-9008/documents.png` | Documents | GPL-3.0-only | `e40bd6ea818ea6a95b1df355ae33a6d72c0053c4c1ee2d22ec4a01be339f4520` |
 
+## Daeroh identity
+
+AC's owner decision (2026-11-15) licenses the following Daeroh / ac-slay3r
+artwork under `GPL-3.0-only`. This is copyright permission, not a grant of
+third-party trademark rights.
+
+| File | License | SHA-256 |
+|---|---|---|
+| `assets/branding/daeroh_foreground.svg` | GPL-3.0-only | `65c64e71b78e3e7eb4a1dd83ac6913d17cbfd1942d8c418c52044763173096c5` |
+| `assets/branding/daeroh_launcher.svg` | GPL-3.0-only | `1f1b31acbca9067d33b89f0cbea25404ae0cb6d9b7fbc3f7d6a71587aeee06e1` |
+| `assets/branding/daeroh_logo.png` | GPL-3.0-only | `2d1e914a4469d0f4bfddd82d42496864196107fb1e7afc3812446f751ef09324` |
+
+## Inherited Bot Mode widget artwork
+
+The fork's squashed import `98a04c8` contains the files below. All **33**
+files (13 main, 20 QA; not 30) are byte-identical to their introduction in
+[xP3ta/hermes-console commit b06240f4a81d5c70164c9de6516e5adca2447cc2](https://github.com/xP3ta/hermes-console/commit/b06240f4a81d5c70164c9de6516e5adca2447cc2),
+"rich conversation notifications and Grok-style Bot Mode widgets" (#54).
+`botw` denotes Bot Mode widgets, not Breath of the Wild artwork.
+
+At that exact commit, `REUSE.toml` annotates `android/app/**` as copyright
+2026 XPeta Lab, `GPL-3.0-only`, with override precedence. Its root `LICENSE`
+is GPLv3. The source commit, annotation and byte comparison establish the
+license; no inference from filenames or the fork's squashed history is used.
+Verbatim evidence copies are in
+`tool/sbom/license-evidence/hermes-console-b06240f-REUSE.toml` and
+`tool/sbom/license-evidence/hermes-console-b06240f-LICENSE`.
+
+All rows are `GPL-3.0-only`; file-by-file SHA-256 values are recorded in
+`tool/sbom/license-evidence/widget-origin.json` (digest
+`2af05378757c6eb6c012eed9c9387a786d2f75bcac4942e93f15142bbe0eb6a8`).
+
+- `android/app/src/main/res/drawable-nodpi/botw_glowimg_done.png`
+- `android/app/src/main/res/drawable-nodpi/botw_glowimg_failed.png`
+- `android/app/src/main/res/drawable-nodpi/botw_glowimg_needs_you.png`
+- `android/app/src/main/res/drawable-nodpi/botw_glowimg_working.png`
+- `android/app/src/main/res/drawable-nodpi/botw_preview_face_builder_done.png`
+- `android/app/src/main/res/drawable-nodpi/botw_preview_face_builder_idle.png`
+- `android/app/src/main/res/drawable-nodpi/botw_preview_face_builder_working.png`
+- `android/app/src/main/res/drawable-nodpi/botw_preview_face_lead_idle.png`
+- `android/app/src/main/res/drawable-nodpi/botw_preview_face_lead_needs.png`
+- `android/app/src/main/res/drawable-nodpi/botw_preview_face_review_done.png`
+- `android/app/src/main/res/drawable-nodpi/botw_preview_face_review_idle.png`
+- `android/app/src/main/res/drawable-nodpi/botw_preview_face_scout_idle.png`
+- `android/app/src/main/res/drawable-nodpi/botw_preview_face_scout_working.png`
+- `android/app/src/qa/res/drawable-nodpi/botw_sample_builder_done.png`
+- `android/app/src/qa/res/drawable-nodpi/botw_sample_builder_failed.png`
+- `android/app/src/qa/res/drawable-nodpi/botw_sample_builder_idle.png`
+- `android/app/src/qa/res/drawable-nodpi/botw_sample_builder_needs.png`
+- `android/app/src/qa/res/drawable-nodpi/botw_sample_builder_working.png`
+- `android/app/src/qa/res/drawable-nodpi/botw_sample_lead_done.png`
+- `android/app/src/qa/res/drawable-nodpi/botw_sample_lead_failed.png`
+- `android/app/src/qa/res/drawable-nodpi/botw_sample_lead_idle.png`
+- `android/app/src/qa/res/drawable-nodpi/botw_sample_lead_needs.png`
+- `android/app/src/qa/res/drawable-nodpi/botw_sample_lead_working.png`
+- `android/app/src/qa/res/drawable-nodpi/botw_sample_review_done.png`
+- `android/app/src/qa/res/drawable-nodpi/botw_sample_review_failed.png`
+- `android/app/src/qa/res/drawable-nodpi/botw_sample_review_idle.png`
+- `android/app/src/qa/res/drawable-nodpi/botw_sample_review_needs.png`
+- `android/app/src/qa/res/drawable-nodpi/botw_sample_review_working.png`
+- `android/app/src/qa/res/drawable-nodpi/botw_sample_scout_done.png`
+- `android/app/src/qa/res/drawable-nodpi/botw_sample_scout_failed.png`
+- `android/app/src/qa/res/drawable-nodpi/botw_sample_scout_idle.png`
+- `android/app/src/qa/res/drawable-nodpi/botw_sample_scout_needs.png`
+- `android/app/src/qa/res/drawable-nodpi/botw_sample_scout_working.png`
+
 ## Local companion sprites
 
 Nimbus, Pixel and Violet are project-owned companion artwork released by the

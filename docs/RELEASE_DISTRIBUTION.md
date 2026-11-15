@@ -122,6 +122,34 @@ Evidence tar validation caps compressed size before opening, iterates at most
 content before retaining allowed evidence bytes. Duplicate, linked, traversal,
 extra and malformed members fail closed.
 
+## Binary path scan exceptions
+
+`validate_public_assets.sh` invokes `scan_binary_paths.py` over every decompressed
+APK member. The original `/home/`, `/Users/` and Windows-user bans remain broad.
+The inspector has no separate private-path scan; it is not substituted for this
+all-member final-boundary check.
+
+`tool/release/binary_path_exceptions.json` is the only exception policy. Unknown
+fields, duplicate keys/records, malformed hashes, unsupported member paths and
+unknown schemas fail closed, including on APKs with no path hits. Only the exact
+three sherpa C-API members listed there were found to contain runner paths in
+the blocked 0.1.18 split artifacts. Hashes pin **decompressed** bytes; matching
+hashes allow only paths beginning `/home/runner/work/sherpa-onnx/`. A dependency
+bump must undergo review and repinning, not a wildcard or automatic update.
+Mismatches report the member and expected/observed hashes.
+
+For the three exact `lib/<abi>/libapp.so` members, only one complete literal
+`(?:/home/[A-Za-z0-9._-]+|/root|~)/\.hermes/cache/images/` is allowed. Its
+`/home/` match must occur at that literal's exact byte offset. Additional paths,
+near-misses and duplicate literals fail; Dart source is unchanged. Other members
+cannot inherit either exception. Metadata path/IP scanning is unchanged.
+
+Read-only standalone check (also used by the final shell gate):
+
+```bash
+python3 tool/release/scan_binary_paths.py /absolute/private/candidate.apk
+```
+
 ## Eventual public allowlist
 
 After all private gates and explicit owner publication approval, the final

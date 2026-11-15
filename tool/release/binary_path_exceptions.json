@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "sherpa": [
+    {
+      "member": "lib/arm64-v8a/libsherpa-onnx-c-api.so",
+      "sha256": "184888363b0698a26cb946c658b98c6ee93da4b4b17cc70c4a68fe58139b0482"
+    },
+    {
+      "member": "lib/armeabi-v7a/libsherpa-onnx-c-api.so",
+      "sha256": "ea09627f0919c741c6d0bf6671e8db304b41e32abd2592aec55651eef0fbe857"
+    },
+    {
+      "member": "lib/x86_64/libsherpa-onnx-c-api.so",
+      "sha256": "9ce81677f3fe71d97044ca1cfe81f10b4ec12f3f3ba16400334d35ff21962218"
+    }
+  ],
+  "imageCacheRegexMembers": [
+    "lib/arm64-v8a/libapp.so",
+    "lib/armeabi-v7a/libapp.so",
+    "lib/x86_64/libapp.so"
+  ]
+}
