@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -35,6 +36,21 @@ PYTHON = sys.executable
 sys.path.insert(0, str(ROOT / "tool/release"))
 sys.path.insert(0, str(ROOT / "test"))
 import inspect_public_apk as inspector
+
+
+def release_tag(root: Path) -> str:
+    """Return the Daeroh release tag for the pubspec version under test."""
+    versions = [
+        match.group(1)
+        for match in (
+            re.fullmatch(r"version:\s*((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\+(?:0|[1-9][0-9]*)\s*(?:#.*)?", line)
+            for line in (root / "pubspec.yaml").read_text(encoding="utf-8").splitlines()
+        )
+        if match
+    ]
+    if len(versions) != 1:
+        raise AssertionError(f"expected exactly one pubspec version line, found {len(versions)}")
+    return f"daeroh-v{versions[0]}"
 
 APKS = {
     "app-arm64-v8a-full-release.apk": "arm64-v8a",
@@ -178,7 +194,8 @@ urllib.request.urlopen = recorded_urlopen
         self.git("add", "--", *filter(None, changed))
         self.git("commit", "-m", "test: snapshot tested source with throwaway release signer")
         self.commit = self.git("rev-parse", "HEAD").stdout.strip()
-        self.git("tag", "daeroh-v0.1.17")
+        self.tag = release_tag(self.root)
+        self.git("tag", self.tag)
         self.expected = temporary / "expected.json"
         checked([PYTHON, self.root / "tool/release/write_full_expectations.py", "--pubspec", self.root / "pubspec.yaml", "--gradle", self.root / "android/app/build.gradle.kts", "--manifest", self.root / "android/app/src/main/AndroidManifest.xml", "--policy", self.root / "tool/release/full_release_policy.json", "--output", self.expected])
         self.expectations = json.loads(self.expected.read_text())
@@ -425,7 +442,7 @@ class ProductionProvenanceCliRealEntrypointsTest(_RealEntrypointMixin, unittest.
 
 class FinalPublicAssetsShellRealEntrypointsTest(_RealEntrypointMixin, unittest.TestCase):
     def invoke(self, f):
-        return run(["bash", f.root / "tool/release/validate_public_assets.sh", f.public, "daeroh-v0.1.17", f.commit, f.toolchain], env=f.environment())
+        return run(["bash", f.root / "tool/release/validate_public_assets.sh", f.public, f.tag, f.commit, f.toolchain], env=f.environment())
 
 
 def row_test_name(row):
