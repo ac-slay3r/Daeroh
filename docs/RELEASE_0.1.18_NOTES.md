@@ -5,6 +5,10 @@
 - Fix “Send pending”: an unsent placeholder is no longer treated as proof that
   a queued message was delivered. Delivery must be proved by the server before
   the delivered queue entry clears. Ordinary composer behavior is unchanged.
+- Fix duplicate display of a live or queued turn and its reply when server
+  history catches up. Repeated identical prompts still appear separately when
+  sent as separate turns. This is a display fix, not a change to delivery or
+  server execution; it does not resend prompts automatically.
 - Pairing and server setup use Daeroh-owned scripts from this repository,
   pinned to a commit. Downloaded script bytes are checked before execution.
 - The update button opens https://github.com/ac-slay3r/Daeroh/releases.
