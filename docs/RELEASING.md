@@ -103,6 +103,29 @@ build-tools, JDK `bin`, JDK `lib`, and JDK `conf` trees are pinned in
 `release_contract.json`; `conf`, including `conf/security/java.security`, is
 part of the authenticated runtime.
 
+## Evidence packaging before final validation
+
+Use the [generate → assemble → validate procedure](RELEASE_DISTRIBUTION.md#assemble-public-evidence-generate--assemble--validate).
+Generate per-APK SBOM/license inventories with `tool/sbom/generate.py` and
+fresh signed-APK facts with `tool/release/inspect_public_apk.py`, then collect
+only the specified JSON files and the two-build comparison in a private input
+tree. The generator's indented encoding is intentionally unchanged.
+
+```sh
+python3 tool/release/assemble_evidence_archive.py \
+  --input-directory /absolute/private/evidence-input \
+  --output-directory /absolute/private/assembled
+python3 tool/release/validate_evidence_archive.py \
+  /absolute/private/assembled/hermes-console-release-evidence.tar.gz
+```
+
+This creates canonical JSON members, inner checksums and a deterministic tar;
+manual tar assembly of raw generator output fails provenance validation. Put
+only the tar beside the three final signed `full` APKs, regenerate the outer
+`SHA256SUMS`, then run `validate_public_assets.sh` with the reviewed source
+identity and trusted toolchain manifest. Assembly does not replace the final
+provenance/license checks or authorize publication.
+
 ## Required real-entrypoint regression gate
 
 Before a release, set `DAEROH_VERIFIER_TOOLCHAIN` to the reviewed pinned

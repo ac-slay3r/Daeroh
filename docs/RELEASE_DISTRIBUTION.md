@@ -122,6 +122,57 @@ Evidence tar validation caps compressed size before opening, iterates at most
 content before retaining allowed evidence bytes. Duplicate, linked, traversal,
 extra and malformed members fail closed.
 
+## Assemble public evidence: generate → assemble → validate
+
+After the private double build, work outside the source tree. Keep inputs and
+assembled output separate. Generate evidence for **each final signed split**;
+never reuse a source-only SBOM or a different APK's inventory. With the intended
+`full` build environment (`HERMES_LOCAL_AGENT=true`) and owner-local toolchain
+launcher, for each APK run:
+
+```sh
+# INPUT/artifacts/full/<APK basename without .apk> is OUT for this split.
+SBOM_GIT_COMMIT=EXACT_RELEASE_COMMIT \
+RELEASE_INPUT_FINGERPRINT=RECORDED_BUILD_INPUTS_SHA256 \
+  python3 tool/sbom/generate.py --variant fullRelease \
+  --artifact /absolute/private/public/APK.apk --output-dir OUT
+# Run inspect_public_apk.py on that same APK with the reviewed expectations,
+# signer/policy and pinned tools; write OUT/public-apk-facts.json.
+```
+
+Copy the double build's `rebuild-comparison.json` to `INPUT/rebuild-comparison.json`.
+The exact input tree consists of that report and, for each of the three
+`artifacts/full/app-<ABI>-full-release/` directories:
+`fullRelease.cdx.json`, `fullRelease.artifact.json`,
+`fullRelease.license-review.json`, `source-assets.json`, and
+`public-apk-facts.json`. Do **not** put `SHA256SUMS`, logs, private build manifests,
+source bindings or other files in INPUT. Missing or extra files, duplicate JSON keys,
+invalid JSON, links and extra directories are rejected; a filesystem cannot
+represent two regular files at the same relative path.
+
+```sh
+python3 tool/release/assemble_evidence_archive.py \
+  --input-directory /absolute/private/INPUT \
+  --output-directory /absolute/private/assembled
+python3 tool/release/validate_evidence_archive.py \
+  /absolute/private/assembled/hermes-console-release-evidence.tar.gz
+```
+
+The output directory must not already exist. The assembler preserves parsed JSON
+values while encoding every member as UTF-8
+`json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"`, writes the inner
+`release-evidence/SHA256SUMS`, and packs sorted entries with zero uid/gid/mtime
+and a fixed gzip header. Generator output and checked-in `sbom/*.json` remain
+indented; **do not tar the raw generator output**. Assembly is not semantic
+validation, license approval or provenance verification.
+
+Copy only `hermes-console-release-evidence.tar.gz` to the private public-assets
+candidate alongside the three final APKs. Regenerate the **outer** `SHA256SUMS`
+over those four basenames, then run `validate_public_assets.sh` below (which
+also runs the real provenance validator). Keep the assembled directory and
+all logs outside the eventual five-file allowlist. Do not edit the archive or
+re-sign APKs after assembly; any byte change requires fresh hashes and gates.
+
 ## Binary path scan exceptions
 
 `validate_public_assets.sh` invokes `scan_binary_paths.py` over every decompressed

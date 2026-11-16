@@ -24,42 +24,42 @@ class LicenseError(ValueError):
 
 def exact(value: Any, keys: set[str]) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != keys:
-        raise LicenseError
+        raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: expected object with exact keys {sorted(keys)}")
     return value
 
 
 def resolved(value: Any) -> str:
     if not isinstance(value, str) or not value or value.strip() != value:
-        raise LicenseError
+        raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: expected nonempty trimmed string")
     if value.casefold() in {"noassertion", "none", "unknown", "unresolved"}:
-        raise LicenseError
+        raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: unresolved license/evidence value")
     return value
 
 
 def digest(value: Any) -> str:
     value = resolved(value)
     if SHA256.fullmatch(value) is None:
-        raise LicenseError
+        raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: invalid SHA-256")
     return value
 
 
 def commit(value: Any) -> str:
     value = resolved(value)
     if GIT_ID.fullmatch(value) is None:
-        raise LicenseError
+        raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: invalid source commit")
     return value
 
 
 def normalize_entries(value: Any, identity_key: str) -> list[dict[str, str]]:
     if not isinstance(value, list) or not value:
-        raise LicenseError
+        raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: expected nonempty inventory list")
     result = []
     identities = set()
     for raw in value:
         entry = exact(raw, {identity_key, "license", "evidence"})
         identity = resolved(entry[identity_key])
         if identity in identities:
-            raise LicenseError
+            raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: duplicate identity: {identity}")
         identities.add(identity)
         result.append(
             {
@@ -74,34 +74,34 @@ def normalize_entries(value: Any, identity_key: str) -> list[dict[str, str]]:
 def cyclone_license(component: dict[str, Any]) -> str:
     licenses = component.get("licenses")
     if not isinstance(licenses, list) or not licenses:
-        raise LicenseError
+        raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: missing nonempty licenses list")
     values = []
     for item in licenses:
         if not isinstance(item, dict):
-            raise LicenseError
+            raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: license record must be object")
         if set(item) == {"expression"}:
             values.append(resolved(item["expression"]))
         elif set(item) == {"license"} and isinstance(item["license"], dict):
             license_value = item["license"].get("id", item["license"].get("name"))
             values.append(resolved(license_value))
         else:
-            raise LicenseError
+            raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: unsupported CycloneDX license record")
     if len(values) != len(set(values)):
-        raise LicenseError
+        raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: duplicate licenses")
     return " OR ".join(sorted(values))
 
 
 def cyclone_evidence(component: dict[str, Any]) -> str:
     properties = component.get("properties")
     if not isinstance(properties, list):
-        raise LicenseError
+        raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: properties must be list")
     values = {}
     for item in properties:
         if not isinstance(item, dict) or set(item) != {"name", "value"}:
-            raise LicenseError
+            raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: property must have name and value")
         name = resolved(item["name"])
         if name in values:
-            raise LicenseError
+            raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: duplicate property name: {name}")
         values[name] = item["value"]
     return resolved(values.get("hermes.license.evidence") or values.get("hermes.license.files"))
 
@@ -109,11 +109,11 @@ def cyclone_evidence(component: dict[str, Any]) -> str:
 def normalize_components(sbom: dict[str, Any]) -> list[dict[str, str]]:
     components = sbom.get("components")
     if not isinstance(components, list) or not components:
-        raise LicenseError
+        raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: missing nonempty component list")
     result = []
     for component_value in components:
         if not isinstance(component_value, dict):
-            raise LicenseError
+            raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: component must be object")
         if set(component_value) == {"id", "license", "evidence"}:
             result.extend(normalize_entries([component_value], "id"))
         else:
@@ -126,17 +126,17 @@ def normalize_components(sbom: dict[str, Any]) -> list[dict[str, str]]:
             )
     result.sort(key=lambda item: item["id"])
     if len({item["id"] for item in result}) != len(result):
-        raise LicenseError
+        raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: duplicate component identity")
     return result
 
 
 def normalize_inventory(value: Any, key: str) -> list[dict[str, str]]:
     if not isinstance(value, list) or not value:
-        raise LicenseError
+        raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: expected nonempty inventory list")
     result = []
     for item in value:
         if not isinstance(item, dict):
-            raise LicenseError
+            raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: inventory entry must be object")
         result.append(
             {
                 "path": resolved(item.get("path")),
@@ -146,26 +146,26 @@ def normalize_inventory(value: Any, key: str) -> list[dict[str, str]]:
         )
     result.sort(key=lambda item: item["path"])
     if len({item["path"] for item in result}) != len(result):
-        raise LicenseError
+        raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: duplicate inventory path")
     return result
 
 
 def sbom_identity(sbom: dict[str, Any]) -> tuple[str, str]:
     metadata = sbom.get("metadata")
     if not isinstance(metadata, dict):
-        raise LicenseError
+        raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: metadata must be object")
     if set(metadata) == {"inputFingerprint", "sourceCommit"}:
         return digest(metadata["inputFingerprint"]), commit(metadata["sourceCommit"])
     properties = metadata.get("properties")
     if not isinstance(properties, list):
-        raise LicenseError
+        raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: metadata properties must be list")
     values = {}
     for item in properties:
         if not isinstance(item, dict):
-            raise LicenseError
+            raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: metadata property must be object")
         name = item.get("name")
         if name in values:
-            raise LicenseError
+            raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: duplicate metadata property name: {name}")
         values[name] = item.get("value")
     return digest(values.get("hermes.input.sha256")), commit(values.get("hermes.git.commit"))
 
@@ -197,13 +197,13 @@ def validate_documents(
         or artifact_inventory.get("inputFingerprint") != expected_fingerprint
         or artifact_inventory.get("sourceCommit", artifact_inventory.get("commit")) != expected_commit
     ):
-        raise LicenseError
+        raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: schema/status/source/input identity or unresolved inventory mismatch")
     recorded_artifact = artifact_inventory.get("artifact")
     if not isinstance(recorded_artifact, dict) or set(recorded_artifact) not in (
         {"name", "sha256"},
         {"name", "size", "sha256"},
     ):
-        raise LicenseError
+        raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: malformed artifact identity record")
     if (
         recorded_artifact.get("name") != artifact_name
         or recorded_artifact.get("sha256") != digest(artifact_sha256)
@@ -216,7 +216,7 @@ def validate_documents(
             )
         )
     ):
-        raise LicenseError
+        raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: artifact name/hash/size mismatch")
     components = normalize_components(sbom)
     assets = normalize_inventory(source_assets.get("assets", source_assets.get("files")), "source")
     packaged = normalize_inventory(
@@ -224,22 +224,22 @@ def validate_documents(
         "artifact",
     )
     if normalize_entries(review["dependencyComponents"], "id") != components:
-        raise LicenseError
+        raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: dependency review differs from SBOM")
     if normalize_entries(review["sourceAssets"], "path") != assets:
-        raise LicenseError
+        raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: source review differs from source inventory")
     if normalize_entries(review["packagedEntries"], "path") != packaged:
-        raise LicenseError
+        raise LicenseError(f"license evidence: {'fullRelease.license-review.json / fullRelease.cdx.json / source-assets.json / fullRelease.artifact.json'}: packaged review differs from artifact inventory")
 
 
 def load(path: Path) -> dict[str, Any]:
     if not path.is_file() or path.is_symlink():
-        raise LicenseError
+        raise LicenseError(f"license JSON: {path}: missing, linked or non-file input")
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise LicenseError from error
+        raise LicenseError(f"license JSON: {path}: unreadable or invalid UTF-8 JSON: {error}") from error
     if not isinstance(value, dict):
-        raise LicenseError
+        raise LicenseError(f"license JSON: {path}: expected JSON object")
     return value
 
 
@@ -263,8 +263,8 @@ def main() -> int:
             artifact_name=args.artifact_name,
             artifact_sha256=args.artifact_sha256,
         )
-    except LicenseError:
-        print("ERROR: release license evidence validation failed.", file=sys.stderr)
+    except LicenseError as error:
+        print(f"ERROR: release license evidence validation failed: {error}.", file=sys.stderr)
         return 1
     print("Release license evidence validation passed.")
     return 0
