@@ -10878,13 +10878,43 @@ class ActiveChat {
     List<Map<String, dynamic>> candidateNewestFirst, {
     required bool candidateTranscriptComplete,
   }) {
-    final fences = _terminalReconciliationFences(previous);
-    if (fences.isEmpty ||
-        !_terminalFencesAreCovered(
-          candidateNewestFirst,
-          fences,
-          candidateTranscriptComplete: candidateTranscriptComplete,
-        )) {
+    final originalFences = _terminalReconciliationFences(previous);
+    if (originalFences.isEmpty) return candidateNewestFirst;
+    // Adoption and retirement must use the same scoped binding proof as the
+    // graft. Otherwise a first-turn fence (no durable identity, ordinal zero)
+    // survives adoption privately and blocks reconciliation of the next turn.
+    final representedLiveUsers = <int>{
+      ..._liveUserProjectionIndexesRepresentedByRefreshedTail(
+        candidateNewestFirst,
+        previous,
+        refreshedTranscriptComplete: candidateTranscriptComplete,
+        currentTransportTerminalObserved: false,
+      ),
+      ..._liveUserProjectionIndexesRepresentedAfterActiveTurnBoundary(
+        candidateNewestFirst,
+        previous,
+      ),
+    };
+    final fences = _bindFenceChain(
+      [
+        for (final fence in originalFences)
+          _bindKnownMissingFirstTurnFence(
+            fence,
+            previous,
+            candidateNewestFirst,
+            representedLiveUsers,
+            refreshedTranscriptComplete: candidateTranscriptComplete,
+          ),
+      ],
+      previous,
+      candidateNewestFirst,
+      refreshedTranscriptComplete: candidateTranscriptComplete,
+    );
+    if (!_terminalFencesAreCovered(
+      candidateNewestFirst,
+      fences,
+      candidateTranscriptComplete: candidateTranscriptComplete,
+    )) {
       return candidateNewestFirst;
     }
     final coveredIds = {for (final fence in fences) fence.projectionId};
