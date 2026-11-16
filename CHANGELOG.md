@@ -3,6 +3,20 @@
 All notable public changes are documented here. Internal QA/profile artifacts
 are not releases.
 
+## Daeroh 0.1.18 (4022) — public release candidate
+
+- Fix “Send pending” so an unsent queue placeholder is not accepted as proof
+  of delivery. Delivered queue entries clear when the server proves delivery;
+  ordinary composer behavior is unchanged.
+- Use Daeroh-owned pairing/setup scripts pinned to an in-repository commit,
+  and verify downloaded script bytes before running them.
+- Point the update button at https://github.com/ac-slay3r/Daeroh/releases.
+- Use the Daeroh release signing key with Android v3 rotation from the historic
+  debug certificate. Updates require Android 10 or later; rollback to the old
+  debug-signed app is intentionally blocked.
+- This is a candidate, not publication approval. See
+  `docs/RELEASE_0.1.18_NOTES.md` for validation boundaries and known limits.
+
 ## Daeroh 0.1.17 (4021) — private source candidate
 
 - Fix the queue-only settlement path so an unsent placeholder cannot be treated
