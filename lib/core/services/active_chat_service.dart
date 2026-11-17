@@ -1540,8 +1540,10 @@ AmbiguousRetryEvidence ambiguousTurnTranscriptEvidence(
 
   // Queue-only multi-row relaxation: any textual duplicate after the boundary
   // is ambiguous. The unique matching row must itself be a durable real-user
-  // row with a non-optimistic, internally consistent identity and no clock
-  // tolerance. Attachments remain fail-closed in this new mode.
+  // row with a non-optimistic, internally consistent identity. Use the same
+  // bounded clock skew as the legacy lane, without narrowing the occurrence
+  // scan: even an earlier textual match after the boundary is ambiguous.
+  // Attachments remain fail-closed in this new mode.
   if (!requireRowAfterTurnCreation || turn.activeAttachments.isNotEmpty) {
     return AmbiguousRetryEvidence.unknown;
   }
@@ -1554,7 +1556,8 @@ AmbiguousRetryEvidence ambiguousTurnTranscriptEvidence(
       : null;
   if (!isRealUserTurn(match) ||
       at == null ||
-      at.millisecondsSinceEpoch < turn.createdAtMs ||
+      at.millisecondsSinceEpoch <
+          turn.createdAtMs - _deliveredRowClockSkew.inMilliseconds ||
       match['_optimistic'] == true ||
       identity == null ||
       !identity.isDurable) {
@@ -4209,6 +4212,24 @@ class ActiveChat {
   final bool _attachDesktopRuntimeOnLoad;
   final bool _allowUnownedDesktopSnapshotForTesting;
   LocalConversationLifecycle? _localConversationLifecycle;
+  LocalConversationLifecycle? _deliveryLifecycle;
+  TurnOutboxStore? _deliveryOutbox;
+
+  /// Accepted deliveries belong to this retained chat, not its current route.
+  TurnOutboxStore get deliveryOutbox {
+    final existing = _deliveryOutbox;
+    if (existing != null) return existing;
+    final route = _localConversationLifecycle;
+    if (route == null) throw StateError('No conversation producer');
+    final owner = LocalConversationCleanupFence.beginServiceLifecycle(route);
+    _deliveryLifecycle = owner;
+    final created = _createdDraftSessionId;
+    if (created != null && created != owner.sessionId) {
+      LocalConversationCleanupFence.authorizeCreatedSession(owner, created);
+    }
+    return _deliveryOutbox = TurnOutboxStore(lifecycle: owner);
+  }
+
   final Map<String, LocalConversationOperation> _localTranscriptOperations = {};
   final Set<String> _confirmedLocalTranscriptOperations = {};
   String? _sessionProfileOwner;
@@ -9637,9 +9658,11 @@ class ActiveChat {
       // still needs an empty offset probe before it can be declared complete.
       // Preserve the established transient-read retry without delaying first
       // paint.
-      for (var attempt = 0;
-          attempt < 2 && !_disposed && _earlierMessagesAvailable;
-          attempt++) {
+      for (
+        var attempt = 0;
+        attempt < 2 && !_disposed && _earlierMessagesAvailable;
+        attempt++
+      ) {
         final previousOffset = _earlierMessagesNextOffset;
         await _loadEarlierMessagesPage();
         if (!_earlierMessagesAvailable ||
@@ -13233,7 +13256,11 @@ class ActiveChat {
     if (delivery == null) return true;
     final ready = await delivery.beginTransport(transport);
     if (!ready && _turnEpoch == turnEpoch && !_runTerminal) {
-      _failRun('No se pudo conservar el turno antes de enviarlo.');
+      _failRun(
+        _desktopLanguageCode.toLowerCase().startsWith('en')
+            ? 'The message could not be saved before sending. Your text is still pending.'
+            : 'No se pudo conservar el turno antes de enviarlo. El texto sigue pendiente.',
+      );
     }
     return ready;
   }
@@ -16320,6 +16347,13 @@ class ActiveChat {
             profile == sessionProfile &&
             binding.storedSessionId.isNotEmpty) {
           _createdDraftSessionId ??= binding.storedSessionId;
+          final owner = _deliveryLifecycle;
+          if (owner != null) {
+            LocalConversationCleanupFence.authorizeCreatedSession(
+              owner,
+              binding.storedSessionId,
+            );
+          }
         }
         if (binding.created) {
           // A5: la clave creada tiene que sobrevivir a process death ANTES de
@@ -26215,6 +26249,10 @@ class ActiveChat {
 
   void dispose() {
     if (_disposed) return;
+    final deliveryOwner = _deliveryLifecycle;
+    if (deliveryOwner != null) {
+      LocalConversationCleanupFence.endLifecycle(deliveryOwner);
+    }
     suspendSubagentForegroundPresentation();
     _retainedActivityExpiryTimer?.cancel();
     _retainedActivityExpiryTimer = null;

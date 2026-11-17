@@ -108,6 +108,7 @@ final class LocalConversationLifecycle {
   final String sessionId;
   final Set<String> _sessionAliases;
   final int _epoch;
+  final bool serviceOwned;
   bool _acceptingWrites = true;
 
   LocalConversationLifecycle._({
@@ -116,6 +117,7 @@ final class LocalConversationLifecycle {
     required this.sessionId,
     required Set<String> sessionAliases,
     required this._epoch,
+    this.serviceOwned = false,
   }) : _sessionAliases = Set.of(sessionAliases);
 
   bool _authorizesSession(String candidate) =>
@@ -127,6 +129,7 @@ final class _LocalConversationScopeState {
   bool blocked = false;
   int pendingCleanups = 0;
   final Map<String, LocalConversationLifecycle> currentOwners = {};
+  final Map<String, LocalConversationLifecycle> serviceOwners = {};
   final Set<LocalConversationLifecycle> rehydrated = {};
 }
 
@@ -174,6 +177,39 @@ abstract final class LocalConversationCleanupFence {
   static bool _connectionIsCleaning(String connectionId) =>
       (_pendingConnectionCleanups[connectionId] ?? 0) > 0;
 
+  static Map<String, LocalConversationLifecycle> _owners(
+    _LocalConversationScopeState state,
+    LocalConversationLifecycle lifecycle,
+  ) => lifecycle.serviceOwned ? state.serviceOwners : state.currentOwners;
+
+  /// Transfer durability to a service, not the route's draft producer. Only a
+  /// currently authorized route may mint this owner. Cleanup epochs still
+  /// revoke it; opening a replacement route does not.
+  static LocalConversationLifecycle beginServiceLifecycle(
+    LocalConversationLifecycle route,
+  ) {
+    ensureWriteAllowed(
+      connectionId: route.connectionId,
+      profile: route.profile,
+      sessionId: route.sessionId,
+      lifecycle: route,
+    );
+    final state = _stateFor(_scope(route.connectionId, route.profile));
+    final lifecycle = LocalConversationLifecycle._(
+      connectionId: route.connectionId,
+      profile: route.profile,
+      sessionId: route.sessionId,
+      sessionAliases: route._sessionAliases,
+      epoch: route._epoch,
+      serviceOwned: true,
+    );
+    for (final id in {route.sessionId, ...route._sessionAliases}) {
+      state.serviceOwners[id] = lifecycle;
+    }
+    if (state.rehydrated.contains(route)) state.rehydrated.add(lifecycle);
+    return lifecycle;
+  }
+
   static LocalConversationLifecycle beginLifecycle({
     required String connectionId,
     required String profile,
@@ -211,7 +247,8 @@ abstract final class LocalConversationCleanupFence {
       lifecycle: lifecycle,
     );
     final state = _states[_scope(lifecycle.connectionId, lifecycle.profile)]!;
-    final owner = state.currentOwners[createdSessionId];
+    final owners = _owners(state, lifecycle);
+    final owner = owners[createdSessionId];
     // A replacement screen may inherit this exact provisional route while its
     // ActiveChat preserves the create receipt. Transfer only from the retired
     // owner of that same provisional identity; never from a live owner or a
@@ -228,7 +265,7 @@ abstract final class LocalConversationCleanupFence {
       throw const LocalConversationWriteRejected();
     }
     lifecycle._sessionAliases.add(createdSessionId);
-    state.currentOwners[createdSessionId] = lifecycle;
+    owners[createdSessionId] = lifecycle;
   }
 
   static void endLifecycle(LocalConversationLifecycle lifecycle) {
@@ -252,7 +289,7 @@ abstract final class LocalConversationCleanupFence {
         state.pendingCleanups > 0 ||
         _connectionIsCleaning(lifecycle.connectionId) ||
         state.epoch != lifecycle._epoch ||
-        !identical(state.currentOwners[lifecycle.sessionId], lifecycle) ||
+        !identical(_owners(state, lifecycle)[lifecycle.sessionId], lifecycle) ||
         lifecycle.sessionId.trim().isEmpty) {
       return false;
     }
@@ -277,7 +314,7 @@ abstract final class LocalConversationCleanupFence {
         state.pendingCleanups != 0 ||
         _connectionIsCleaning(connectionId) ||
         state.epoch != lifecycle._epoch ||
-        !identical(state.currentOwners[sessionId], lifecycle) ||
+        !identical(_owners(state, lifecycle)[sessionId], lifecycle) ||
         (state.blocked && !state.rehydrated.contains(lifecycle)) ||
         (_blockedConnections.contains(connectionId) &&
             !state.rehydrated.contains(lifecycle))) {
@@ -552,7 +589,7 @@ abstract final class LocalConversationCleanupFence {
     final admittedEpoch = lifecycle?._epoch ?? state.epoch;
     bool ownerIsValid(_LocalConversationScopeState candidate) =>
         lifecycle == null ||
-        identical(candidate.currentOwners[session], lifecycle);
+        identical(_owners(candidate, lifecycle)[session], lifecycle);
     bool cleanupIsInactive(_LocalConversationScopeState candidate) =>
         candidate.pendingCleanups == 0 && !_connectionIsCleaning(connection);
     bool blockedWriteIsAuthorized(_LocalConversationScopeState candidate) =>
@@ -641,7 +678,8 @@ abstract final class LocalConversationCleanupFence {
         state.pendingCleanups--;
         if (state.pendingCleanups == 0 &&
             !_connectionIsCleaning(connectionId) &&
-            state.currentOwners.isEmpty) {
+            state.currentOwners.isEmpty &&
+            state.serviceOwners.isEmpty) {
           state.blocked = false;
         }
       }
@@ -691,7 +729,9 @@ abstract final class LocalConversationCleanupFence {
               .toList(growable: false);
           if (connectionStates.every(
             (state) =>
-                state.pendingCleanups == 0 && state.currentOwners.isEmpty,
+                state.pendingCleanups == 0 &&
+                state.currentOwners.isEmpty &&
+                state.serviceOwners.isEmpty,
           )) {
             _blockedConnections.remove(connectionId);
             for (final state in connectionStates) {

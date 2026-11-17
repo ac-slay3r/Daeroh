@@ -3,6 +3,18 @@
 All notable public changes are documented here. Internal QA/profile artifacts
 are not releases.
 
+## Daeroh 0.1.19 (4023) — private source candidate
+
+- Keep queued messages when leaving Chat and returning while a reply is still
+  streaming. Pending queued text belongs to the retained chat, not the screen,
+  and is saved under the server conversation once the first turn binds it.
+- Recognize a uniquely delivered queued message when the phone clock is up to
+  two minutes ahead of the server. Repeated text, uncertain history and
+  attachments still need stronger evidence; nothing is resent to settle them.
+- Show the pre-send storage error in the app's English or Spanish language.
+- This source candidate is not release approval. Release signing, physical
+  device acceptance and distribution remain separate, owner-authorized steps.
+
 ## Daeroh 0.1.18 (4022) — public release candidate
 
 - Fix “Send pending” so an unsent queue placeholder is not accepted as proof

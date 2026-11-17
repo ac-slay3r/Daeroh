@@ -84,6 +84,77 @@ void main() {
     );
   }
 
+  for (final cold in [false, true]) {
+    test(
+      'service outbox survives ${cold ? "cold" : "warm"} owner restart',
+      () async {
+        final route = LocalConversationCleanupFence.beginLifecycle(
+          connectionId: 'c1',
+          profile: 'default',
+          sessionId: 's1',
+        );
+        expect(LocalConversationCleanupFence.rehydrate(route), isTrue);
+        final owner = LocalConversationCleanupFence.beginServiceLifecycle(
+          route,
+        );
+        final store = TurnOutboxStore(lifecycle: owner);
+        final pending = turn(queued: true, queueOrder: 0, profile: 'default');
+        await store.save(pending);
+        LocalConversationCleanupFence.endLifecycle(route);
+        final replacement = LocalConversationCleanupFence.beginLifecycle(
+          connectionId: 'c1',
+          profile: 'default',
+          sessionId: 's1',
+        );
+        expect(LocalConversationCleanupFence.rehydrate(replacement), isTrue);
+        await store.save(pending.copyWith(state: PreparedTurnState.submitting));
+        LocalConversationCleanupFence.endLifecycle(owner);
+        if (cold) {
+          LocalConversationCleanupFence.resetForTesting();
+          TurnOutboxStore.resetSerializationForTesting();
+        }
+        final restored = await TurnOutboxStore().loadAllForChat(
+          'c1',
+          's1',
+          profile: 'default',
+        );
+        expect(restored.single.text, pending.text);
+        expect(restored.single.clientTurnId, pending.clientTurnId);
+        expect(restored.single.state, PreparedTurnState.ambiguous);
+        expect(restored.single.queueOrder, 0);
+      },
+    );
+  }
+
+  test(
+    'service producer cannot bypass cleanup or revive a retired route',
+    () async {
+      final route = LocalConversationCleanupFence.beginLifecycle(
+        connectionId: 'c1',
+        profile: 'default',
+        sessionId: 's1',
+      );
+      expect(LocalConversationCleanupFence.rehydrate(route), isTrue);
+      final owner = LocalConversationCleanupFence.beginServiceLifecycle(route);
+      final store = TurnOutboxStore(lifecycle: owner);
+      await store.save(turn(profile: 'default'));
+      LocalConversationCleanupFence.endLifecycle(route);
+      expect(
+        () => LocalConversationCleanupFence.beginServiceLifecycle(route),
+        throwsA(isA<LocalConversationWriteRejected>()),
+      );
+      await TurnOutboxStore().deleteForProfile('c1', 'default');
+      await expectLater(
+        store.save(turn(profile: 'default')),
+        throwsA(isA<LocalConversationWriteRejected>()),
+      );
+      expect(
+        await TurnOutboxStore().loadAllForChat('c1', 's1', profile: 'default'),
+        isEmpty,
+      );
+    },
+  );
+
   test('guarda cifrado y aísla por conexión y sesión', () async {
     final store = TurnOutboxStore();
     await Future.wait([
@@ -99,25 +170,51 @@ void main() {
     // completo vive detrás de flutter_secure_storage/Keystore, no en prefs.
   });
 
-  test('mention identities and annotation survive encrypted outbox restore independently of draft text', () async {
-    const bot = BotMention(connectionId: 'remote', profile: 'ops', handle: 'ops-remote', remote: true);
-    final note = buildBotMentionAnnotation([bot]);
-    final prepared = turn(text: '@ops-remote', profile: 'default', queueOrder: 1, queued: true).copyWith(
-      fullText: '@ops-remote\nattachment', desktopText: '@ops-remote',
-      mentionAnnotation: note, mentions: const [bot],
-    );
-    await TurnOutboxStore().save(prepared);
-    final restored = (await TurnOutboxStore().loadAllForChat('c1', 's1', profile: 'default')).single;
-    expect(restored.mentionAnnotation, note);
-    expect(restored.mentions.single.toJson(), bot.toJson());
-    expect(restored.text, '@ops-remote');
-    expect(restored.fullText, prepared.fullText);
-    expect(restored.desktopText, prepared.desktopText);
-    expect(restored.clientTurnId, prepared.clientTurnId);
-    expect((await SharedPreferences.getInstance()).getKeys(), isNot(contains('mentions')));
-    await TurnOutboxStore().delete(restored);
-    expect(await TurnOutboxStore().loadAllForChat('c1', 's1', profile: 'default'), isEmpty);
-  });
+  test(
+    'mention identities and annotation survive encrypted outbox restore independently of draft text',
+    () async {
+      const bot = BotMention(
+        connectionId: 'remote',
+        profile: 'ops',
+        handle: 'ops-remote',
+        remote: true,
+      );
+      final note = buildBotMentionAnnotation([bot]);
+      final prepared =
+          turn(
+            text: '@ops-remote',
+            profile: 'default',
+            queueOrder: 1,
+            queued: true,
+          ).copyWith(
+            fullText: '@ops-remote\nattachment',
+            desktopText: '@ops-remote',
+            mentionAnnotation: note,
+            mentions: const [bot],
+          );
+      await TurnOutboxStore().save(prepared);
+      final restored = (await TurnOutboxStore().loadAllForChat(
+        'c1',
+        's1',
+        profile: 'default',
+      )).single;
+      expect(restored.mentionAnnotation, note);
+      expect(restored.mentions.single.toJson(), bot.toJson());
+      expect(restored.text, '@ops-remote');
+      expect(restored.fullText, prepared.fullText);
+      expect(restored.desktopText, prepared.desktopText);
+      expect(restored.clientTurnId, prepared.clientTurnId);
+      expect(
+        (await SharedPreferences.getInstance()).getKeys(),
+        isNot(contains('mentions')),
+      );
+      await TurnOutboxStore().delete(restored);
+      expect(
+        await TurnOutboxStore().loadAllForChat('c1', 's1', profile: 'default'),
+        isEmpty,
+      );
+    },
+  );
 
   test('recupera todos los turnos queued del chat en orden FIFO', () async {
     final store = TurnOutboxStore();
