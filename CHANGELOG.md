@@ -12,6 +12,18 @@ are not releases.
   two minutes ahead of the server. Repeated text, uncertain history and
   attachments still need stronger evidence; nothing is resent to settle them.
 - Show the pre-send storage error in the app's English or Spanish language.
+- Hydrate the existing conversation before dispatching a cold-restored queue,
+  preserving the prior turn's boundary instead of displaying a second local
+  copy beside its durable queued turn and reply.
+- Revoke a confirmed deleted conversation's local queued delivery authority and
+  proven aliases; late completion/acknowledgement callbacks cannot restore its
+  outbox. This cannot undo a prompt sent before deletion and is not secure
+  storage erasure or a broader server-deletion guarantee.
+- Known limits remain: secret long-lived gateway key in pairing QR codes;
+  Android 10/API 29 minimum; no live-provider, physical ARM64, hardware-Keystore
+  or Termux acceptance; unresolved disconnect/reconnect/battery behaviour.
+  Observed two-build byte identity is not general reproducibility. See
+  `docs/RELEASE_0.1.19_NOTES.md` for the full limits and validation boundaries.
 - This source candidate is not release approval. Release signing, physical
   device acceptance and distribution remain separate, owner-authorized steps.
 

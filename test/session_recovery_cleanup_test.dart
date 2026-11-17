@@ -10,6 +10,7 @@ import 'package:hermes_android/core/models/prepared_turn.dart';
 import 'package:hermes_android/core/services/chat_draft_store.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/turn_outbox_store.dart';
+import 'package:hermes_android/core/services/session_deletion.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -18,6 +19,7 @@ void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
     secure.clear();
+    LocalConversationCleanupFence.resetForTesting();
     TurnOutboxStore.resetSerializationForTesting();
     TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
@@ -60,6 +62,120 @@ void main() {
         model: 'modelo',
         profile: '',
       ),
+    );
+  }
+
+  for (final status in [200, 404]) {
+    test(
+      'confirmed $status revokes aliases but preserves other producers',
+      () async {
+        final route = LocalConversationCleanupFence.beginLifecycle(
+          connectionId: 'conn-cleanup',
+          profile: 'profile-a',
+          sessionId: 'mobile-id',
+        );
+        final service = LocalConversationCleanupFence.beginServiceLifecycle(
+          route,
+        );
+        LocalConversationCleanupFence.authorizeCreatedSession(
+          route,
+          'canonical-id',
+        );
+        LocalConversationCleanupFence.authorizeCreatedSession(
+          service,
+          'canonical-id',
+        );
+        final store = TurnOutboxStore(lifecycle: service);
+        final now = DateTime.now().millisecondsSinceEpoch;
+        PreparedTurn turn(String connection, String profile, String session) =>
+            PreparedTurn(
+              connectionId: connection,
+              sessionId: session,
+              profile: profile,
+              clientTurnId: 'queued-$session',
+              createdAtMs: now,
+              updatedAtMs: now,
+              text: 'queued-$session',
+              attachments: const [],
+              model: 'model',
+              queued: true,
+            );
+        final aliases = [
+          for (final id in ['mobile-id', 'canonical-id'])
+            turn('conn-cleanup', 'profile-a', id),
+        ];
+        for (final t in aliases) {
+          await store.save(t);
+        }
+        final controls = [
+          turn('conn-cleanup', 'profile-a', 'other-chat'),
+          turn('conn-cleanup', 'profile-b', 'canonical-id'),
+          turn('other-connection', 'profile-a', 'canonical-id'),
+        ];
+        final controlStores = <TurnOutboxStore>[];
+        for (final t in controls) {
+          final owner = LocalConversationCleanupFence.beginLifecycle(
+            connectionId: t.connectionId,
+            profile: t.profile,
+            sessionId: t.sessionId,
+          );
+          final control = TurnOutboxStore(
+            lifecycle: LocalConversationCleanupFence.beginServiceLifecycle(
+              owner,
+            ),
+          );
+          controlStores.add(control);
+          await control.save(t);
+        }
+        final client = ApiClient(
+          baseUrl: 'https://example.invalid',
+          apiKey: 'test-only',
+          connectionId: 'conn-cleanup',
+          httpClient: MockClient(
+            (_) async => http.Response('{"deleted":true}', status),
+          ),
+        );
+        addTearDown(client.close);
+        expect(
+          await client.deleteSession('canonical-id', profile: 'profile-a'),
+          isTrue,
+        );
+        for (final t in aliases) {
+          await expectLater(
+            store.save(t),
+            throwsA(isA<LocalConversationWriteRejected>()),
+          );
+          await expectLater(
+            TurnOutboxStore().save(t),
+            throwsA(isA<LocalConversationWriteRejected>()),
+          );
+        }
+        for (var i = 0; i < controls.length; i++) {
+          await controlStores[i].save(controls[i]);
+        }
+        LocalConversationCleanupFence.resetForTesting();
+        TurnOutboxStore.resetSerializationForTesting();
+        for (final t in aliases) {
+          expect(
+            await TurnOutboxStore().loadAllForChat(
+              t.connectionId,
+              t.sessionId,
+              profile: t.profile,
+            ),
+            isEmpty,
+          );
+        }
+        for (final t in controls) {
+          expect(
+            (await TurnOutboxStore().loadAllForChat(
+              t.connectionId,
+              t.sessionId,
+              profile: t.profile,
+            )).single.text,
+            t.text,
+          );
+        }
+      },
     );
   }
 

@@ -14,8 +14,17 @@ import 'package:hermes_android/core/services/desktop_gateway_capabilities.dart';
 import 'package:hermes_android/core/utils/chat_turn.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/tui_gateway_client.dart';
+import 'package:hermes_android/core/models/prepared_turn.dart';
+import 'package:hermes_android/core/services/turn_outbox_store.dart';
 
 import 'support/in_memory_compression_restore_storage.dart';
+
+class _Persistence implements TurnOutboxPersistence {
+  @override
+  Future<void> save(PreparedTurn turn) async {}
+  @override
+  Future<void> delete(PreparedTurn turn) async {}
+}
 
 class _Gateway
     implements
@@ -25,6 +34,7 @@ class _Gateway
         HermesDesktopSessionActivityGateway {
   final controller = StreamController<TuiGatewayEvent>.broadcast();
   final submissions = <String>[];
+  bool running = false;
   final durable = <Map<String, dynamic>>[];
   @override
   Stream<TuiGatewayEvent> get events => controller.stream;
@@ -56,8 +66,8 @@ class _Gateway
     runtimeSessionId: 'runtime',
     storedSessionId: storedSessionId,
     created: false,
-    running: false,
-    status: 'idle',
+    running: running,
+    status: running ? 'running' : 'idle',
   );
   @override
   Future<DesktopActiveSessionList> listActiveSessions({
@@ -217,6 +227,61 @@ void main() {
     return h;
   }
 
+  test(
+    'queue after process restart during first turn adopts second pair',
+    () async {
+      final h = harness();
+      h.gateway.running = true;
+      h.gateway.durable.add({'id': 1, 'role': 'user', 'content': 'first'});
+      h.restVisibleCount = 1;
+      final cold = h.createChat(cold: true);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      await cold.restoreQueuedTurns([
+        PreparedTurn(
+          connectionId: 'projection-test',
+          profile: '',
+          sessionId: 'stored',
+          clientTurnId: 'queued-second',
+          createdAtMs: now,
+          updatedAtMs: now,
+          text: 'second',
+          attachments: const [],
+          model: 'hermes-agent',
+          queued: true,
+          queueOrder: 0,
+        ),
+      ], _Persistence());
+      await _flush();
+      expect(
+        h.gateway.submissions,
+        isEmpty,
+        reason:
+            'restore must hydrate the prior running turn before granting queue dispatch',
+      );
+      expect(cold.messagesLoaded, isTrue);
+      expect(cold.isStreaming, isTrue);
+      h.gateway.durable.add({
+        'id': 2,
+        'role': 'assistant',
+        'content': 'first reply',
+      });
+      h.restVisibleCount = 2;
+      h.gateway.running = false;
+      h.gateway.emit('message.complete', {'text': 'first reply'});
+      await _flush();
+      expect(h.gateway.submissions, ['second']);
+      await h.stream('second');
+      h.gateway.durable.addAll([
+        {'id': 3, 'role': 'user', 'content': 'second'},
+        {'id': 4, 'role': 'assistant', 'content': 'second reply'},
+      ]);
+      h.restVisibleCount = 4;
+      h.gateway.emit('message.complete', {'text': 'second reply'});
+      await _flush();
+      await cold.loadMessages(passiveOnly: true);
+      h.expectPairs(2, subject: cold);
+    },
+  );
   test('ordinary second send retires adopted first-turn fence', () async {
     final h = harness();
     await h.twoTurns();

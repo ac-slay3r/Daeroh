@@ -2563,6 +2563,13 @@ class ActiveTurnDelivery {
   bool get transportStarted => _transportStarted;
   bool get acknowledged => _acknowledged;
   bool get discarded => _discarded;
+
+  /// Exact-session deletion also revokes held transport acknowledgements.
+  void revokeForDeletedSession() {
+    _discarded = true;
+    _transportStarted = false;
+  }
+
   bool get persistenceFailed => _persistenceFailed;
 
   /// Fija el orden durable antes de la primera escritura de una admisión.
@@ -2819,6 +2826,7 @@ class ActiveTurnDelivery {
         );
         try {
           await _store.save(next);
+          if (_discarded) return false;
           _current = next;
           _transportStarted = true;
           return true;
@@ -4221,7 +4229,10 @@ class ActiveChat {
     if (existing != null) return existing;
     final route = _localConversationLifecycle;
     if (route == null) throw StateError('No conversation producer');
-    final owner = LocalConversationCleanupFence.beginServiceLifecycle(route);
+    final owner = LocalConversationCleanupFence.beginServiceLifecycle(
+      route,
+      onDeleted: _revokeDeletedConversation,
+    );
     _deliveryLifecycle = owner;
     final created = _createdDraftSessionId;
     if (created != null && created != owner.sessionId) {
@@ -4231,6 +4242,23 @@ class ActiveChat {
   }
 
   final Map<String, LocalConversationOperation> _localTranscriptOperations = {};
+  bool _conversationDeleted = false;
+
+  void _revokeDeletedConversation() {
+    if (_conversationDeleted) return;
+    _conversationDeleted = true;
+    _turnEpoch++;
+    _activeTurnDelivery?.revokeForDeletedSession();
+    for (final owner in _preparedTurnOwners.values) {
+      owner.delivery.revokeForDeletedSession();
+    }
+    for (final item in _preparedTurnQueue) {
+      item.delivery.revokeForDeletedSession();
+    }
+    _clearQueue();
+    _queueDrainSuspended = true;
+  }
+
   final Set<String> _confirmedLocalTranscriptOperations = {};
   String? _sessionProfileOwner;
   String _storedSessionProfile = '';
@@ -7188,6 +7216,7 @@ class ActiveChat {
   int _queueParkGeneration = 0;
   bool _preparedTurnDrainInFlight = false;
   bool _queueDrainSuspended = false;
+  bool _queueTranscriptHydrationInFlight = false;
   bool _queueAdmissionFrozen = false;
   QueueLease _queueLease = QueueLease.active;
   Future<void> _queuedRestoreTail = Future<void>.value();
@@ -10902,6 +10931,7 @@ class ActiveChat {
     required bool candidateTranscriptComplete,
   }) {
     final originalFences = _terminalReconciliationFences(previous);
+
     if (originalFences.isEmpty) return candidateNewestFirst;
     // Adoption and retirement must use the same scoped binding proof as the
     // graft. Otherwise a first-turn fence (no durable identity, ordinal zero)
@@ -13251,10 +13281,15 @@ class ActiveChat {
     int turnEpoch,
     PreparedTurnTransport transport,
   ) async {
-    if (_turnEpoch != turnEpoch || _runTerminal) return false;
+    if (_conversationDeleted || _turnEpoch != turnEpoch || _runTerminal) {
+      return false;
+    }
     final delivery = _activeTurnDelivery;
     if (delivery == null) return true;
     final ready = await delivery.beginTransport(transport);
+    if (_conversationDeleted || _turnEpoch != turnEpoch || _runTerminal) {
+      return false;
+    }
     if (!ready && _turnEpoch == turnEpoch && !_runTerminal) {
       _failRun(
         _desktopLanguageCode.toLowerCase().startsWith('en')
@@ -16815,6 +16850,11 @@ class ActiveChat {
             ? gateway as HermesDesktopIdempotentGateway
             : null;
         Future<void> submitPrompt(String targetRuntimeId) async {
+          // Capability/ownership checks above can await. Recheck at the actual
+          // transport handoff, not only before the pre-send storage write.
+          if (_conversationDeleted || _turnEpoch != turnEpoch) {
+            throw const LocalConversationWriteRejected();
+          }
           captureRuntimeAttempt(targetRuntimeId);
           if (voicePlaybackInterrupted &&
               gateway is HermesDesktopInterruptedPromptGateway) {
@@ -16834,6 +16874,7 @@ class ActiveChat {
                     promptText,
                     delivery!.current.clientTurnId,
                   );
+            if (_conversationDeleted || _turnEpoch != turnEpoch) return;
             if (!ack.accepted ||
                 ack.clientTurnId != delivery.current.clientTurnId ||
                 (ack.state != DesktopTurnState.accepted &&
@@ -21938,12 +21979,33 @@ class ActiveChat {
 
   Future<void> _drainQueue() async {
     if (_disposed ||
+        _queueTranscriptHydrationInFlight ||
         mutationsBlockedByOwnershipConflict ||
         _queueLease == QueueLease.parked ||
         _queueDrainSuspended ||
         isStreaming ||
         _preparedTurnDrainInFlight) {
       return;
+    }
+    // A cold outbox restore can run before the route's initial history load.
+    // Establish the existing remote turn and its durable predecessor before
+    // dispatch; otherwise the new turn starts without a transcript boundary.
+    if (_attachDesktopRuntimeOnLoad &&
+        !_desktopStoredSessionKnownMissing &&
+        !messagesLoaded &&
+        _preparedTurnQueue.isNotEmpty) {
+      _queueTranscriptHydrationInFlight = true;
+      try {
+        await loadMessages();
+      } catch (_) {
+        // Preserve the accepted queue, without granting transport on an
+        // unproven history. A later explicit refresh/restore can retry.
+        return;
+      } finally {
+        _queueTranscriptHydrationInFlight = false;
+      }
+      if (!messagesLoaded) return;
+      return _drainQueue();
     }
     if (!await _desktopQueueDrainIsAuthorized()) return;
     if (_disposed ||

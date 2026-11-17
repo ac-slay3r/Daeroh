@@ -32,6 +32,7 @@ import 'chat_preview_store.dart';
 import 'mission_bot_chat_store.dart';
 import 'secure_storage.dart';
 import 'turn_outbox_store.dart';
+import 'session_deletion.dart';
 import '../utils/byte_bounded_lru_cache.dart';
 
 // Re-export for convenience
@@ -1792,13 +1793,30 @@ class ApiClient {
       try {
         await ChatPreviewStore.deleteForSession(sessionId);
       } catch (error) {
-        debugPrint('[connection] preview cleanup failed (${error.runtimeType})');
+        debugPrint(
+          '[connection] preview cleanup failed (${error.runtimeType})',
+        );
       }
       return;
     }
     final ownerProfile = Session.profileOwner(profile);
     // The server has already confirmed deletion. Each local store is independent
     // so a draft/outbox failure cannot retain a private rendered preview.
+    final aliases = LocalConversationCleanupFence.revokeDeletedSession(
+      connectionId: connectionId,
+      profile: ownerProfile,
+      sessionId: sessionId,
+    );
+    for (final alias in aliases) {
+      await _clearDeletedSessionAlias(connectionId, ownerProfile, alias);
+    }
+  }
+
+  Future<void> _clearDeletedSessionAlias(
+    String connectionId,
+    String ownerProfile,
+    String sessionId,
+  ) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       await ChatDraftStore(

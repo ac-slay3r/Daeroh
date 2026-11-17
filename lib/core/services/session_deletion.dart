@@ -109,6 +109,7 @@ final class LocalConversationLifecycle {
   final Set<String> _sessionAliases;
   final int _epoch;
   final bool serviceOwned;
+  final void Function()? onDeleted;
   bool _acceptingWrites = true;
 
   LocalConversationLifecycle._({
@@ -118,6 +119,7 @@ final class LocalConversationLifecycle {
     required Set<String> sessionAliases,
     required this._epoch,
     this.serviceOwned = false,
+    this.onDeleted,
   }) : _sessionAliases = Set.of(sessionAliases);
 
   bool _authorizesSession(String candidate) =>
@@ -130,7 +132,11 @@ final class _LocalConversationScopeState {
   int pendingCleanups = 0;
   final Map<String, LocalConversationLifecycle> currentOwners = {};
   final Map<String, LocalConversationLifecycle> serviceOwners = {};
+  // A newer owner can replace the map entry while an older service still has
+  // a held transport continuation. Retain revocation reachability until dispose.
+  final Set<LocalConversationLifecycle> liveServices = {};
   final Set<LocalConversationLifecycle> rehydrated = {};
+  final Set<String> deletedSessions = {};
 }
 
 final class _LocalCleanupContext {
@@ -186,8 +192,9 @@ abstract final class LocalConversationCleanupFence {
   /// currently authorized route may mint this owner. Cleanup epochs still
   /// revoke it; opening a replacement route does not.
   static LocalConversationLifecycle beginServiceLifecycle(
-    LocalConversationLifecycle route,
-  ) {
+    LocalConversationLifecycle route, {
+    void Function()? onDeleted,
+  }) {
     ensureWriteAllowed(
       connectionId: route.connectionId,
       profile: route.profile,
@@ -202,11 +209,13 @@ abstract final class LocalConversationCleanupFence {
       sessionAliases: route._sessionAliases,
       epoch: route._epoch,
       serviceOwned: true,
+      onDeleted: onDeleted,
     );
     for (final id in {route.sessionId, ...route._sessionAliases}) {
       state.serviceOwners[id] = lifecycle;
     }
     if (state.rehydrated.contains(route)) state.rehydrated.add(lifecycle);
+    state.liveServices.add(lifecycle);
     return lifecycle;
   }
 
@@ -270,6 +279,43 @@ abstract final class LocalConversationCleanupFence {
 
   static void endLifecycle(LocalConversationLifecycle lifecycle) {
     lifecycle._acceptingWrites = false;
+    _states[_scope(lifecycle.connectionId, lifecycle.profile)]?.liveServices
+        .remove(lifecycle);
+  }
+
+  /// Revoke only a confirmed deleted identity and aliases proven by its
+  /// producers, synchronously before any local cleanup awaits.
+  static Set<String> revokeDeletedSession({
+    required String connectionId,
+    required String profile,
+    required String sessionId,
+  }) {
+    final state = _stateFor(_scope(connectionId, profile));
+    final aliases = <String>{sessionId};
+    final owners = {
+      ...state.currentOwners.values,
+      ...state.serviceOwners.values,
+      ...state.liveServices,
+    };
+    final revoked = <LocalConversationLifecycle>{};
+    bool changed;
+    do {
+      changed = false;
+      for (final owner in owners) {
+        final identities = {owner.sessionId, ...owner._sessionAliases};
+        if (!identities.any(aliases.contains)) continue;
+        final before = aliases.length;
+        aliases.addAll(identities);
+        changed |= aliases.length != before;
+        owner._acceptingWrites = false;
+        revoked.add(owner);
+      }
+    } while (changed);
+    state.deletedSessions.addAll(aliases);
+    for (final owner in revoked) {
+      owner.onDeleted?.call();
+    }
+    return aliases;
   }
 
   static LocalConversationLifecycle? currentLifecycle({
@@ -311,6 +357,7 @@ abstract final class LocalConversationCleanupFence {
         !lifecycle._authorizesSession(sessionId) ||
         !lifecycle._acceptingWrites ||
         state == null ||
+        state.deletedSessions.contains(sessionId) ||
         state.pendingCleanups != 0 ||
         _connectionIsCleaning(connectionId) ||
         state.epoch != lifecycle._epoch ||
@@ -340,7 +387,9 @@ abstract final class LocalConversationCleanupFence {
         sessionId: sessionId,
         lifecycle: lifecycle,
       );
-    } else if (state.pendingCleanups != 0 ||
+    } else if ((state.deletedSessions.contains(sessionId) &&
+            kind != LocalConversationOperationKind.clearExact) ||
+        state.pendingCleanups != 0 ||
         _connectionIsCleaning(connectionId) ||
         state.blocked ||
         _blockedConnections.contains(connectionId)) {
@@ -429,6 +478,7 @@ abstract final class LocalConversationCleanupFence {
     final state = _states[_scope(operation.connectionId, operation.profile)];
     final lifecycle = operation._lifecycle;
     if (state == null ||
+        state.deletedSessions.contains(operation.sessionId) ||
         state.pendingCleanups != 0 ||
         _connectionIsCleaning(operation.connectionId) ||
         state.epoch != operation._admittedEpoch ||
