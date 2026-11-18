@@ -326,6 +326,55 @@ void main() {
     expect(delivery.current.state, PreparedTurnState.prepared);
   });
 
+  for (final language in ['en', 'es']) {
+    test('pre-send persistence error follows $language', () async {
+      final store = _MemoryOutbox()..failState = PreparedTurnState.submitting;
+      final delivery = ActiveTurnDelivery(prepared: _prepared(), store: store);
+      final gateway = _DesktopGateway();
+      final chat = ActiveChat(
+        compressionRestoreStore: testCompressionRestoreStore(),
+        connection: SavedConnection(
+          id: 'conn-test',
+          label: 'Test',
+          host: 'example.invalid',
+          port: 443,
+          apiKey: 'test-only',
+          useHttps: true,
+        ),
+        sessionId: 'session-test',
+        sessionTitle: 'Test',
+        notifications: null,
+        onTerminal: () {},
+        appLanguageCode: () => language,
+        api: ApiClient(
+          baseUrl: 'https://example.invalid',
+          apiKey: 'test-only',
+          httpClient: MockClient((_) async => http.Response('unused', 500)),
+        ),
+        desktopGateway: gateway,
+      );
+      addTearDown(chat.dispose);
+      expect(
+        await chat.send(
+          fullText: 'mensaje',
+          model: 'hermes-agent',
+          history: const [],
+          delivery: delivery,
+        ),
+        isFalse,
+      );
+      expect(gateway.submitCalls, 0);
+      expect(
+        chat.messages.any(
+          (m) => (m['content'] ?? '').toString().contains(
+            language == 'en' ? 'could not be saved' : 'No se pudo conservar',
+          ),
+        ),
+        isTrue,
+      );
+    });
+  }
+
   test('ActiveChat conserva submitting y ambiguous si se pierde ACK', () async {
     final store = _MemoryOutbox();
     final delivery = ActiveTurnDelivery(
@@ -1985,18 +2034,25 @@ void main() {
           optimistic,
           {...row(13, 'user', 'other two', timestamp: 4), '_optimistic': true},
         ]);
-        await expectRetained('non-durable extra keeps base outcome', ambiguous('same'), [
-          row(10, 'user', 'antes', timestamp: 0),
-          matching,
-          {'role': 'user', 'content': 'unidentified other', 'timestamp': 4},
-        ]);
+        await expectRetained(
+          'non-durable extra keeps base outcome',
+          ambiguous('same'),
+          [
+            row(10, 'user', 'antes', timestamp: 0),
+            matching,
+            {'role': 'user', 'content': 'unidentified other', 'timestamp': 4},
+          ],
+        );
         await expectRetained(
           'inconsistent-identity extra keeps base outcome',
           ambiguous('same'),
           [
             row(10, 'user', 'antes', timestamp: 0),
             matching,
-            {...row(13, 'user', 'inconsistent other', timestamp: 4), 'row_id': 99},
+            {
+              ...row(13, 'user', 'inconsistent other', timestamp: 4),
+              'row_id': 99,
+            },
           ],
         );
         final original = ambiguous('same');
@@ -2379,7 +2435,7 @@ void main() {
       for (final badMatch in [
         {...transcript[1], '_optimistic': true},
         {...transcript[1], 'row_id': 99},
-        {...transcript[1], 'timestamp': 0.999},
+        {...transcript[1], 'timestamp': -1},
       ]) {
         expect(
           ambiguousTurnTranscriptEvidence(

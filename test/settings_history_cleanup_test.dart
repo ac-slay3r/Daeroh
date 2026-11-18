@@ -576,7 +576,7 @@ void main() {
     );
     expect(restore, contains('if (!mounted || _disposed) return;'));
     expect(restore, contains('LocalConversationCleanupFence.rehydrate('));
-    expect(restore, contains('lifecycle: _localConversationLifecycle'));
+    expect(restore, contains('final outbox = _chat.deliveryOutbox;'));
     expect(dispose, contains('LocalConversationCleanupFence.endLifecycle('));
     expect(dispose, contains('finalDraftSave.whenComplete('));
     expect(

@@ -3741,6 +3741,236 @@ void main() {
     },
   );
 
+  // Permanent form of the independent reviewer's real-widget deletion probe.
+  for (final deletionTiming in ['late-terminal', 'late-held-ack', 'held-ack']) {
+    testWidgets('confirmed Chat deletion fences retained queue $deletionTiming', (
+      tester,
+    ) async {
+      final connection = _remoteConn('delete-queue-$deletionTiming');
+      final gateway = _UiRewindGateway();
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: _session().copyWith(id: 'sess-test'),
+        desktopGateway: gateway,
+        messagesLoaded: false,
+      );
+      await tester.enterText(find.byType(TextField), 'first route turn');
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.byKey(const ValueKey('send')));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(gateway.submissions, ['first route turn']);
+      await tester.enterText(find.byType(TextField), 'retained queued text');
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.longPress(find.byKey(const ValueKey('send')));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(chat.queuedTurns.single.turn.text, 'retained queued text');
+      expect(
+        (await TurnOutboxStore().loadAllForChat(
+          connection.id,
+          chat.serverSessionId,
+          profile: 'default',
+        )).where((t) => t.queued).map((t) => t.text),
+        contains('retained queued text'),
+        reason:
+            'A fresh store must recover pending text under the canonical server chat',
+      );
+      final hold = Completer<void>();
+      if (deletionTiming != 'late-terminal') gateway.submitGate = hold;
+      addTearDown(() {
+        if (!hold.isCompleted) hold.complete();
+      });
+      if (deletionTiming == 'held-ack') {
+        gateway.emit('message.complete', {'text': 'first done'});
+        await tester.pump(const Duration(milliseconds: 1200));
+        expect(gateway.submissions, [
+          'first route turn',
+          'retained queued text',
+        ]);
+      }
+      var deleteCalls = 0;
+      final client = MockClient((request) async {
+        if (request.method == 'DELETE') {
+          deleteCalls++;
+          return http.Response(
+            '{"deleted":true}',
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response(
+          '[]',
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+      await http.runWithClient(() async {
+        tester
+            .widget<IconButton>(
+              find.byKey(const ValueKey('chat-control-trigger')),
+            )
+            .onPressed!();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.tap(find.text('Borrar'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.tap(find.text('Borrar').last);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 1000));
+      }, () => client);
+      expect(
+        deleteCalls,
+        1,
+        reason: 'Actual confirmed remote delete path must execute',
+      );
+      expect(find.byType(ChatScreen), findsNothing);
+      expect(
+        await TurnOutboxStore().loadAllForChat(
+          connection.id,
+          chat.serverSessionId,
+          profile: 'default',
+        ),
+        isEmpty,
+      );
+      gateway.emit('message.complete', {'text': 'first done'});
+      await tester.pump(const Duration(milliseconds: 1200));
+      expect(
+        gateway.submissions,
+        deletionTiming == 'held-ack'
+            ? ['first route turn', 'retained queued text']
+            : ['first route turn'],
+        reason: 'No new submission after confirmed deletion',
+      );
+      expect(chat.queuedTurns, isEmpty);
+      if (!hold.isCompleted) hold.complete();
+      await tester.pump(const Duration(milliseconds: 800));
+      gateway.emit('message.complete', {'text': 'queue done'});
+      await tester.pump(const Duration(milliseconds: 800));
+      expect(
+        await TurnOutboxStore().loadAllForChat(
+          connection.id,
+          chat.serverSessionId,
+          profile: 'default',
+        ),
+        isEmpty,
+      );
+      chat.dispose();
+      await tester.pump();
+      LocalConversationCleanupFence.resetForTesting();
+      TurnOutboxStore.resetSerializationForTesting();
+      expect(
+        await TurnOutboxStore().loadAllForChat(
+          connection.id,
+          chat.serverSessionId,
+          profile: 'default',
+        ),
+        isEmpty,
+      );
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  for (final navigation in [
+    'back-before',
+    'back-after',
+    'home',
+    'switch',
+    'corrected-credentials',
+  ]) {
+    final returnBeforeTerminal = navigation != 'back-after';
+    testWidgets('H1 queued delivery survives $navigation', (tester) async {
+      final connection = _remoteConn('route-queue-$returnBeforeTerminal');
+      final gateway = _UiRewindGateway();
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        session: _session().copyWith(id: 'mob-route-queue'),
+        desktopGateway: gateway,
+        messagesLoaded: false,
+      );
+      await tester.enterText(find.byType(TextField), 'first route turn');
+      await tester.pump(const Duration(milliseconds: 250));
+      if (navigation == 'corrected-credentials') {
+        gateway.connectError = StateError('synthetic authentication rejected');
+        await tester.tap(find.byKey(const ValueKey('send')));
+        await tester.pump(const Duration(milliseconds: 400));
+        expect(gateway.submissions, isEmpty);
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller!.text,
+          'first route turn',
+        );
+        gateway.connectError = null;
+      }
+      await tester.tap(find.byKey(const ValueKey('send')));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(gateway.submissions, ['first route turn']);
+      await tester.enterText(find.byType(TextField), 'retained queued text');
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.longPress(find.byKey(const ValueKey('send')));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(chat.queuedTurns.single.turn.text, 'retained queued text');
+      expect(
+        (await TurnOutboxStore().loadAllForChat(
+          connection.id,
+          chat.serverSessionId,
+          profile: 'default',
+        )).where((t) => t.queued).map((t) => t.text),
+        contains('retained queued text'),
+        reason:
+            'A fresh store must recover pending text under the canonical server chat',
+      );
+      final screen = tester.widget<ChatScreen>(find.byType(ChatScreen));
+      Navigator.of(tester.element(find.byType(ChatScreen))).pop();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      if (navigation == 'home') expect(find.byType(ChatScreen), findsNothing);
+      if (navigation == 'switch') {
+        Navigator.of(tester.element(find.byType(Navigator).first)).push(
+          MaterialPageRoute(
+            builder: (_) => ChatScreen(
+              connection: connection,
+              session: _session().copyWith(id: 'another-chat'),
+              draftStoreOverride: screen.draftStoreOverride,
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+        expect(
+          tester.widget<ChatScreen>(find.byType(ChatScreen)).session.id,
+          'another-chat',
+        );
+        Navigator.of(tester.element(find.byType(ChatScreen))).pop();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+      }
+      Future<void> reopen() async {
+        Navigator.of(tester.element(find.byType(Navigator).first)).push(
+          MaterialPageRoute(
+            builder: (_) => ChatScreen(
+              connection: connection,
+              session: screen.session,
+              draftStoreOverride: screen.draftStoreOverride,
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+      }
+
+      if (returnBeforeTerminal) await reopen();
+      gateway.emit('message.complete', {'text': 'first done'});
+      await tester.pump(const Duration(milliseconds: 1200));
+      expect(gateway.submissions, ['first route turn', 'retained queued text']);
+      if (!returnBeforeTerminal) await reopen();
+      gateway.emit('message.complete', {'text': 'queue done'});
+      await tester.pump(const Duration(milliseconds: 800));
+      expect(chat.queuedTurns, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   testWidgets(
     'mentions: immediate and explicitly queued payload freeze while bubbles stay typed',
     (tester) async {

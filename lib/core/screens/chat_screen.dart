@@ -2423,7 +2423,7 @@ class _ChatScreenState extends State<ChatScreen>
       return;
     }
     final store = widget.draftStoreOverride ?? ChatDraftStore(prefs);
-    final outbox = TurnOutboxStore(lifecycle: _localConversationLifecycle);
+    final outbox = _chat.deliveryOutbox;
     // El borrador pinta primero: la reconciliación adicional de outbox no debe
     // retrasar el composer ni introducir una carrera visible al navegar rápido.
     _draftStore = store;
@@ -3058,8 +3058,7 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   Future<TurnOutboxStore> _outboxStore() async {
-    final store =
-        _turnOutbox ?? TurnOutboxStore(lifecycle: _localConversationLifecycle);
+    final store = _turnOutbox ?? _chat.deliveryOutbox;
     _turnOutbox = store;
     return store;
   }
@@ -7349,7 +7348,9 @@ class _ChatScreenState extends State<ChatScreen>
       final now = DateTime.now().millisecondsSinceEpoch;
       final prepared = PreparedTurn(
         connectionId: widget.connection.id,
-        sessionId: widget.session.id,
+        sessionId: _isBotChatSurface
+            ? widget.session.id
+            : _chat.serverSessionId,
         clientTurnId: const Uuid().v4(),
         createdAtMs: now,
         updatedAtMs: now,
@@ -17086,7 +17087,10 @@ class _AssistantMessage extends StatelessWidget {
         // renderer that can authenticate or fetch a managed server file.
         final text = GeneratedMediaService.stripDirectives(answer);
         if (text.trim().isNotEmpty) {
-          yield Text(text.trim(), style: Theme.of(context).textTheme.bodyMedium);
+          yield Text(
+            text.trim(),
+            style: Theme.of(context).textTheme.bodyMedium,
+          );
         }
         return;
       }
