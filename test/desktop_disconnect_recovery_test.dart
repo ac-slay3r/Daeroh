@@ -4708,6 +4708,49 @@ void main() {
   );
 
   test(
+    'non-idempotent snapshot recovery bounds connected no-proof reads without replay',
+    () async {
+      final gateway = _LifecycleRecoverableGateway()
+        ..recoverySnapshot = const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-unproven-snapshot',
+          storedSessionId: 'session-unproven-snapshot',
+          created: false,
+          messagesProvided: false,
+        );
+      final chat = _recoverableChat(
+        'unproven-snapshot',
+        gateway,
+        turnIdempotencySupported: false,
+        desktopRecoveryBackoff: const [Duration.zero],
+        desktopRecoveryRandom: () => 1.0,
+        storedMessageLoader: (_, _) async => const [],
+      );
+      addTearDown(chat.dispose);
+
+      await chat.send(
+        fullText: 'submit exactly once',
+        model: 'hermes-agent',
+        history: const [],
+        delivery: _delivery('unproven-snapshot', _NoopOutbox()),
+      );
+      final resumesBeforeDrop = gateway.resumeExistingCalls;
+      gateway.drop();
+      await _waitUntil(
+        () => chat.state == ChatPipelineState.failed,
+        timeout: const Duration(seconds: 5),
+      );
+
+      expect(chat.transportStatus.state, ChatTransportState.remoteRunUnproven);
+      expect(gateway.resumeExistingCalls, resumesBeforeDrop + 3);
+      expect(gateway.submitCalls, 1);
+      expect(chat.messages.first['_prompt'], 'submit exactly once');
+
+      await chat.reconcileAfterResume();
+      expect(gateway.submitCalls, 1);
+    },
+  );
+
+  test(
     'viewer terminal parcial sin cobertura espera autoridad de roster',
     () async {
       var transcriptCalls = 0;

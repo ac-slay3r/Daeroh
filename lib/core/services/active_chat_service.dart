@@ -17858,6 +17858,7 @@ class ActiveChat {
     final epochInvalidated = _turnEpochInvalidated.future;
     var attempt = 0;
     var transcriptAttempted = false;
+    var unprovenConnectedAttempts = 0;
     Object lastError = originalError;
     debugPrint('[active-chat] snapshot recovery start');
     while (_canRecoverTurn(turnEpoch)) {
@@ -17946,6 +17947,17 @@ class ActiveChat {
             debugPrint(
               '[active-chat] snapshot recovery result kind=durable_pending',
             );
+            if (gateway.isConnected &&
+                ++unprovenConnectedAttempts >=
+                    _maxUnprovenConnectedRecoveryAttempts) {
+              debugPrint(
+                '[active-chat] snapshot recovery gave up '
+                'kind=unproven_connected '
+                'attempts=$unprovenConnectedAttempts',
+              );
+              _degradeLegacyTurnRecovery(turnEpoch, originalError);
+              return;
+            }
             continue;
           }
         }
@@ -17957,6 +17969,17 @@ class ActiveChat {
           debugPrint(
             '[active-chat] snapshot recovery result kind=authority_pending',
           );
+          if (gateway.isConnected &&
+              ++unprovenConnectedAttempts >=
+                  _maxUnprovenConnectedRecoveryAttempts) {
+            debugPrint(
+              '[active-chat] snapshot recovery gave up '
+              'kind=unproven_connected '
+              'attempts=$unprovenConnectedAttempts',
+            );
+            _degradeLegacyTurnRecovery(turnEpoch, originalError);
+            return;
+          }
           continue;
         }
         _publishDashboardAuthRequired(false);
