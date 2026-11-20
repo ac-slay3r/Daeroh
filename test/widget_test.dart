@@ -15,8 +15,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hermes_android/core/models/desktop_active_session.dart';
 import 'package:hermes_android/core/screens/home_dashboard_screen.dart';
 import 'package:hermes_android/core/screens/onboarding_screen.dart';
+import 'package:hermes_android/core/services/active_chat_service.dart';
 import 'package:hermes_android/core/screens/onboarding/connect_chooser_screen.dart';
 import 'package:hermes_android/core/screens/onboarding/server_setup_screen.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
@@ -129,6 +131,82 @@ class _DeferredHomeClient extends ApiClient {
 
   @override
   void close() {}
+}
+
+/// Makes each Home authority observable without exposing any private transport
+/// details to the widget test.
+class _TransportRefreshClient extends ApiClient {
+  _TransportRefreshClient({required this.initialHealth})
+    : super(
+        baseUrl: 'http://127.0.0.1:8642',
+        apiKey: 'test-key',
+        httpClient: MockClient(
+          (_) async => throw StateError('unexpected HTTP'),
+        ),
+      );
+
+  final bool initialHealth;
+  final Completer<void> laterHealth = Completer<void>();
+  int healthCalls = 0;
+  int sessionCalls = 0;
+
+  @override
+  Future<bool> healthCheck({String? profile, bool verifySessionAccess = true}) {
+    healthCalls += 1;
+    if (healthCalls == 1) return Future.value(initialHealth);
+    return laterHealth.future.then((_) => true);
+  }
+
+  @override
+  Future<List<Session>> getSessions({
+    bool includeChildren = false,
+    String? profile,
+  }) async {
+    sessionCalls += 1;
+    return [
+      Session(
+        id: 'authoritative-home-session',
+        title: 'Sesión autorizada',
+        source: 'mobile',
+        model: 'hermes-agent',
+        messageCount: 2,
+        isActive: false,
+        preview: 'fila del servidor',
+        startedAt: 2,
+      ),
+    ];
+  }
+
+  @override
+  void close() {}
+}
+
+void _installSecureStorageFixture() {
+  final values = <String, String>{};
+  const channel = MethodChannel('plugins.it_nomads.com/flutter_secure_storage');
+  TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
+      .setMockMethodCallHandler(channel, (call) async {
+        final args = call.arguments is Map
+            ? Map<Object?, Object?>.from(call.arguments as Map)
+            : const <Object?, Object?>{};
+        switch (call.method) {
+          case 'write':
+            values[args['key'] as String] = args['value'] as String;
+            return null;
+          case 'read':
+            return values[args['key']];
+          case 'readAll':
+            return Map<String, String>.of(values);
+          case 'delete':
+            values.remove(args['key']);
+            return null;
+        }
+        return null;
+      });
+  addTearDown(
+    () => TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null),
+  );
 }
 
 void main() {
@@ -335,6 +413,174 @@ void main() {
         );
         expect(find.text('Internal voice session'), findsNothing);
         expect(find.text('Informe cron interno'), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'socket reopening remains checking until health, sessions, and roster reread',
+      (tester) async {
+        SharedPreferences.setMockInitialValues({});
+        _installSecureStorageFixture();
+        final prefs = await SharedPreferences.getInstance();
+        final manager = await ConnectionManager.create(prefs);
+        await manager.saveConnection(
+          'QA',
+          '127.0.0.1',
+          8642,
+          'test-key',
+          kind: InstanceKind.vps,
+        );
+        final chats = ActiveChatService();
+        addTearDown(chats.dispose);
+        final client = _TransportRefreshClient(initialHealth: false);
+        final rosterGate = Completer<DesktopActiveSessionList>();
+        var rosterCalls = 0;
+        Future<DesktopActiveSessionList> roster() {
+          rosterCalls += 1;
+          return rosterCalls == 1
+              ? Future.value(const DesktopActiveSessionList())
+              : rosterGate.future;
+        }
+
+        await tester.pumpWidget(
+          _host(
+            HomeDashboardScreen(
+              connManager: manager,
+              clientFactory: (_) => client,
+              activeChatsOverride: chats,
+              activeSessionListLoader: roster,
+            ),
+          ),
+        );
+        for (
+          var attempt = 0;
+          attempt < 40 && client.healthCalls < 1;
+          attempt++
+        ) {
+          await tester.pump(const Duration(milliseconds: 25));
+        }
+        await tester.pump();
+        expect(find.text('sin conexión · QA'), findsOneWidget);
+        expect(rosterCalls, 1);
+
+        // An open chat socket is only an invalidation: it cannot make Home
+        // healthy without re-reading its three independent authorities.
+        chats.transportUpdate.value = const ChatTransportUpdate(
+          connectionId: '',
+          sessionId: 'chat',
+          profile: '',
+          state: ChatTransportState.connected,
+        );
+        await tester.pump();
+        expect(client.healthCalls, 2);
+        expect(find.text('verificando · QA'), findsOneWidget);
+        expect(find.text('agent online · QA'), findsNothing);
+        expect(client.sessionCalls, 0);
+        expect(rosterCalls, 1);
+
+        client.laterHealth.complete();
+        for (var attempt = 0; attempt < 40 && rosterCalls < 2; attempt++) {
+          await tester.pump(const Duration(milliseconds: 25));
+        }
+        expect(client.sessionCalls, 1);
+        expect(rosterCalls, 2);
+        expect(find.text('agent online · QA'), findsNothing);
+
+        rosterGate.complete(const DesktopActiveSessionList());
+        for (var attempt = 0; attempt < 40; attempt++) {
+          await tester.pump(const Duration(milliseconds: 25));
+          if (find.text('agent online · QA').evaluate().isNotEmpty) break;
+        }
+        expect(find.text('agent online · QA'), findsOneWidget);
+        expect(find.text('Sesión autorizada'), findsOneWidget);
+        await tester.pump(const Duration(seconds: 1));
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'background idle release stays local and foreground reacquires Home authorities',
+      (tester) async {
+        SharedPreferences.setMockInitialValues({});
+        _installSecureStorageFixture();
+        final prefs = await SharedPreferences.getInstance();
+        final manager = await ConnectionManager.create(prefs);
+        await manager.saveConnection(
+          'QA',
+          '127.0.0.1',
+          8642,
+          'test-key',
+          kind: InstanceKind.vps,
+        );
+        final chats = ActiveChatService();
+        addTearDown(chats.dispose);
+        final client = _TransportRefreshClient(initialHealth: true);
+        final rosterGate = Completer<DesktopActiveSessionList>();
+        var rosterCalls = 0;
+        Future<DesktopActiveSessionList> roster() {
+          rosterCalls += 1;
+          return rosterCalls == 1
+              ? Future.value(const DesktopActiveSessionList())
+              : rosterGate.future;
+        }
+
+        await tester.pumpWidget(
+          _host(
+            HomeDashboardScreen(
+              connManager: manager,
+              clientFactory: (_) => client,
+              activeChatsOverride: chats,
+              activeSessionListLoader: roster,
+            ),
+          ),
+        );
+        for (var attempt = 0; attempt < 40 && rosterCalls < 1; attempt++) {
+          await tester.pump(const Duration(milliseconds: 25));
+        }
+        for (var attempt = 0; attempt < 40; attempt++) {
+          await tester.pump(const Duration(milliseconds: 25));
+          if (find.text('agent online · QA').evaluate().isNotEmpty) break;
+        }
+        expect(find.text('agent online · QA'), findsOneWidget);
+        expect(client.healthCalls, 1);
+        expect(client.sessionCalls, 1);
+
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        await tester.pump();
+        chats.publishIdleObserverReleased();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(client.healthCalls, 1);
+        expect(client.sessionCalls, 1);
+        expect(rosterCalls, 1);
+        expect(find.text('agent online · QA'), findsOneWidget);
+        expect(find.textContaining('conexión perdida'), findsNothing);
+        expect(find.textContaining('reconectando'), findsNothing);
+
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+        await tester.pump();
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.inactive,
+        );
+        await tester.pump();
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        );
+        await tester.pump();
+        expect(client.healthCalls, 2);
+        client.laterHealth.complete();
+        for (var attempt = 0; attempt < 40 && rosterCalls < 2; attempt++) {
+          await tester.pump(const Duration(milliseconds: 25));
+        }
+        expect(client.sessionCalls, 2);
+        expect(rosterCalls, 2);
+        rosterGate.complete(const DesktopActiveSessionList());
+        for (var attempt = 0; attempt < 40; attempt++) {
+          await tester.pump(const Duration(milliseconds: 25));
+          if (find.text('agent online · QA').evaluate().isNotEmpty) break;
+        }
+        expect(find.text('agent online · QA'), findsOneWidget);
+        await tester.pump(const Duration(seconds: 1));
         expect(tester.takeException(), isNull);
       },
     );
