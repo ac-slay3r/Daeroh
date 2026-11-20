@@ -3,6 +3,23 @@
 All notable public changes are documented here. Internal QA/profile artifacts
 are not releases.
 
+## Daeroh 0.1.20 — draft, unreleased
+
+- Publish typed chat transport transitions to Home. Home now refreshes its
+  independent health check, server session list, and active-run roster before
+  replacing a stale projection; a socket opening never by itself proves Home
+  healthy.
+- Label the 60-second unleased background observer close as a local idle release
+  rather than a remote connection loss. Returning to foreground refreshes Home
+  from its authorities.
+- When bounded chat recovery cannot prove a remote run, preserve the transcript
+  and draft, free the composer with a retryable local error, and make Retry
+  reconcile server state only; it never submits the prompt again.
+- Remaining limits: live API-29/API-37 outage, Doze, network-switch,
+  gateway-restart, and battery comparison evidence is pending the diagnosis
+  matrix/baseline. This draft has no physical-device, signing, or distribution
+  acceptance.
+
 ## Daeroh 0.1.19 (4023) — private source candidate
 
 - Keep queued messages when leaving Chat and returning while a reply is still

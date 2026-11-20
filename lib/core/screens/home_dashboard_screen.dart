@@ -181,6 +181,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     WidgetsBinding.instance.removeObserver(this);
     widget.connManager.activeConnectionId.removeListener(_onActiveConnChanged);
     _listenedActiveChats?.activeIds.removeListener(_onActivityChanged);
+    _listenedActiveChats?.transportUpdate.removeListener(_onTransportUpdate);
     _listenedGlobalActivity?.removeListener(_onActivityChanged);
     _localStartPoll?.cancel();
     super.dispose();
@@ -192,8 +193,10 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     final activeChats = _activeChats;
     if (!identical(_listenedActiveChats, activeChats)) {
       _listenedActiveChats?.activeIds.removeListener(_onActivityChanged);
+      _listenedActiveChats?.transportUpdate.removeListener(_onTransportUpdate);
       _listenedActiveChats = activeChats;
       activeChats?.activeIds.addListener(_onActivityChanged);
+      activeChats?.transportUpdate.addListener(_onTransportUpdate);
     }
     final aggregate =
         widget.globalActivityOverride ?? activeChats?.globalActivity;
@@ -271,6 +274,21 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
       _activityRebuildScheduled = false;
       if (mounted) setState(() {});
     });
+  }
+
+  void _onTransportUpdate() {
+    final update = _listenedActiveChats?.transportUpdate.value;
+    final active = _active;
+    if (!mounted ||
+        !_activityRefreshAllowed ||
+        update == null ||
+        (update.connectionId.isNotEmpty && update.connectionId != active?.id)) {
+      return;
+    }
+    // A chat socket transition is only a local invalidation. Re-read Home's
+    // independent authorities before replacing any stale projection; an open
+    // socket never establishes that Home is healthy.
+    unawaited(_refreshStatus());
   }
 
   bool get _activityRefreshAllowed =>
@@ -1081,6 +1099,10 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         .toList();
     final recentLimit = _homeRecentLimit();
     if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
+    // The active-run roster is a third authority alongside /health and the
+    // session library. Finish it before committing a refreshed Home projection.
+    await _refreshRemoteActivity(conn, ownerProfile);
+    if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
     setState(() {
       _healthOk = ok;
       _checking = false;
@@ -1089,8 +1111,6 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
       _sessionLibraryStatus = sessionLibraryStatus;
       _recentSessions = recentSessions;
     });
-    await _refreshRemoteActivity(conn, ownerProfile);
-    if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
     unawaited(
       app?.updateHomeWidget(
         (current) => _isCurrentStatusRefresh(refreshEpoch, connectionId)

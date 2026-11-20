@@ -190,6 +190,7 @@ class _RecoverableDesktopGateway extends _DroppingDesktopGateway
   Completer<void>? recoveryStatusGate;
   final recoveryResumeStarted = Completer<void>();
   DesktopTurnState recoveredState = DesktopTurnState.running;
+  bool recoveryStatusKnown = true;
   int recoveryConnectFailuresRemaining = 0;
   Object? recoveryConnectError;
   int statusCalls = 0;
@@ -316,7 +317,7 @@ class _RecoverableDesktopGateway extends _DroppingDesktopGateway
     statusCalls++;
     await recoveryStatusGate?.future;
     return DesktopTurnStatus(
-      known: true,
+      known: recoveryStatusKnown,
       clientTurnId: clientTurnId,
       serverTurnId: 'server-turn',
       state: recoveredState,
@@ -4707,6 +4708,49 @@ void main() {
   );
 
   test(
+    'non-idempotent snapshot recovery bounds connected no-proof reads without replay',
+    () async {
+      final gateway = _LifecycleRecoverableGateway()
+        ..recoverySnapshot = const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-unproven-snapshot',
+          storedSessionId: 'session-unproven-snapshot',
+          created: false,
+          messagesProvided: false,
+        );
+      final chat = _recoverableChat(
+        'unproven-snapshot',
+        gateway,
+        turnIdempotencySupported: false,
+        desktopRecoveryBackoff: const [Duration.zero],
+        desktopRecoveryRandom: () => 1.0,
+        storedMessageLoader: (_, _) async => const [],
+      );
+      addTearDown(chat.dispose);
+
+      await chat.send(
+        fullText: 'submit exactly once',
+        model: 'hermes-agent',
+        history: const [],
+        delivery: _delivery('unproven-snapshot', _NoopOutbox()),
+      );
+      final resumesBeforeDrop = gateway.resumeExistingCalls;
+      gateway.drop();
+      await _waitUntil(
+        () => chat.state == ChatPipelineState.failed,
+        timeout: const Duration(seconds: 5),
+      );
+
+      expect(chat.transportStatus.state, ChatTransportState.remoteRunUnproven);
+      expect(gateway.resumeExistingCalls, resumesBeforeDrop + 3);
+      expect(gateway.submitCalls, 1);
+      expect(chat.messages.first['_prompt'], 'submit exactly once');
+
+      await chat.reconcileAfterResume();
+      expect(gateway.submitCalls, 1);
+    },
+  );
+
+  test(
     'viewer terminal parcial sin cobertura espera autoridad de roster',
     () async {
       var transcriptCalls = 0;
@@ -8472,6 +8516,36 @@ void main() {
       expect(gateway.submitCalls, 1);
       expect(gateway.resumeCalls, 2);
       expect(chat.state, ChatPipelineState.executing);
+    },
+  );
+
+  test(
+    'an unproven remote run becomes retryable without replaying its prompt',
+    () async {
+      final gateway = _RecoverableDesktopGateway()..recoveryStatusKnown = false;
+      final chat = _recoverableChat(
+        'unproven-remote-run',
+        gateway,
+        desktopRecoveryBackoff: const [Duration.zero],
+      );
+      addTearDown(chat.dispose);
+
+      await chat.send(
+        fullText: 'keep this exact draft',
+        model: 'hermes-agent',
+        history: const [],
+        delivery: _delivery('unproven-remote-run', _NoopOutbox()),
+      );
+      gateway.drop();
+      await _waitUntil(() => chat.state == ChatPipelineState.failed);
+
+      expect(chat.transportStatus.state.name, 'remoteRunUnproven');
+      expect(chat.messages.first['_prompt'], 'keep this exact draft');
+
+      // The Chat Retry action calls this reconciliation path. It may reread
+      // remote state, but it must not replay the ambiguous prompt.
+      await chat.reconcileAfterResume();
+      expect(gateway.submitCalls, 1);
     },
   );
 
