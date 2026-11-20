@@ -7691,8 +7691,18 @@ class _ChatScreenState extends State<ChatScreen>
     });
   }
 
-  /// Retry the last failed send.
-  Future<void> _retryLastPrompt([String? bubblePrompt]) async {
+  /// Retry the last failed send, or only reconcile an unproven remote run.
+  Future<void> _retryLastPrompt([
+    String? bubblePrompt,
+    bool remoteRunUnproven = false,
+  ]) async {
+    if (remoteRunUnproven ||
+        _chat.transportStatus.state == ChatTransportState.remoteRunUnproven) {
+      // The previous submission may exist remotely. A retry here is deliberately
+      // a read-only reconciliation, never a second prompt submission.
+      await _chat.reconcileAfterResume();
+      return;
+    }
     // The error bubble remembers its own prompt; after a relaunch the screen's
     // last prompt can be empty while the bubble is still on screen.
     final prompt = _lastPrompt.isNotEmpty ? _lastPrompt : (bubblePrompt ?? '');
@@ -14081,7 +14091,9 @@ class _ChatScreenState extends State<ChatScreen>
         error: activeChatStoredErrorUiMessage(content),
         onRetry: _chat.conflictReadOnly
             ? null
-            : () => unawaited(_retryLastPrompt(prompt)),
+            : () => unawaited(
+                _retryLastPrompt(prompt, msg['_remoteRunUnproven'] == true),
+              ),
         prompt: prompt,
         onRestartGateway: _restartGatewayFromChat,
         onNewSession: _chat.conflictReadOnly ? null : _newChat,

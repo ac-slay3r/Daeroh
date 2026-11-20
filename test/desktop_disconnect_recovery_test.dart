@@ -190,6 +190,7 @@ class _RecoverableDesktopGateway extends _DroppingDesktopGateway
   Completer<void>? recoveryStatusGate;
   final recoveryResumeStarted = Completer<void>();
   DesktopTurnState recoveredState = DesktopTurnState.running;
+  bool recoveryStatusKnown = true;
   int recoveryConnectFailuresRemaining = 0;
   Object? recoveryConnectError;
   int statusCalls = 0;
@@ -316,7 +317,7 @@ class _RecoverableDesktopGateway extends _DroppingDesktopGateway
     statusCalls++;
     await recoveryStatusGate?.future;
     return DesktopTurnStatus(
-      known: true,
+      known: recoveryStatusKnown,
       clientTurnId: clientTurnId,
       serverTurnId: 'server-turn',
       state: recoveredState,
@@ -8472,6 +8473,32 @@ void main() {
       expect(gateway.submitCalls, 1);
       expect(gateway.resumeCalls, 2);
       expect(chat.state, ChatPipelineState.executing);
+    },
+  );
+
+  test(
+    'an unproven remote run becomes retryable without replaying its prompt',
+    () async {
+      final gateway = _RecoverableDesktopGateway()..recoveryStatusKnown = false;
+      final chat = _recoverableChat(
+        'unproven-remote-run',
+        gateway,
+        desktopRecoveryBackoff: const [Duration.zero],
+      );
+      addTearDown(chat.dispose);
+
+      await chat.send(
+        fullText: 'keep this exact draft',
+        model: 'hermes-agent',
+        history: const [],
+        delivery: _delivery('unproven-remote-run', _NoopOutbox()),
+      );
+      gateway.drop();
+      await _waitUntil(() => chat.state == ChatPipelineState.failed);
+
+      expect(chat.transportStatus.state.name, 'remoteRunUnproven');
+      expect(gateway.submitCalls, 1);
+      expect(chat.messages.first['_prompt'], 'keep this exact draft');
     },
   );
 

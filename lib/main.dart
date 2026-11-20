@@ -1376,6 +1376,10 @@ class HermesAppState extends State<HermesApp> with WidgetsBindingObserver {
         _gatewayIdleTimer = null;
         if (_appLifecycle != AppLifecycleState.resumed) {
           SharedGatewayPool.instance.disconnectIdle();
+          // This closes only unleased observer sockets. It is intentionally not
+          // a remote connection-loss signal; foreground reacquisition refreshes
+          // Home from health, sessions and run state.
+          widget.activeChats.publishIdleObserverReleased();
         }
       });
       // No cerramos el WebSocket por lifecycle. Android puede encadenar

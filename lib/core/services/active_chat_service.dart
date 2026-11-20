@@ -3218,7 +3218,17 @@ enum ChatPipelineState {
   cancelled,
 }
 
-enum ChatTransportState { connected, reconnecting, offline }
+/// Transport state is a local observation, never proof that a remote run ended.
+/// [remoteRunUnproven] means bounded recovery could not prove the submitted
+/// turn's server state. The transcript and draft remain local; retry must only
+/// reread authoritative state and must not submit the prompt again.
+enum ChatTransportState {
+  connected,
+  reconnecting,
+  offline,
+  remoteRunUnproven,
+  idleObserverReleased,
+}
 
 @immutable
 final class ChatTransportStatus {
@@ -3228,6 +3238,23 @@ final class ChatTransportStatus {
   final DateTime? disconnectedSince;
 
   bool get isConnected => state == ChatTransportState.connected;
+}
+
+/// A redacted, typed transport invalidation for non-Chat surfaces.  It is not
+/// an assertion about gateway or run health: Home must reread its authorities.
+@immutable
+final class ChatTransportUpdate {
+  const ChatTransportUpdate({
+    required this.connectionId,
+    required this.sessionId,
+    required this.profile,
+    required this.state,
+  });
+
+  final String connectionId;
+  final String sessionId;
+  final String profile;
+  final ChatTransportState state;
 }
 
 const _stopEscalationBudget = Duration(seconds: 8);
@@ -17683,6 +17710,7 @@ class ActiveChat {
                 'attempts=$unprovenConnectedAttempts',
               );
               _degradeLegacyTurnRecovery(turnEpoch, originalError);
+              _markRemoteRunUnprovenTerminal();
               return;
             }
             continue;
@@ -17727,6 +17755,7 @@ class ActiveChat {
                     'attempts=$unprovenConnectedAttempts',
                   );
                   _degradeLegacyTurnRecovery(turnEpoch, originalError);
+                  _markRemoteRunUnprovenTerminal();
                   return;
                 }
                 continue;
@@ -17811,7 +17840,8 @@ class ActiveChat {
         );
       }
     } finally {
-      if (gateway.isConnected) {
+      if (gateway.isConnected &&
+          _transportStatus.state != ChatTransportState.remoteRunUnproven) {
         _publishTransportState(ChatTransportState.connected);
       }
       if (_recoveringDesktopTurnEpoch == turnEpoch) {
@@ -18242,6 +18272,16 @@ class ActiveChat {
   /// pertenece un transcript leído después de perder el socket. Conserva la
   /// proyección visible y deja una recuperación durable explícita; no adopta
   /// GET tardíos, no publica terminalidad y no libera la cola.
+  void _markRemoteRunUnprovenTerminal() {
+    _publishTransportState(ChatTransportState.remoteRunUnproven);
+    for (final message in _messages) {
+      if (message['role'] == 'assistant_error') {
+        message['_remoteRunUnproven'] = true;
+        return;
+      }
+    }
+  }
+
   void _degradeLegacyTurnRecovery(int turnEpoch, Object originalError) {
     if (!_canRecoverTurn(turnEpoch) || awaitingDurableTurnRecovery) return;
     debugPrint(activeChatDesktopRecoveryDiagnostic(originalError));
@@ -18250,6 +18290,7 @@ class ActiveChat {
     _activityWatchdogTimer = null;
     _setNoActivityHint(false);
     _flushTokenBuffer();
+    _publishTransportState(ChatTransportState.remoteRunUnproven);
     state = ChatPipelineState.failed;
     traceActive = false;
     _cancelling = false;
@@ -18275,6 +18316,7 @@ class ActiveChat {
           languageCode: _desktopLanguageCode,
         ),
         '_prompt': lastPrompt,
+        '_remoteRunUnproven': true,
         _awaitingDurableTurnRecoveryKey: true,
         'partial': true,
         'recoverable': true,
@@ -18291,10 +18333,26 @@ class ActiveChat {
           languageCode: _desktopLanguageCode,
         ),
         '_prompt': lastPrompt,
+        '_remoteRunUnproven': true,
         _awaitingDurableTurnRecoveryKey: true,
         'recoverable': true,
         '_localTranscriptProjectionId': projectionId,
       };
+    } else {
+      final projectionId = _nextLocalTranscriptProjectionId();
+      _tagLatestUserForLocalError(projectionId);
+      _messages.insert(0, {
+        'role': 'assistant_error',
+        'content': activeChatDesktopRecoveryUiMessage(
+          originalError,
+          languageCode: _desktopLanguageCode,
+        ),
+        '_prompt': lastPrompt,
+        '_remoteRunUnproven': true,
+        _awaitingDurableTurnRecoveryKey: true,
+        'recoverable': true,
+        '_localTranscriptProjectionId': projectionId,
+      });
     }
     _emit(ActiveChatEvent.error);
   }
@@ -18454,12 +18512,16 @@ class ActiveChat {
       }
     }
     if (stillCurrent()) {
+      _publishTransportState(ChatTransportState.remoteRunUnproven);
       _failRun(
         activeChatDesktopRecoveryUiMessage(
           originalError,
           languageCode: _desktopLanguageCode,
         ),
-        failureMetadata: const {_awaitingDurableTurnRecoveryKey: true},
+        failureMetadata: const {
+          _awaitingDurableTurnRecoveryKey: true,
+          '_remoteRunUnproven': true,
+        },
       );
     }
   }
@@ -24366,6 +24428,17 @@ class ActiveChat {
         '_localTranscriptProjectionId': projectionId,
         '_clientTurnId': ?failedClientTurnId,
       });
+    } else {
+      final projectionId = _nextLocalTranscriptProjectionId();
+      _tagLatestUserForLocalError(projectionId);
+      _messages.insert(0, {
+        'role': 'assistant_error',
+        'content': error,
+        '_prompt': lastPrompt,
+        ...failureMetadata,
+        '_localTranscriptProjectionId': projectionId,
+        '_clientTurnId': ?failedClientTurnId,
+      });
     }
     // Avisa del problema si la app está en 2º plano (no molesta en primer plano).
     if (_shouldNotifyReplies && _notifications != null) {
@@ -26458,6 +26531,7 @@ class ActiveChatService {
   final GlobalActivityAggregate globalActivity;
 
   final Map<String, ActiveChat> _chats = {};
+  final Map<ActiveChat, VoidCallback> _transportListeners = {};
   final Set<String> _navigationReleaseRequested = <String>{};
   final Map<String, List<SteerProjection>> _steerProjectionCache = {};
   final Map<ActiveChat, _HomeWidgetChatMetadata> _homeWidgetMetadata = {};
@@ -26682,6 +26756,33 @@ class ActiveChatService {
   /// [isActive] para resolver el estado. Incluir el perfil garantiza que el fin
   /// de A notifique aunque B conserve el mismo sessionId en otro owner.
   final ValueNotifier<Set<String>> activeIds = ValueNotifier<Set<String>>({});
+
+  /// Last local chat transport transition. Consumers must refresh their own
+  /// health, session list and run state; socket-open is never sufficient.
+  final ValueNotifier<ChatTransportUpdate?> transportUpdate =
+      ValueNotifier<ChatTransportUpdate?>(null);
+
+  void _publishChatTransportUpdate(ActiveChat chat) {
+    if (_disposed) return;
+    transportUpdate.value = ChatTransportUpdate(
+      connectionId: chat.connection.id,
+      sessionId: chat.sessionId,
+      profile: chat.sessionProfile,
+      state: chat.transportStatus.state,
+    );
+  }
+
+  /// The 60-second observer release is a local lifecycle optimization, not a
+  /// remote disconnect. Home refreshes when it later reacquires foreground.
+  void publishIdleObserverReleased() {
+    if (_disposed) return;
+    transportUpdate.value = const ChatTransportUpdate(
+      connectionId: '',
+      sessionId: '',
+      profile: '',
+      state: ChatTransportState.idleObserverReleased,
+    );
+  }
 
   /// Conecta la salida no sensible hacia Glance. El servicio sigue siendo el
   /// único reducer del estado vivo del chat; la app solo conserva la parte base
@@ -27353,6 +27454,9 @@ class ActiveChatService {
                 }),
     );
     _chats[key] = chat;
+    void onTransportChanged() => _publishChatTransportUpdate(chat);
+    _transportListeners[chat] = onTransportChanged;
+    chat.transportStatusListenable.addListener(onTransportChanged);
     final seed =
         sessionSnapshot ??
         Session(
@@ -27689,6 +27793,10 @@ class ActiveChatService {
     _cancelNavigationRelease(key);
     final chat = _chats.remove(key);
     if (chat != null) {
+      final transportListener = _transportListeners.remove(chat);
+      if (transportListener != null) {
+        chat.transportStatusListenable.removeListener(transportListener);
+      }
       _homeWidgetMetadata.remove(chat);
       _rememberSteerProjections(chat);
       _rememberObservedFirstTokenLatency(
@@ -27726,6 +27834,10 @@ class ActiveChatService {
     _disposed = true;
     _navigationReleaseRequested.clear();
     for (final chat in _chats.values) {
+      final transportListener = _transportListeners.remove(chat);
+      if (transportListener != null) {
+        chat.transportStatusListenable.removeListener(transportListener);
+      }
       chat.dispose();
     }
     _chats.clear();
@@ -27733,5 +27845,6 @@ class ActiveChatService {
     _observedFirstTokenLatencyCache.clear();
     globalActivity.dispose();
     activeIds.dispose();
+    transportUpdate.dispose();
   }
 }
