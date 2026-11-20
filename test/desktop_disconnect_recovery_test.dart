@@ -8497,8 +8497,12 @@ void main() {
       await _waitUntil(() => chat.state == ChatPipelineState.failed);
 
       expect(chat.transportStatus.state.name, 'remoteRunUnproven');
-      expect(gateway.submitCalls, 1);
       expect(chat.messages.first['_prompt'], 'keep this exact draft');
+
+      // The Chat Retry action calls this reconciliation path. It may reread
+      // remote state, but it must not replay the ambiguous prompt.
+      await chat.reconcileAfterResume();
+      expect(gateway.submitCalls, 1);
     },
   );
 
